@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cc-webui · 登录</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg2: #f6f8fa; --border: #d0d7de;
+    --fg: #1f2328; --dim: #8c959f; --accent: #0969da; --red: #cf222e;
+  }
+  [data-theme="dark"] {
+    --bg: #0d1117; --bg2: #161b22; --border: #30363d;
+    --fg: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --red: #f85149;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--fg);
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }
+  .card {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+    padding: 40px; width: 380px; max-width: 92vw;
+  }
+  h1 { font-size: 22px; margin-bottom: 6px; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 24px; }
+  input {
+    width: 100%; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+    font-size: 14px; outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+  button {
+    width: 100%; margin-top: 14px; padding: 10px;
+    background: #238636; color: #fff; border: none; border-radius: 8px;
+    font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #2ea043; }
+  .err { color: var(--red); font-size: 13px; margin-top: 12px; min-height: 18px; }
+</style>
+<script>
+  document.documentElement.dataset.theme = localStorage.getItem('cc-webui-theme') || 'light';
+</script>
+</head>
+<body>
+<div class="card">
+  <h1>cc-webui</h1>
+  <div class="sub">输入 GATEWAY_TOKEN 以继续</div>
+  <form id="f">
+    <input type="password" id="token" placeholder="GATEWAY_TOKEN" autocomplete="current-password" autofocus>
+    <button type="submit">登 录</button>
+    <div class="err" id="err"></div>
+  </form>
+</div>
+<script>
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('err');
+  err.textContent = '';
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({token: document.getElementById('token').value}),
+  });
+  if (res.ok) {
+    location.href = '/';
+  } else {
+    err.textContent = 'Token 无效';
+  }
+});
+</script>
+</body>
+</html>

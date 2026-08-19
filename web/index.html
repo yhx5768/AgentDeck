@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+<title>cc-webui</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#24292f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="cc-webui">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png">
+<link rel="stylesheet" href="/vendor/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="/vendor/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="/style.css">
+<script>
+// 首屏前应用主题，避免闪烁；默认浅色
+(function () {
+  var t = localStorage.getItem('cc-webui-theme') || 'light';
+  document.documentElement.dataset.theme = t;
+})();
+</script>
+</head>
+<body>
+<div id="app">
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <span class="logo">cc-webui</span>
+      <span class="header-btns">
+        <button id="btn-theme" class="icon-btn" title="切换主题"><i data-lucide="moon"></i></button>
+        <button id="btn-collapse" class="icon-btn" title="收起侧边栏"><i data-lucide="panel-left-close"></i></button>
+      </span>
+    </div>
+    <div class="sidebar-actions">
+      <button id="btn-new" class="primary-btn"><i data-lucide="plus"></i> 新建会话</button>
+      <button id="btn-import" class="ghost-btn">导入已有</button>
+    </div>
+
+    <!-- workspace toolbar: title + search + view -->
+    <div class="ws-bar">
+      <span class="ws-title">工作区</span>
+      <span class="ws-spacer"></span>
+      <button id="btn-search-toggle" class="icon-btn" title="搜索对话"><i data-lucide="search"></i></button>
+      <button id="btn-view-toggle" class="icon-btn" title="视图选项"><i data-lucide="settings-2"></i></button>
+    </div>
+
+    <!-- hidden search bar revealed when user clicks search -->
+    <div id="search-bar" class="search-bar hidden">
+      <i data-lucide="search" class="search-icon"></i>
+      <input id="search-input" placeholder="搜索会话名…" autocomplete="off">
+      <button id="btn-search-close" class="icon-btn" title="关闭"><i data-lucide="x"></i></button>
+    </div>
+
+    <!-- session list (filterable, sortable, groupable) -->
+    <div id="session-list"></div>
+
+    <!-- archived sessions (collapsed by default) -->
+    <div id="archive-section" class="archive-section collapsed">
+      <div id="archive-header" class="archive-header">
+        <i data-lucide="chevron-down" class="archive-chev"></i>
+        <span class="archive-label">归档</span>
+        <span class="archive-count">0</span>
+      </div>
+      <div id="archive-list" class="archive-list"></div>
+    </div>
+  </aside>
+
+  <button id="btn-expand" class="icon-btn" title="展开侧边栏" aria-label="展开侧边栏"><i data-lucide="panel-left-open"></i></button>
+
+  <!-- Main -->
+  <main id="main">
+    <!-- mobile: persistent drawer entry shown when no chat is open -->
+    <button id="btn-drawer-standalone" class="icon-btn drawer-toggle drawer-standalone" title="会话列表" aria-label="会话列表"><i data-lucide="menu"></i></button>
+
+    <div id="empty-state">
+      <div class="empty-inner">
+        <h2>cc-webui</h2>
+        <p>远程管理你的 Claude Code 会话</p>
+        <p class="dim">从左侧新建或选择一个会话开始</p>
+      </div>
+    </div>
+
+    <div id="chat-view" class="hidden">
+      <header id="chat-header">
+        <div class="title-row">
+          <button id="btn-drawer" class="icon-btn drawer-toggle" title="打开会话列表"><i data-lucide="menu"></i></button>
+          <input id="session-name" class="name-input" spellcheck="false">
+          <span id="status-badge" class="status-badge"></span>
+          <button id="btn-chat-menu" class="icon-btn chat-menu-toggle" title="更多操作"><i data-lucide="more-vertical"></i></button>
+        </div>
+        <div class="controls-row">
+          <label>CLI
+            <select id="session-cli"></select>
+          </label>
+          <label>Provider
+            <select id="session-provider"></select>
+          </label>
+          <label>Model
+            <select id="session-model"></select>
+          </label>
+          <label>权限
+            <select id="session-perm">
+              <option value="">profile 默认</option>
+              <option value="bypassPermissions">bypass</option>
+              <option value="acceptEdits">acceptEdits</option>
+              <option value="plan">plan</option>
+              <option value="default">default</option>
+            </select>
+          </label>
+          <span class="cwd" id="session-cwd" title=""></span>
+          <span class="spacer"></span>
+          <button id="btn-resume" class="ghost-btn" title="复制终端恢复该会话的命令"><i data-lucide="terminal"></i><span class="label">resume</span></button>
+          <button id="btn-stop" class="danger-btn hidden"><i data-lucide="square"></i><span class="label">停止</span></button>
+          <button id="btn-delete" class="ghost-btn"><i data-lucide="trash-2"></i><span class="label">删除</span></button>
+        </div>
+      </header>
+
+      <div id="messages"></div>
+
+      <footer id="composer">
+        <div id="error-banner" class="hidden"></div>
+        <div id="workspace-gate" class="hidden"><i data-lucide="alert-triangle"></i> 未选 workspace（cwd）— 聊天区已禁用</div>
+        <div id="attached-images" class="attached-images"></div>
+        <div class="composer-row">
+          <button id="btn-attach" class="icon-btn" title="添加图片"><i data-lucide="paperclip"></i></button>
+          <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+          <button id="btn-send" class="primary-btn" aria-label="发送"><i data-lucide="send-horizontal"></i><span class="send-label">发送</span></button>
+        </div>
+        <div class="composer-footer">
+          <span id="session-stats" class="session-stats"></span>
+          <span class="composer-hint" id="queue-hint"></span>
+        </div>
+      </footer>
+    </div>
+
+    <!-- 新会话创作视图：大输入框 + 配置选择 -->
+    <div id="new-session-view" class="hidden">
+      <div class="ns-inner">
+        <div class="ns-greeting">开始新的对话</div>
+        <div class="ns-sub" id="ns-cwd-display"></div>
+        <div class="ns-card">
+          <textarea id="ns-input" placeholder="有什么可以帮你的？" rows="4"></textarea>
+          <div class="ns-toolbar">
+            <div class="ns-toolbar-left">
+              <button id="ns-attach" class="ns-icon-btn" title="添加图片"><i data-lucide="paperclip"></i></button>
+              <input type="file" id="ns-attach-file" accept="image/*" multiple hidden>
+              <select id="ns-perm" class="ns-pill" title="权限模式">
+                <option value="">默认权限</option>
+                <option value="bypassPermissions">bypass</option>
+                <option value="acceptEdits">acceptEdits</option>
+                <option value="plan">plan</option>
+              </select>
+            </div>
+            <div class="ns-toolbar-right">
+              <select id="ns-cli" class="ns-pill"></select>
+              <select id="ns-provider" class="ns-pill"></select>
+              <select id="ns-model" class="ns-pill"></select>
+              <button id="ns-send" class="ns-send-btn" title="发送"><i data-lucide="arrow-up"></i></button>
+            </div>
+          </div>
+        </div>
+        <div id="ns-attached" class="ns-attached hidden"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- mobile-only UI overlays -->
+  <div id="drawer-overlay" class="overlay hidden" aria-hidden="true"></div>
+
+  <div id="chat-sheet" class="bottom-sheet hidden" role="dialog" aria-label="会话操作">
+    <div class="sheet-handle"></div>
+    <div class="sheet-body">
+      <div class="sheet-grid">
+        <label>CLI
+          <select id="sheet-cli"></select>
+        </label>
+        <label>Provider
+          <select id="sheet-provider"></select>
+        </label>
+        <label>Model
+          <select id="sheet-model"></select>
+        </label>
+        <label>权限
+          <select id="sheet-perm">
+            <option value="">profile 默认</option>
+            <option value="bypassPermissions">bypass</option>
+            <option value="acceptEdits">acceptEdits</option>
+            <option value="plan">plan</option>
+            <option value="default">default</option>
+          </select>
+        </label>
+      </div>
+      <div class="sheet-cwd" id="sheet-cwd"></div>
+      <div class="sheet-actions">
+        <button id="sheet-resume" class="ghost-btn"><i data-lucide="terminal"></i> 复制 resume 命令</button>
+        <button id="sheet-archive" class="ghost-btn"><i data-lucide="archive"></i> 归档</button>
+        <button id="sheet-delete" class="danger-btn"><i data-lucide="trash-2"></i> 删除</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- file viewer: right-side panel for local file preview -->
+<div id="file-viewer" class="hidden" role="dialog" aria-label="文件预览">
+  <div class="fv-header">
+    <span class="fv-path" id="fv-path"></span>
+    <button id="fv-copy" class="icon-btn" title="复制文件路径"><i data-lucide="copy"></i></button>
+    <button id="fv-close" class="icon-btn" title="关闭"><i data-lucide="x"></i></button>
+  </div>
+  <div class="fv-body" id="fv-body"></div>
+</div>
+
+<!-- session actions menu (popover) -->
+<div id="session-menu" class="popover-menu hidden">
+  <button data-action="rename"><i data-lucide="pencil"></i>重命名</button>
+  <button data-action="fork"><i data-lucide="git-fork"></i>分叉会话</button>
+  <button data-action="archive"><i data-lucide="archive"></i>归档</button>
+  <button data-action="delete" class="danger"><i data-lucide="trash-2"></i>删除</button>
+</div>
+
+<!-- rename dialog -->
+<div id="modal-rename" class="modal hidden">
+  <div class="modal-card">
+    <h3>重命名会话</h3>
+    <label>新名称 <input id="rename-input"></label>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close>取消</button>
+      <button class="primary-btn" id="rename-submit">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- view options popover -->
+<div id="view-menu" class="popover-menu hidden">
+  <div class="pop-section-title">分组方式</div>
+  <button data-view-group="workspace" class="check"><span class="check-glyph"></span><span>按工作区</span></button>
+  <button data-view-group="none"><span class="check-glyph"></span><span>单列表</span></button>
+  <div class="pop-section-title">排序方式</div>
+  <button data-view-sort="manual" class="check"><span class="check-glyph"></span><span>手动排序</span></button>
+  <button data-view-sort="updated"><span class="check-glyph"></span><span>最近更新</span></button>
+</div>
+<div id="modal-new" class="modal hidden">
+  <div class="modal-card">
+    <h3>新建会话</h3>
+    <label>名称 <input id="new-name" placeholder="可选"></label>
+    <label>CLI <select id="new-cli"></select></label>
+    <label>Provider <select id="new-provider"></select></label>
+    <label>Model <select id="new-model"></select></label>
+    <label>工作目录 <input id="new-cwd" placeholder="/path/to/project"></label>
+    <label>权限模式
+      <select id="new-perm">
+        <option value="">profile 默认</option>
+        <option value="bypassPermissions">bypassPermissions</option>
+        <option value="acceptEdits">acceptEdits</option>
+        <option value="plan">plan</option>
+        <option value="default">default</option>
+      </select>
+    </label>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close>取消</button>
+      <button class="primary-btn" id="new-submit">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import modal -->
+<div id="modal-import" class="modal hidden">
+  <div class="modal-card wide">
+    <h3>导入 Claude Code 已有会话</h3>
+    <div class="import-hint">
+      SSH 里找 session id：<code>ls -t ~/.claude/projects/*/*.jsonl | head</code>（文件名 <code>~/.claude/projects/&lt;cwd-slug&gt;/&lt;session-id&gt;.jsonl</code>）
+    </div>
+    <div class="import-filter">
+      <input id="import-cwd" placeholder="工作目录过滤">
+      <input id="import-prefix" placeholder="session-id 前缀筛选（留空看全部）" style="flex:1.2">
+      <select id="import-cli"></select>
+      <select id="import-provider"></select>
+      <button class="ghost-btn" id="import-scan">扫描</button>
+    </div>
+    <div id="import-list"></div>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close>关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/highlight.min.js"></script>
+<script src="/vendor/lucide.min.js"></script>
+<input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+# cc-webui 配置
+# 也可以用环境变量 GATEWAY_TOKEN 覆盖 gateway_token
+
+listen: "0.0.0.0:8321"
+
+# 简单鉴权 token（OpenClaw 风格）。为空则启动时随机生成并打印到控制台。
+gateway_token: "change-me-to-a-long-random-string"
+
+# 会话数据（db.json + 事件流）存放目录
+data_dir: "./data"
+
+# 新建会话时的默认工作目录
+default_cwd: "~"
+
+# 三层结构：
+#   clis[]      - 一个 claude 兼容的二进制安装（path + args + 权限模式 + 共享 env）
+#   providers[] - 一个 API 后端（共享 env，通常是 BASE_URL/TOKEN）
+#   providers[].models[] - 该后端可选的模型（每个模型可带自己的 env）
+# 生效 env：cli.env → provider.env → model.env（后者覆盖前者）
+clis:
+  - name: "official-claude"
+    path: "claude"
+    permission_mode: "bypassPermissions"
+    args: []
+    env: {}
+
+  - name: "ducc"
+    path: "/home/you/.baidu-cc/baidu-cc/bin/ducc"
+    permission_mode: "bypassPermissions"
+    args: []
+    env: {}
+
+providers:
+  - name: "anthropic"
+    env: {}                  # 用官方端点时无需额外 env
+    models:
+      - name: "claude-sonnet-4-5"
+        input: [text, image] # 声明的输入能力：文本 + 图片
+      - name: "claude-opus-4-1"
+        input: [text, image]
+
+  - name: "kimi"
+    env:                     # kimi provider 下的所有模型共享这些 env
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:3456"
+      ANTHROPIC_AUTH_TOKEN: "..."
+    models:
+      - name: "kimi-k3"
+        input: [text, image] # 仅该模型声明的 input（覆盖 provider 缺省值）
+      - name: "kimi-k2.7"
+        env:                 # 仅该模型额外的 env（覆盖 provider 级同名项）
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "1000000"
+      - name: "kimi-k2.7"
+        env:
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "500000"
+
+  - name: "minimax"
+    env:
+      ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic"
+      ANTHROPIC_AUTH_TOKEN: "sk-..."
+    models:
+      - name: "MiniMax-M3[1m]"
