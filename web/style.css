@@ -914,6 +914,10 @@ input:focus, select:focus, textarea:focus {
   box-shadow: none;
   color: transparent;
   caret-color: var(--fg);
+  line-height: var(--lh-normal);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 #input:focus { box-shadow: none; border-color: transparent; }
 .input-wrapper {
@@ -928,11 +932,15 @@ input:focus, select:focus, textarea:focus {
   border: none;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: break-word;
   overflow: hidden;
   pointer-events: none;
   color: var(--fg);
-  font: inherit;
-  line-height: inherit;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  font-weight: inherit;
+  letter-spacing: inherit;
+  line-height: var(--lh-normal);
 }
 .input-mirror .slash-cmd { color: var(--accent); font-weight: 500; }
 /* slash command popup */
