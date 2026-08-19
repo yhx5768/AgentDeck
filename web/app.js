@@ -1484,14 +1484,24 @@ syncComposerSpace();
 // arrow keys / Tab. Selected commands get a blue highlight in the input via
 // a mirror div behind the transparent-text textarea.
 
-const slashPopup = $('#slash-popup');
+const slashPopupEl = $('#slash-popup');
 const inputMirror = $('#input-mirror');
+const nsSlashPopupEl = $('#ns-slash-popup');
+const nsInputEl = $('#ns-input');
 let slashState = { open: false, items: [], active: 0 };
+// 活跃的 slash 上下文：哪个 textarea + 哪个 popup 在用（focus 切换）
+let slashPopup = slashPopupEl;
+let slashTextarea = input;
 
 function getSlashCommands() {
-  if (!state.current) return [];
-  const key = (state.current.cli || '') + '\x00' + (state.current.cwd || '');
-  return state.current.slash_commands || state.slashCommandsCache[key] || [];
+  if (state.current) {
+    const key = (state.current.cli || '') + '\x00' + (state.current.cwd || '');
+    return state.current.slash_commands || state.slashCommandsCache[key] || [];
+  }
+  // ns-view 上下文：用 nsPendingCwd + #ns-cli 查缓存
+  const cli = (nsInputEl && $('#ns-cli')?.value) || '';
+  const key = cli + '\x00' + (nsPendingCwd || '');
+  return state.slashCommandsCache[key] || [];
 }
 
 // Find the slash token being typed: `/word` at start of input or after whitespace.
@@ -1539,18 +1549,19 @@ function selectSlashItem(idx) {
   if (!slashState.open) return;
   const name = slashState.items[idx ?? slashState.active];
   if (!name) return;
-  const text = input.value;
-  const pos = input.selectionStart;
+  const ta = slashTextarea;
+  const text = ta.value;
+  const pos = ta.selectionStart;
   const before = text.slice(0, pos);
   const m = before.match(/(?:^|\s)(\/[\w-]*)$/);
   if (!m) { closeSlashPopup(); return; }
   const start = pos - m[1].length;
   const replacement = (m[0].startsWith(' ') ? ' ' : '') + '/' + name + ' ';
   const newText = text.slice(0, start) + replacement + text.slice(pos);
-  input.value = newText;
+  ta.value = newText;
   const caret = start + replacement.length;
-  input.setSelectionRange(caret, caret);
-  input.focus();
+  ta.setSelectionRange(caret, caret);
+  ta.focus();
   closeSlashPopup();
   onInputChange();
 }
@@ -1576,20 +1587,22 @@ function renderInputMirror() {
 }
 
 function onInputChange() {
-  input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
-  if (state.current) draft().text = input.value;
+  const ta = slashTextarea;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, ta === input ? 180 : 320) + 'px';
+  if (state.current && ta === input) draft().text = ta.value;
   // Slash popup detection
-  const tok = currentSlashToken(input.value, input.selectionStart);
+  const tok = currentSlashToken(ta.value, ta.selectionStart);
   if (tok) {
     const filter = tok.prefix.slice(1); // without the leading /
     openSlashPopup(filter);
   } else {
     closeSlashPopup();
   }
-  renderInputMirror();
+  if (ta === input) renderInputMirror();
 }
 
+input.addEventListener('focus', () => { slashTextarea = input; slashPopup = slashPopupEl; });
 input.addEventListener('input', onInputChange);
 input.addEventListener('scroll', renderInputMirror);
 input.addEventListener('keydown', (e) => {
@@ -2090,12 +2103,23 @@ $('#ns-input').onkeydown = (e) => {
   }
 };
 // textarea auto-grow
-$('#ns-input').addEventListener('input', (e) => {
-  const el = e.target;
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 320) + 'px';
-});
-// attach button → file picker
+$('#ns-input').addEventListener('focus', () => { slashTextarea = nsInputEl; slashPopup = nsSlashPopupEl; });
+$('#ns-input').addEventListener('input', onInputChange);
+$('#ns-input').addEventListener('blur', () => { setTimeout(closeSlashPopup, 200); });
+$('#ns-input').onkeydown = (e) => {
+  if (slashState.open) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveSlashActive(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); moveSlashActive(-1); return; }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      e.preventDefault(); selectSlashItem(); return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); closeSlashPopup(); return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    nsSend();
+  }
+};
 $('#ns-attach').onclick = () => $('#ns-attach-file').click();
 $('#ns-attach-file').onchange = async (e) => {
   const files = Array.from(e.target.files || []);
