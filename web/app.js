@@ -75,6 +75,7 @@ const state = {
   replaying: false,    // true until the server sends the replay_end marker
   stats: null,         // {turns, steps, firstTs, lastTs} for the current session
   live: null,          // live partial-stream state: {msgId, blocks:[{kind,el,bodyEl,buf,done,taken,raf}]}
+  slashCommandsCache: {}, // cli name -> slash_commands[] (fallback for sessions without init yet)
 };
 
 // 切换会话时首屏只渲染最新 N 条事件，向上滚动点「加载更多」再翻页
@@ -1368,6 +1369,7 @@ function renderEvent(ev, box) {
       if (d.subtype === 'init') {
         if (Array.isArray(d.slash_commands) && state.current) {
           state.current.slash_commands = d.slash_commands;
+          state.slashCommandsCache[state.current.cli] = d.slash_commands;
         }
         const line = document.createElement('div');
         line.className = 'meta-line';
@@ -1485,7 +1487,8 @@ const inputMirror = $('#input-mirror');
 let slashState = { open: false, items: [], active: 0 };
 
 function getSlashCommands() {
-  return (state.current && state.current.slash_commands) || [];
+  if (!state.current) return [];
+  return state.current.slash_commands || state.slashCommandsCache[state.current.cli] || [];
 }
 
 // Find the slash token being typed: `/word` at start of input or after whitespace.
@@ -1550,15 +1553,16 @@ function selectSlashItem(idx) {
 }
 
 // Render the mirror: slash command tokens that match known commands get blue.
+// The mirror ALWAYS renders the text so the transparent textarea stays readable.
 function renderInputMirror() {
   const text = input.value;
+  if (!text) { inputMirror.innerHTML = ''; return; }
   const commands = getSlashCommands();
-  if (!commands.length || !text) { inputMirror.innerHTML = ''; return; }
-  const cmdSet = new Set(commands);
+  const cmdSet = commands.length ? new Set(commands) : null;
   const parts = text.split(/(\s+)/);
   let html = '';
   for (const part of parts) {
-    if (part.startsWith('/') && cmdSet.has(part.slice(1))) {
+    if (cmdSet && part.startsWith('/') && cmdSet.has(part.slice(1))) {
       html += `<span class="slash-cmd">${escapeHtml(part)}</span>`;
     } else {
       html += escapeHtml(part);
