@@ -23,7 +23,7 @@ cc-webui 是 Claude Code（以及任何兼容 CLI）的 Web 控制台。它把�
 | 单二进制部署 | `go build` 生成一个可执行文件，前端资源已用 `go:embed` 打包，无需 Node 构建。 |
 | 多 CLI / Provider / Model | 配置文件定义多个 Claude 兼容 CLI 与 API 后端；会话内一键热切换 CLI、Provider、Model、权限模式。 |
 | 导入已有会话 | 扫描 `~/.claude/projects`，把本地历史会话一键接进 Web UI 继续聊。 |
-| 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。 |
+| 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。CLI 开启 `partial_messages` 后支持打字机式逐 token 增量渲染（`--include-partial-messages`）。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块。 |
 | 本地文件预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`），右侧面板只读打开并自动跳转到对应行号。 |
 | TUI 与 Web 自由切换 | 每个会话都有 session id，点「resume」复制命令即可回到 TUI 继续跟进，Web 里做的一切状态都在。 |
@@ -74,6 +74,7 @@ clis:
   - name: "official-claude"
     path: "claude"
     permission_mode: "bypassPermissions"
+    partial_messages: true   # 打字机式逐 token 流式渲染（需新版 Claude Code）
     args: []
     env: {}
 

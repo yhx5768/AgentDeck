@@ -102,6 +102,16 @@
           <label>Model
             <select id="session-model"></select>
           </label>
+          <label>推理
+            <select id="session-effort">
+              <option value="">继承</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </label>
           <label>权限
             <select id="session-perm">
               <option value="">profile 默认</option>
@@ -159,6 +169,14 @@
               <select id="ns-cli" class="ns-pill"></select>
               <select id="ns-provider" class="ns-pill"></select>
               <select id="ns-model" class="ns-pill"></select>
+              <select id="ns-effort" class="ns-pill" title="推理等级">
+                <option value="">默认</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
               <button id="ns-send" class="ns-send-btn" title="发送"><i data-lucide="arrow-up"></i></button>
             </div>
           </div>
@@ -183,6 +201,16 @@
         </label>
         <label>Model
           <select id="sheet-model"></select>
+        </label>
+        <label>推理
+          <select id="sheet-effort">
+            <option value="">继承</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+          </select>
         </label>
         <label>权限
           <select id="sheet-perm">
@@ -250,6 +278,16 @@
     <label>CLI <select id="new-cli"></select></label>
     <label>Provider <select id="new-provider"></select></label>
     <label>Model <select id="new-model"></select></label>
+    <label>推理
+      <select id="new-effort">
+        <option value="">继承</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="xhigh">xhigh</option>
+        <option value="max">max</option>
+      </select>
+    </label>
     <label>工作目录 <input id="new-cwd" placeholder="/path/to/project"></label>
     <label>权限模式
       <select id="new-perm">

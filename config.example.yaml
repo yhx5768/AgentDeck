@@ -21,6 +21,9 @@ clis:
   - name: "official-claude"
     path: "claude"
     permission_mode: "bypassPermissions"
+    # partial_messages: true 开启 --include-partial-messages，前端打字机式
+    # 逐 token 流式渲染。仅新版 Claude Code 支持；兼容 CLI 请勿开启。
+    partial_messages: true
     args: []
     env: {}
 

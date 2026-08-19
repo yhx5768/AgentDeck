@@ -74,6 +74,7 @@ const state = {
   histRenderedFrom: 0, // index in historyBuf of the oldest rendered event
   replaying: false,    // true until the server sends the replay_end marker
   stats: null,         // {turns, steps, firstTs, lastTs} for the current session
+  live: null,          // live partial-stream state: {msgId, blocks:[{kind,el,bodyEl,buf,done,taken,raf}]}
 };
 
 // 切换会话时首屏只渲染最新 N 条事件，向上滚动点「加载更多」再翻页
@@ -574,6 +575,7 @@ async function openSession(id) {
   state.historyBuf = [];
   state.histRenderedFrom = 0;
   state.replaying = true;
+  state.live = null;
   state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
   updateStatsUI();
   $('#empty-state').classList.add('hidden');
@@ -588,6 +590,7 @@ async function openSession(id) {
   fillCLISelect($('#session-cli'), s.cli);
   fillProviderSelect($('#session-provider'), s.provider);
   fillModelSelect($('#session-model'), s.provider, s.model_override);
+  $('#session-effort').value = s.effort_override || '';
   // Restore draft (text + images) for this session.
   state.attached = (state.drafts[id] && state.drafts[id].images) || [];
   $('#input').value = (state.drafts[id] && state.drafts[id].text) || '';
@@ -1227,6 +1230,126 @@ function wrapInMsg(node, box) {
   }
 }
 
+// ---------- partial streaming (stream_event) ----------
+// CLI 开了 --include-partial-messages 后，除完整 assistant 事件外还会推原
+// 始 API 流事件（type=stream_event）。text/thinking 的 delta 增量渲染进一
+// 个带光标的 live 元素；block 完成时 CLI 会发含完整内容的 assistant 事件，
+// renderEvent 用完整版替换对应 live 元素（去重）。若后端把 thinking strip
+// 成空（完整版里没有内容），则固化保留 live 版。
+// live 事件不落盘，历史回放里没有 stream_event，刷新后由完整事件兜底。
+
+function liveBlock(kind) {
+  // 当前活跃的 live block；类型切换时固化上一个（同时只有一个在流）
+  const l = state.live;
+  if (l && l.cur && l.cur.kind !== kind) liveFinalizeBlock(l.cur);
+  return l && l.cur && l.cur.kind === kind ? l.cur : null;
+}
+
+function livePush(b) {
+  if (!state.live) state.live = { msgId: '', blocks: [], cur: null };
+  state.live.blocks.push(b);
+  state.live.cur = b;
+}
+
+function liveFinalizeBlock(b) {
+  b.done = true;
+  if (b.raf) { cancelAnimationFrame(b.raf); b.raf = null; }
+  livePaint(b);
+  b.bodyEl.classList.remove('streaming');
+  if (state.live && state.live.cur === b) state.live.cur = null;
+}
+
+function livePaint(b) {
+  if (b.kind === 'text') b.bodyEl.innerHTML = md(b.buf);
+  else b.bodyEl.textContent = b.buf;
+}
+
+function liveSchedulePaint(b) {
+  if (b.raf) return; // 每帧最多重绘一次
+  b.raf = requestAnimationFrame(() => {
+    b.raf = null;
+    livePaint(b);
+    scrollBottom();
+  });
+}
+
+// 取出最早创建的同类 live block（用于 assistant 完整事件到达时匹配替换）
+function liveTake(kind) {
+  const l = state.live;
+  if (!l) return null;
+  for (const b of l.blocks) {
+    if (b.kind === kind && !b.taken) {
+      b.taken = true;
+      if (b.raf) { cancelAnimationFrame(b.raf); b.raf = null; } // 元素将被移除或固化，取消挂起的重绘
+      return b;
+    }
+  }
+  return null;
+}
+
+// turn 结束/中断时兜底：固化所有未被完整事件替换的 live block
+function liveFinalizeAll() {
+  const l = state.live;
+  if (!l) return;
+  for (const b of l.blocks) if (!b.taken && !b.done) liveFinalizeBlock(b);
+  state.live = null;
+}
+
+function renderStreamEvent(d, box) {
+  const ev = d.event;
+  if (!ev || typeof ev !== 'object') return;
+  switch (ev.type) {
+    case 'message_start':
+      liveFinalizeAll();
+      state.live = { msgId: (ev.message && ev.message.id) || '', blocks: [], cur: null };
+      break;
+    case 'content_block_start': {
+      const cb = ev.content_block || {};
+      const l = state.live;
+      if (l && l.cur) liveFinalizeBlock(l.cur); // 新 block 开始，固化上一个（覆盖 text→text 等连续场景）
+      if (cb.type === 'text') {
+        const bubble = addMsg('msg-assistant', 'claude', box);
+        bubble.classList.add('streaming');
+        const b = { kind: 'text', el: bubble.parentElement, bodyEl: bubble, buf: cb.text || '', done: false, taken: false, raf: null };
+        livePush(b);
+        liveSchedulePaint(b);
+      } else if (cb.type === 'thinking') {
+        const details = document.createElement('details');
+        details.className = 'tool-block thinking-block';
+        details.open = true; // 流式期间展开，完成后用户可手动折叠
+        const summary = document.createElement('summary');
+        summary.textContent = 'thinking…';
+        const body = document.createElement('div');
+        body.className = 'tool-body streaming';
+        details.append(summary, body);
+        wrapInMsg(details, box);
+        const b = { kind: 'thinking', el: details, bodyEl: body, buf: cb.thinking || '', done: false, taken: false, raf: null };
+        livePush(b);
+        liveSchedulePaint(b);
+      } else {
+        // tool_use 等：无增量渲染，等完整 assistant 事件（cur 已在上面固化）
+      }
+      break;
+    }
+    case 'content_block_delta': {
+      const delta = ev.delta || {};
+      const kind = delta.type === 'thinking_delta' ? 'thinking' : delta.type === 'text_delta' ? 'text' : null;
+      if (!kind) break; // input_json_delta 等忽略
+      const b = liveBlock(kind);
+      if (!b) break;
+      b.buf += kind === 'text' ? (delta.text || '') : (delta.thinking || '');
+      liveSchedulePaint(b);
+      break;
+    }
+    case 'content_block_stop': {
+      const l = state.live;
+      if (l && l.cur) liveFinalizeBlock(l.cur);
+      break;
+    }
+    // message_delta/message_stop 无需处理：收尾由完整 assistant/result 事件承担
+  }
+}
+
 // box defaults to the live message list; history pages render into a
 // DocumentFragment which is then inserted at the top.
 function renderEvent(ev, box) {
@@ -1252,27 +1375,38 @@ function renderEvent(ev, box) {
     if (d.type === 'assistant' && d.message && Array.isArray(d.message.content)) {
       for (const block of d.message.content) {
         if (block.type === 'text' && block.text) {
+          const lb = liveTake('text');
+          if (lb) lb.el.remove(); // 完整版替换 live 气泡，避免重复
           const bubble = addMsg('msg-assistant', 'claude', box);
           bubble.innerHTML = md(block.text);
         } else if (block.type === 'tool_use') {
           renderToolUse(block, box);
-        } else if (block.type === 'thinking' && block.thinking) {
-          const details = document.createElement('details');
-          details.className = 'tool-block thinking-block';
-          const summary = document.createElement('summary');
-          summary.textContent = 'thinking…';
-          const body = document.createElement('div');
-          body.className = 'tool-body';
-          body.textContent = block.thinking;
-          details.append(summary, body);
-          wrapInMsg(details, box);
+        } else if (block.type === 'thinking') {
+          const lb = liveTake('thinking');
+          if (block.thinking) {
+            if (lb) lb.el.remove(); // 完整版替换 live thinking
+            const details = document.createElement('details');
+            details.className = 'tool-block thinking-block';
+            const summary = document.createElement('summary');
+            summary.textContent = 'thinking…';
+            const body = document.createElement('div');
+            body.className = 'tool-body';
+            body.textContent = block.thinking;
+            details.append(summary, body);
+            wrapInMsg(details, box);
+          } else if (lb) {
+            liveFinalizeBlock(lb); // 完整版被后端 strip 成空，保留 live 版
+          }
         }
       }
+    } else if (d.type === 'stream_event') {
+      renderStreamEvent(d, box);
     } else if (d.type === 'user' && d.message && Array.isArray(d.message.content)) {
       for (const block of d.message.content) {
         if (block && block.type === 'tool_result') renderToolResult(block, box);
       }
     } else if (d.type === 'result') {
+      liveFinalizeAll(); // 兜底：未被完整 assistant 事件替换的 live block 固化保留
       const meta = document.createElement('div');
       meta.className = 'result-meta';
       const parts = [];
@@ -1290,9 +1424,11 @@ function renderEvent(ev, box) {
     if (d.state === 'turn_start') {
       updateStatusUI({ running: true, queued: 0 });
     } else if (d.state === 'turn_end' || d.state === 'interrupted') {
+      liveFinalizeAll(); // 中断时部分 block 永远等不到完整事件，固化已生成的内容
       updateStatusUI({ running: false, queued: 0 });
       refreshCurrentStatus();
     } else if (d.state === 'error') {
+      liveFinalizeAll();
       updateStatusUI({ running: false, queued: 0 });
       const banner = $('#error-banner');
       banner.textContent = d.error || 'unknown error';
@@ -1561,6 +1697,15 @@ $('#session-model').addEventListener('change', async (e) => {
   patchSheetIfOpen(updated);
 });
 
+$('#session-effort').addEventListener('change', async (e) => {
+  if (!state.current) return;
+  const updated = await api(`/api/sessions/${state.current.id}`, {
+    method: 'PATCH', body: JSON.stringify({ effort: e.target.value }),
+  });
+  state.current = updated;
+  patchSheetIfOpen(updated);
+});
+
 $('#session-perm').addEventListener('change', async (e) => {
   if (!state.current) return;
   const updated = await api(`/api/sessions/${state.current.id}`, {
@@ -1616,6 +1761,7 @@ $('#new-submit').onclick = async () => {
     provider: $('#new-provider').value,
     cwd: $('#new-cwd').value.trim(),
     model: $('#new-model').value,
+    effort: $('#new-effort').value,
     permission_mode: $('#new-perm').value,
   };
   const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
@@ -1771,6 +1917,7 @@ async function nsSend() {
   const cli = $('#ns-cli').value;
   const provider = $('#ns-provider').value;
   const model = $('#ns-model').value;
+  const effort = $('#ns-effort').value;
   const perm = $('#ns-perm').value;
   if (!cli || !provider || !model) { alert('请先选择配置'); return; }
 
@@ -1788,6 +1935,7 @@ async function nsSend() {
     method: 'POST',
     body: JSON.stringify({
       name, cli, provider, model, cwd: nsPendingCwd,
+      effort: effort || undefined,
       permission_mode: perm || undefined,
     }),
   });
@@ -1891,6 +2039,7 @@ function syncSheetFromCurrent() {
   fillCLISelect($('#sheet-cli'), state.current.cli);
   fillProviderSelect($('#sheet-provider'), state.current.provider);
   fillModelSelect($('#sheet-model'), state.current.provider, state.current.model_override);
+  $('#sheet-effort').value = state.current.effort_override || '';
   $('#sheet-perm').value = state.current.permission_mode || '';
   const cwd = state.current.cwd || '';
   $('#sheet-cwd').textContent = cwd;
@@ -1942,6 +2091,7 @@ const syncSheetSelect = (sheetSel, mainSel) => {
 syncSheetSelect($('#sheet-cli'), $('#session-cli'));
 syncSheetSelect($('#sheet-provider'), $('#session-provider'));
 syncSheetSelect($('#sheet-model'), $('#session-model'));
+syncSheetSelect($('#sheet-effort'), $('#session-effort'));
 syncSheetSelect($('#sheet-perm'), $('#session-perm'));
 
 $('#sheet-resume').onclick = () => { closeSheet(); $('#btn-resume').click(); };
@@ -1962,6 +2112,7 @@ function patchSheetIfOpen(s) {
   fillCLISelect($('#sheet-cli'), s.cli);
   fillProviderSelect($('#sheet-provider'), s.provider);
   fillModelSelect($('#sheet-model'), s.provider, s.model_override);
+  $('#sheet-effort').value = s.effort_override || '';
   $('#sheet-perm').value = s.permission_mode || '';
 }
 

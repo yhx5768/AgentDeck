@@ -18,6 +18,7 @@ type Session struct {
 	CLI             string    `json:"cli"`
 	Provider        string    `json:"provider"`
 	ModelOverride   string    `json:"model_override,omitempty"`
+	EffortOverride  string    `json:"effort_override,omitempty"`
 	PermissionMode  string    `json:"permission_mode,omitempty"`
 	Cwd             string    `json:"cwd"`
 	ClaudeSessionID string    `json:"claude_session_id,omitempty"`

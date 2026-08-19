@@ -755,6 +755,17 @@ input:focus, select:focus, textarea:focus {
 .tool-result .tool-body { color: var(--dim); }
 .thinking-block > summary { color: var(--thinking); }
 
+/* ---------- partial streaming（--include-partial-messages 的增量气泡） ---------- */
+@keyframes stream-blink { 50% { opacity: 0; } }
+.msg-assistant .bubble.streaming::after,
+.thinking-block .tool-body.streaming::after {
+  content: '▍';
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--accent, #7aa2f7);
+  animation: stream-blink 1s steps(1) infinite;
+}
+
 /* ---------- edit diff view (old_string/new_string 红绿对比) ---------- */
 .tool-body.edit-diff { padding: 0; }
 .diff-view { font-family: var(--font-mono); font-size: var(--fs-sm); }

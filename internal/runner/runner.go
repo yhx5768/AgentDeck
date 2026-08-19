@@ -326,6 +326,9 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	if multimodal {
 		args = append(args, "--input-format", "stream-json")
 	}
+	if cli.PartialMessages && !hasArg(cli.Args, "--include-partial-messages") {
+		args = append(args, "--include-partial-messages")
+	}
 	permMode := sess.PermissionMode
 	if permMode == "" {
 		permMode = cli.PermissionMode
@@ -336,6 +339,9 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	model := prov.EffectiveModel(sess.ModelOverride)
 	if model != "" {
 		args = append(args, "--model", model)
+	}
+	if sess.EffortOverride != "" {
+		args = append(args, "--effort", sess.EffortOverride)
 	}
 	env := cli.EffectiveEnv(prov, model)
 	if sess.ClaudeSessionID != "" {

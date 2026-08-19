@@ -24,8 +24,18 @@ import (
 
 func newID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// validEffort reports whether s is an accepted --effort level.
+func validEffort(s string) bool {
+	for _, v := range []string{"low", "medium", "high", "xhigh", "max"} {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 const cookieName = "ccgw_token"
@@ -157,11 +167,12 @@ func (s *Server) handleCLIs(w http.ResponseWriter, r *http.Request) {
 		Path           string   `json:"path"`
 		Args           []string `json:"args"`
 		PermissionMode string   `json:"permission_mode"`
+		PartialMessages bool    `json:"partial_messages"`
 		EnvKeys        []string `json:"env_keys"`
 	}
 	out := []item{}
 	for _, c := range s.cfg.CLIs {
-		it := item{Name: c.Name, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode}
+		it := item{Name: c.Name, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode, PartialMessages: c.PartialMessages}
 		for k := range c.Env {
 			it.EnvKeys = append(it.EnvKeys, k)
 		}
@@ -326,6 +337,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Provider       string `json:"provider"`
 		Cwd            string `json:"cwd"`
 		Model          string `json:"model"`
+		Effort         string `json:"effort"`
 		PermissionMode string `json:"permission_mode"`
 	}
 	if err := decode(r, &body); err != nil {
@@ -356,6 +368,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "workspace (cwd) is required")
 		return
 	}
+	if body.Effort != "" && !validEffort(body.Effort) {
+		writeErr(w, http.StatusBadRequest, "invalid effort: "+body.Effort)
+		return
+	}
 	now := time.Now()
 	sess := &store.Session{
 		ID:             newID(),
@@ -364,6 +380,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Provider:       body.Provider,
 		Cwd:            body.Cwd,
 		ModelOverride:  body.Model,
+		EffortOverride: body.Effort,
 		PermissionMode: body.PermissionMode,
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -398,6 +415,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		CLI            *string `json:"cli"`
 		Provider       *string `json:"provider"`
 		Model          *string `json:"model"`
+		Effort         *string `json:"effort"`
 		PermissionMode *string `json:"permission_mode"`
 		Archived       *bool   `json:"archived"`
 		SortOrder      *int    `json:"sort_order"`
@@ -425,6 +443,10 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.Effort != nil && *body.Effort != "" && !validEffort(*body.Effort) {
+		writeErr(w, http.StatusBadRequest, "invalid effort: "+*body.Effort)
+		return
+	}
 	err := s.st.Upsert(sess, func(cur *store.Session) {
 		if body.Name != nil {
 			cur.Name = *body.Name
@@ -443,6 +465,9 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.Model != nil {
 			cur.ModelOverride = *body.Model
+		}
+		if body.Effort != nil {
+			cur.EffortOverride = *body.Effort
 		}
 		if body.PermissionMode != nil {
 			cur.PermissionMode = *body.PermissionMode
@@ -861,6 +886,7 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 		CLI:             src.CLI,
 		Provider:        src.Provider,
 		ModelOverride:   src.ModelOverride,
+		EffortOverride:  src.EffortOverride,
 		PermissionMode:  src.PermissionMode,
 		Cwd:             src.Cwd,
 		ClaudeSessionID: forkedID,
