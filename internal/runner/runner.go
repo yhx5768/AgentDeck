@@ -438,11 +438,23 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 			continue // not JSON; ignore
 		}
 		m.emit(sessionID, "stream", obj)
-		// Capture the claude session id so later turns can --resume it.
+		// Capture the claude session id and slash commands from the init event.
 		if obj["type"] == "system" && obj["subtype"] == "init" {
 			if sid, _ := obj["session_id"].(string); sid != "" && sid != sess.ClaudeSessionID {
 				m.st.Upsert(sess, func(s *store.Session) { s.ClaudeSessionID = sid })
 				sess.ClaudeSessionID = sid
+			}
+			if cmds, ok := obj["slash_commands"].([]any); ok && len(cmds) > 0 {
+				names := make([]string, 0, len(cmds))
+				for _, c := range cmds {
+					if name, ok := c.(string); ok && name != "" {
+						names = append(names, name)
+					}
+				}
+				if len(names) > 0 {
+					m.st.Upsert(sess, func(s *store.Session) { s.SlashCommands = names })
+					sess.SlashCommands = names
+				}
 			}
 		}
 	}

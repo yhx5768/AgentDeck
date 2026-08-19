@@ -137,7 +137,11 @@
         <div id="attached-images" class="attached-images"></div>
         <div class="composer-row">
           <button id="btn-attach" class="icon-btn" title="添加图片"><i data-lucide="paperclip"></i></button>
-          <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+          <div class="input-wrapper">
+            <div id="slash-popup" class="slash-popup hidden"></div>
+            <div id="input-mirror" class="input-mirror"></div>
+            <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+          </div>
           <button id="btn-send" class="primary-btn" aria-label="发送"><i data-lucide="send-horizontal"></i><span class="send-label">发送</span></button>
         </div>
         <div class="composer-footer">

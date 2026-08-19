@@ -912,8 +912,53 @@ input:focus, select:focus, textarea:focus {
   background: transparent;
   border-radius: 0;
   box-shadow: none;
+  color: transparent;
+  caret-color: var(--fg);
 }
 #input:focus { box-shadow: none; border-color: transparent; }
+.input-wrapper {
+  position: relative;
+  flex: 1;
+  display: flex;
+}
+.input-mirror {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--fg);
+  font: inherit;
+  line-height: inherit;
+}
+.input-mirror .slash-cmd { color: var(--accent); font-weight: 500; }
+/* slash command popup */
+.slash-popup {
+  position: absolute;
+  bottom: 100%;
+  left: 0; right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 -4px 16px rgba(0,0,0,.15);
+  z-index: 10;
+  margin-bottom: 2px;
+}
+.slash-popup-item {
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--fg);
+  display: flex; align-items: center; gap: var(--sp-2);
+}
+.slash-popup-item .slash-name { color: var(--accent); }
+.slash-popup-item.active { background: var(--accent-dim); }
+.slash-popup-item .slash-desc { color: var(--dim); font-size: var(--fs-xs); }
 #btn-attach {
   align-self: flex-end;
   margin-bottom: 4px;

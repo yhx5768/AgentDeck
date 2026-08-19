@@ -594,6 +594,7 @@ async function openSession(id) {
   // Restore draft (text + images) for this session.
   state.attached = (state.drafts[id] && state.drafts[id].images) || [];
   $('#input').value = (state.drafts[id] && state.drafts[id].text) || '';
+  renderInputMirror();
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 180) + 'px';
   updateStatusUI(s.status);
@@ -1365,6 +1366,9 @@ function renderEvent(ev, box) {
   } else if (ev.kind === 'stream') {
     if (d.type === 'system') {
       if (d.subtype === 'init') {
+        if (Array.isArray(d.slash_commands) && state.current) {
+          state.current.slash_commands = d.slash_commands;
+        }
         const line = document.createElement('div');
         line.className = 'meta-line';
         line.textContent = `session ${String(d.session_id || '').slice(0, 8)} · model ${d.model || '?'} · ${d.cwd || ''}`;
@@ -1469,30 +1473,133 @@ new ResizeObserver(() => {
 }).observe(composerEl);
 syncComposerSpace();
 
-input.addEventListener('input', () => {
+// ---------- slash command autocomplete ----------
+// Slash commands come from the system/init event (persisted server-side in
+// session.SlashCommands, also captured live in renderEvent). We detect `/` at
+// the start of a word, show a filtered popup, and let the user navigate with
+// arrow keys / Tab. Selected commands get a blue highlight in the input via
+// a mirror div behind the transparent-text textarea.
+
+const slashPopup = $('#slash-popup');
+const inputMirror = $('#input-mirror');
+let slashState = { open: false, items: [], active: 0 };
+
+function getSlashCommands() {
+  return (state.current && state.current.slash_commands) || [];
+}
+
+// Find the slash token being typed: `/word` at start of input or after whitespace.
+function currentSlashToken(text, pos) {
+  const before = text.slice(0, pos);
+  const m = before.match(/(?:^|\s)(\/[\w-]*)$/);
+  return m ? { prefix: m[1], start: pos - m[1].length } : null;
+}
+
+function openSlashPopup(filter) {
+  const commands = getSlashCommands();
+  const q = filter.toLowerCase();
+  const items = q ? commands.filter((c) => c.toLowerCase().includes(q)) : commands.slice();
+  if (items.length === 0) { closeSlashPopup(); return; }
+  slashState.open = true;
+  slashState.items = items;
+  slashState.active = 0;
+  slashPopup.innerHTML = '';
+  for (let i = 0; i < items.length; i++) {
+    const el = document.createElement('div');
+    el.className = 'slash-popup-item' + (i === 0 ? ' active' : '');
+    el.innerHTML = `<span class="slash-name">/${escapeHtml(items[i])}</span>`;
+    el.onclick = () => selectSlashItem(i);
+    slashPopup.appendChild(el);
+  }
+  slashPopup.classList.remove('hidden');
+}
+
+function closeSlashPopup() {
+  slashState.open = false;
+  slashState.items = [];
+  slashPopup.classList.add('hidden');
+}
+
+function moveSlashActive(delta) {
+  if (!slashState.open) return;
+  const n = slashState.items.length;
+  slashState.active = (slashState.active + delta + n) % n;
+  for (const el of slashPopup.children) el.classList.remove('active');
+  slashPopup.children[slashState.active].classList.add('active');
+  slashPopup.children[slashState.active].scrollIntoView({ block: 'nearest' });
+}
+
+function selectSlashItem(idx) {
+  if (!slashState.open) return;
+  const name = slashState.items[idx ?? slashState.active];
+  if (!name) return;
+  const text = input.value;
+  const pos = input.selectionStart;
+  const before = text.slice(0, pos);
+  const m = before.match(/(?:^|\s)(\/[\w-]*)$/);
+  if (!m) { closeSlashPopup(); return; }
+  const start = pos - m[1].length;
+  const replacement = (m[0].startsWith(' ') ? ' ' : '') + '/' + name + ' ';
+  const newText = text.slice(0, start) + replacement + text.slice(pos);
+  input.value = newText;
+  const caret = start + replacement.length;
+  input.setSelectionRange(caret, caret);
+  input.focus();
+  closeSlashPopup();
+  onInputChange();
+}
+
+// Render the mirror: slash command tokens that match known commands get blue.
+function renderInputMirror() {
+  const text = input.value;
+  const commands = getSlashCommands();
+  if (!commands.length || !text) { inputMirror.innerHTML = ''; return; }
+  const cmdSet = new Set(commands);
+  const parts = text.split(/(\s+)/);
+  let html = '';
+  for (const part of parts) {
+    if (part.startsWith('/') && cmdSet.has(part.slice(1))) {
+      html += `<span class="slash-cmd">${escapeHtml(part)}</span>`;
+    } else {
+      html += escapeHtml(part);
+    }
+  }
+  inputMirror.innerHTML = html;
+  inputMirror.scrollTop = input.scrollTop;
+}
+
+function onInputChange() {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 180) + 'px';
   if (state.current) draft().text = input.value;
-});
+  // Slash popup detection
+  const tok = currentSlashToken(input.value, input.selectionStart);
+  if (tok) {
+    const filter = tok.prefix.slice(1); // without the leading /
+    openSlashPopup(filter);
+  } else {
+    closeSlashPopup();
+  }
+  renderInputMirror();
+}
+
+input.addEventListener('input', onInputChange);
+input.addEventListener('scroll', renderInputMirror);
 input.addEventListener('keydown', (e) => {
+  if (slashState.open) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveSlashActive(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); moveSlashActive(-1); return; }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      e.preventDefault(); selectSlashItem(); return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); closeSlashPopup(); return; }
+  }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     sendMessage();
   }
 });
-$('#btn-send').onclick = sendMessage;
-
-// ---------- attachments ----------
-const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-const MAX_IMAGES = 4;
-const MAX_BYTES = 10 * 1024 * 1024; // 10MB per image
-
-$('#btn-attach').onclick = () => $('#file-input').click();
-$('#file-input').addEventListener('change', async (e) => {
-  await attachFiles([...e.target.files]);
-  e.target.value = '';
-});
-
+input.addEventListener('blur', () => { setTimeout(closeSlashPopup, 200); });
 input.addEventListener('paste', async (e) => {
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
@@ -1507,6 +1614,19 @@ input.addEventListener('paste', async (e) => {
     e.preventDefault();
     await attachFiles(files);
   }
+});
+
+$('#btn-send').onclick = sendMessage;
+
+// ---------- attachments ----------
+const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const MAX_IMAGES = 4;
+const MAX_BYTES = 10 * 1024 * 1024; // 10MB per image
+
+$('#btn-attach').onclick = () => $('#file-input').click();
+$('#file-input').addEventListener('change', async (e) => {
+  await attachFiles([...e.target.files]);
+  e.target.value = '';
 });
 
 input.addEventListener('dragover', (e) => {
@@ -1582,6 +1702,7 @@ async function sendMessage() {
   appendOptimisticUser(text, state.attached);
   input.value = '';
   input.style.height = 'auto';
+  renderInputMirror();
   state.attached = [];
   if (state.current) { draft().text = ''; draft().images = []; }
   renderAttachedThumbs();

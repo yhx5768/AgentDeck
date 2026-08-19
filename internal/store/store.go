@@ -22,6 +22,7 @@ type Session struct {
 	PermissionMode  string    `json:"permission_mode,omitempty"`
 	Cwd             string    `json:"cwd"`
 	ClaudeSessionID string    `json:"claude_session_id,omitempty"`
+	SlashCommands  []string  `json:"slash_commands,omitempty"`
 	Archived        bool      `json:"archived"`
 	SortOrder       int       `json:"sort_order"`
 	CreatedAt       time.Time `json:"created_at"`

@@ -9,6 +9,7 @@
 
 - [x] **流式增量渲染**（`--include-partial-messages`）—— 打字机式逐 token 输出，含 thinking/text delta 增量渲染、与完整 assistant 事件去重、中断兜底固化。
 - [x] **思考努力度**（`--effort`）—— profile 行 model 右侧推理等级下拉（继承/low/medium/high/xhigh/max），sheet/新建弹窗/ns 内联同步，后端校验+传递 flag。
+- [x] **Slash command 自动补全**（`init.slash_commands`）—— 输入 `/` 触发 popup，按文本过滤，↑↓+Tab/Enter 选中，选中命令蓝色高亮（mirror overlay 技法），slash_commands 从 init 事件捕获并持久化到 session。
 
 ---
 
