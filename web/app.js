@@ -75,7 +75,7 @@ const state = {
   replaying: false,    // true until the server sends the replay_end marker
   stats: null,         // {turns, steps, firstTs, lastTs} for the current session
   live: null,          // live partial-stream state: {msgId, blocks:[{kind,el,bodyEl,buf,done,taken,raf}]}
-  slashCommandsCache: {}, // cli name -> slash_commands[] (fallback for sessions without init yet)
+  slashCommandsCache: (() => { try { return JSON.parse(localStorage.getItem('cc-webui:slash-cache') || '{}'); } catch { return {}; } })(),
 };
 
 // 切换会话时首屏只渲染最新 N 条事件，向上滚动点「加载更多」再翻页
@@ -1369,7 +1369,9 @@ function renderEvent(ev, box) {
       if (d.subtype === 'init') {
         if (Array.isArray(d.slash_commands) && state.current) {
           state.current.slash_commands = d.slash_commands;
-          state.slashCommandsCache[state.current.cli] = d.slash_commands;
+          const key = (state.current.cli || '') + '\x00' + (state.current.cwd || '');
+          state.slashCommandsCache[key] = d.slash_commands;
+          try { localStorage.setItem('cc-webui:slash-cache', JSON.stringify(state.slashCommandsCache)); } catch (_) {}
         }
         const line = document.createElement('div');
         line.className = 'meta-line';
@@ -1488,7 +1490,8 @@ let slashState = { open: false, items: [], active: 0 };
 
 function getSlashCommands() {
   if (!state.current) return [];
-  return state.current.slash_commands || state.slashCommandsCache[state.current.cli] || [];
+  const key = (state.current.cli || '') + '\x00' + (state.current.cwd || '');
+  return state.current.slash_commands || state.slashCommandsCache[key] || [];
 }
 
 // Find the slash token being typed: `/word` at start of input or after whitespace.
