@@ -25,6 +25,7 @@ cc-webui 是 Claude Code（以及任何兼容 CLI）的 Web 控制台。它把�
 | 导入已有会话 | 扫描 `~/.claude/projects`，把本地历史会话一键接进 Web UI 继续聊。 |
 | 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。CLI 开启 `partial_messages` 后支持打字机式逐 token 增量渲染（`--include-partial-messages`）。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块。 |
+| 轨迹视图 | 会话内「轨迹」tab 把同一份事件流投影成按轮(turn)分组的台账：折叠/展开轮次、按角色（用户/助手/工具）筛选、关键词搜索，点开单条记录看 summary / preview / raw 三档详情。对话流之外的另一种审阅视角。 |
 | 本地文件预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`），右侧面板只读打开并自动跳转到对应行号。 |
 | 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 claude transcript 一并截断，消息文本回填输入框重发。等价 TUI 双击 Esc。Bash 改的文件无法回滚。 |
 | TUI 与 Web 自由切换 | 每个会话都有 session id，点「resume」复制命令即可回到 TUI 继续跟进，Web 里做的一切状态都在。 |
