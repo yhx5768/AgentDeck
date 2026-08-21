@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"cc-webui/internal/claudehist"
 	"cc-webui/internal/config"
 	"cc-webui/internal/store"
 )
@@ -82,6 +84,42 @@ func (m *Manager) GetStatus(sessionID string) Status {
 	return Status{Running: r.cancel != nil, Queued: len(r.queue), LastError: r.lastErr}
 }
 
+// LockForRewind atomically marks the session busy (so no turn can start) if it
+// is currently idle. Returns false if a turn is running/queued (caller should
+// 409). The rewind holds this lock so a message sent mid-rewind queues but
+// doesn't start a worker that would race the truncation. Pair with
+// UnlockFromRewind.
+func (m *Manager) LockForRewind(sessionID string) bool {
+	r := m.rt(sessionID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cancel != nil || r.working || len(r.queue) > 0 {
+		return false
+	}
+	r.working = true
+	r.cancel = func() {} // sentinel: GetStatus reports running while rewinding
+	r.notifyStatus()
+	return true
+}
+
+// UnlockFromRewind releases the rewind lock and, if a message was queued during
+// the rewind, starts the worker to drain it.
+func (m *Manager) UnlockFromRewind(sessionID string) {
+	r := m.rt(sessionID)
+	r.mu.Lock()
+	r.cancel = nil
+	r.working = false
+	r.notifyStatus()
+	start := len(r.queue) > 0
+	if start {
+		r.working = true
+	}
+	r.mu.Unlock()
+	if start {
+		go m.work(sessionID)
+	}
+}
+
 // StatusChanges returns a channel closed on the next status change (for polling/SSE).
 func (m *Manager) StatusChanges(sessionID string) <-chan struct{} {
 	r := m.rt(sessionID)
@@ -124,7 +162,7 @@ func (m *Manager) emit(sessionID, kind string, data any) {
 		log.Printf("append event: %v", err)
 		return
 	}
-	m.broadcastEvent(sessionID, ev)
+	m.BroadcastEvent(sessionID, ev)
 }
 
 // broadcast sends a transient event (not persisted) to subscribers with a
@@ -147,7 +185,9 @@ func (m *Manager) broadcast(sessionID, kind string, data any) {
 	}
 }
 
-func (m *Manager) broadcastEvent(sessionID string, ev *store.Event) {
+// BroadcastEvent sends an already-persisted event to all subscribers of a
+// session (used by rewind to fan out the marker after truncating the log).
+func (m *Manager) BroadcastEvent(sessionID string, ev *store.Event) {
 	r := m.rt(sessionID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -299,6 +339,32 @@ func (m *Manager) settingsFile(cliName, providerName, modelName string, env map[
 	return path, nil
 }
 
+// buildEnvMap builds the process environment for a claude spawn: the parent
+// env, the CLI/provider/model env, and file checkpointing unconditionally
+// enabled. Checkpointing is on for every turn so any user message can later be
+// rewound (files restored by the CLI, conversation truncated by cc-webui).
+func buildEnvMap(env map[string]string) map[string]string {
+	envMap := map[string]string{}
+	for _, kv := range os.Environ() {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			envMap[kv[:i]] = kv[i+1:]
+		}
+	}
+	for k, v := range env {
+		envMap[k] = v
+	}
+	envMap["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
+	return envMap
+}
+
+func envMapToSlice(envMap map[string]string) []string {
+	out := make([]string, 0, len(envMap))
+	for k, v := range envMap {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
 // runTurn spawns one claude process for a single user message. If the
 // message contains images, claude is invoked with --input-format
 // stream-json and the message is encoded as a single JSON user message
@@ -369,19 +435,8 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 		}
 		return nil
 	}
-	envMap := map[string]string{}
-	for _, kv := range os.Environ() {
-		if i := strings.IndexByte(kv, '='); i > 0 {
-			envMap[kv[:i]] = kv[i+1:]
-		}
-	}
-	for k, v := range env {
-		envMap[k] = v
-	}
-	cmd.Env = make([]string, 0, len(envMap))
-	for k, v := range envMap {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	envMap := buildEnvMap(env)
+	cmd.Env = envMapToSlice(envMap)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -476,5 +531,178 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	default:
 		m.emit(sessionID, "status", map[string]string{"state": "turn_end"})
 		m.setIdle(sessionID, "")
+		// Attach the file-checkpoint uuid to this turn's user event so the UI
+		// can offer a rewind. Best-effort: silent on failure (no button).
+		m.captureCheckpoint(sessionID, msg, sess)
 	}
+}
+
+// captureCheckpoint finds the uuid claude logged for this turn's user prompt,
+// writes it into the corresponding user event (data.checkpoint), and notifies
+// connected clients to attach a rewind button to the last rendered user msg.
+// No-op for multimodal/image-only messages (no matchable text) or if the uuid
+// can't be found.
+func (m *Manager) captureCheckpoint(sessionID string, msg Message, sess *store.Session) {
+	if sess.ClaudeSessionID == "" || strings.TrimSpace(msg.Text) == "" {
+		return
+	}
+	uuid := claudehist.LastUserUUID(sess.Cwd, sess.ClaudeSessionID, msg.Text)
+	if uuid == "" {
+		return
+	}
+	events, err := m.st.Events(sessionID)
+	if err != nil {
+		return
+	}
+	var userSeq int64 = -1
+	for _, ev := range events {
+		if ev.Kind == "user" {
+			userSeq = ev.Seq // the most recent user event is this turn's
+		}
+	}
+	if userSeq < 0 {
+		return
+	}
+	if _, err := m.st.UpdateEvent(sessionID, userSeq, func(ev *store.Event) {
+		var d map[string]string
+		if json.Unmarshal(ev.Data, &d) != nil {
+			d = map[string]string{}
+		}
+		d["checkpoint"] = uuid
+		raw, _ := json.Marshal(d)
+		ev.Data = raw
+	}); err != nil {
+		log.Printf("capture checkpoint: %v", err)
+		return
+	}
+	// Transient live notification: connected clients attach a rewind button to
+	// their last rendered user message. On reconnect the button comes from the
+	// persisted data.checkpoint in the replayed user event.
+	m.broadcast(sessionID, "checkpoint", map[string]string{"checkpoint": uuid})
+}
+
+// RewindFiles spawns a one-shot claude process to rewind the session's files to
+// the state at the given checkpoint uuid (a user-message uuid). It returns a
+// short human-readable detail string and an error if the rewind failed (CLI
+// stderr is surfaced). Does not touch the conversation.
+func (m *Manager) RewindFiles(sess *store.Session, checkpoint string) (string, error) {
+	if sess.ClaudeSessionID == "" {
+		return "", fmt.Errorf("session has no claude session id")
+	}
+	cli := m.cfg.CLIByName(sess.CLI)
+	if cli == nil {
+		return "", fmt.Errorf("cli not found: %s", sess.CLI)
+	}
+	prov := m.cfg.ProviderByName(sess.Provider)
+	model := ""
+	var env map[string]string
+	if prov != nil {
+		model = prov.EffectiveModel(sess.ModelOverride)
+		env = cli.EffectiveEnv(prov, model)
+	}
+	args := []string{
+		"-p", "--resume", sess.ClaudeSessionID,
+		"--rewind-files", checkpoint,
+		"--output-format", "json",
+	}
+	args = append(args, cli.Args...)
+	if len(env) > 0 && !hasArg(args, "--settings") {
+		if p, err := m.settingsFile(cli.Name, prov.Name, model, env); err == nil {
+			args = append(args, "--settings", p)
+		} else {
+			log.Printf("settings file for rewind %s/%s/%s: %v", cli.Name, prov.Name, model, err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, cli.Path, args...)
+	cmd.Dir = sess.Cwd
+	cmd.Env = envMapToSlice(buildEnvMap(env))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	// No prompt: --rewind-files performs the restore and exits. Close stdin
+	// immediately (mirrors the SDK's empty-prompt rewind pattern).
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return "", fmt.Errorf("stdin: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("start claude: %w", err)
+	}
+	stdin.Close()
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("rewind timed out")
+	}
+	if waitErr != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = waitErr.Error()
+		}
+		return "", fmt.Errorf("%s", errMsg)
+	}
+	return parseRewindDetail(stdout.String()), nil
+}
+
+// parseRewindDetail extracts a short summary from the --rewind-files CLI output.
+// The flag is undocumented, so parse defensively: scan JSON lines for a result
+// or rewind-result object; fall back to a generic success message.
+func parseRewindDetail(stdout string) string {
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var obj map[string]any
+		if json.Unmarshal([]byte(line), &obj) != nil {
+			continue
+		}
+		if r, ok := obj["rewind_files_result"].(map[string]any); ok {
+			if s := summarizeRewindResult(r); s != "" {
+				return s
+			}
+		}
+		if t, _ := obj["type"].(string); t == "result" {
+			if isErr, _ := obj["is_error"].(bool); isErr {
+				if sub, _ := obj["subtype"].(string); sub != "" {
+					return sub
+				}
+			}
+		}
+	}
+	return "文件已回滚"
+}
+
+// summarizeRewindResult turns a rewind result object into a zh summary. Field
+// names are speculative (the schema is undocumented); unknown shapes fall back
+// to the empty string so the caller uses the generic message.
+func summarizeRewindResult(r map[string]any) string {
+	count := func(keys ...string) int {
+		for _, k := range keys {
+			if v, ok := r[k]; ok {
+				switch n := v.(type) {
+				case int:
+					return n
+				case float64:
+					return int(n)
+				case []any:
+					return len(n)
+				}
+			}
+		}
+		return 0
+	}
+	var parts []string
+	if n := count("restored_files", "restored", "modified"); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个文件恢复", n))
+	}
+	if n := count("deleted_files", "deleted", "created"); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个新建文件删除", n))
+	}
+	if n := count("skipped_links", "skippedLinks", "skipped"); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个跳过", n))
+	}
+	return strings.Join(parts, "，")
 }

@@ -123,7 +123,7 @@ function renderIcons(root) {
     'more-horizontal', 'archive', 'archive-restore', 'git-fork',
     'settings-2', 'arrow-up',
     'menu', 'more-vertical', 'send-horizontal', 'folder',
-    'panel-left-close', 'panel-left-open',
+    'panel-left-close', 'panel-left-open', 'list-collapse',
   ];
   // lucide 自动 kebab→Pascal，所以 icons map 的 key 也用 PascalCase
   const toPascal = (s) =>
@@ -189,6 +189,13 @@ function timeAgo(ts) {
   if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
   return d.toLocaleDateString();
+}
+
+function formatMsgTime(ts) {
+  const d = ts ? new Date(ts) : new Date();
+  if (isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 function shortenPath(p) {
@@ -579,6 +586,8 @@ async function openSession(id) {
   state.live = null;
   state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
   updateStatsUI();
+  trajReset();
+  switchChatTab('chat');
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#chat-view').classList.remove('hidden');
@@ -605,6 +614,23 @@ async function openSession(id) {
   renderSessionList();
   connectEvents(id);
 }
+
+// ---------- 对话 / 轨迹 tab ----------
+// 轨迹视图（trajectory.js）复用同一份事件流投影成台账；composer 仅在对话页显示，
+// 切到轨迹页时隐藏。
+function switchChatTab(tab) {
+  document.querySelectorAll('.chat-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  const isTraj = tab === 'traj';
+  $('#messages').classList.toggle('hidden', isTraj);
+  $('#traj-view').classList.toggle('hidden', !isTraj);
+  $('#composer').classList.toggle('hidden', isTraj);
+  if (isTraj) trajShow();
+}
+document.querySelectorAll('.chat-tab').forEach((b) => {
+  b.onclick = () => switchChatTab(b.dataset.tab);
+});
 
 // 在没有 cwd 时禁用 composer
 function applyWorkspaceGate(cwd) {
@@ -675,12 +701,35 @@ function connectEvents(id) {
   if (state.es) state.es.close();
   const es = new EventSource(`/api/sessions/${id}/events`);
   state.es = es;
+  // 服务端每条连接的 seq 都从 1 重新编号，而 seenSeq 跨重连保留：EventSource
+  // 自动重连后（网络抖动/服务重启/切后台），新 live 事件的 seq 与旧的撞车会被
+  // 当重复事件静默丢弃，流式就此"死掉"。重连时重置视图状态，让新的全量回放重建。
+  let opened = false;
+  es.onopen = () => {
+    if (opened) resetChatForReplay();
+    opened = true;
+  };
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (state.seenSeq.has(ev.seq)) return;
     state.seenSeq.add(ev.seq);
     if (ev.kind === 'replay_end') {
       flushHistory();
+      trajOnEvent(); // 回放补齐轨迹投影（若轨迹页开着）
+      return;
+    }
+    // Live checkpoint notification: attach a rewind button to the last user
+    // message (the turn just ended). Transient — not in replay history; the
+    // button is persisted in the user event's data.checkpoint for reconnects.
+    if (ev.kind === 'checkpoint') {
+      attachCheckpointToLastUser(ev.data && ev.data.checkpoint);
+      return;
+    }
+    // Live rewind broadcast: truncate the UI + show a marker. Replay-time
+    // rewind events (already truncated server-side) fall through to render as
+    // a history marker via renderEvent.
+    if (ev.kind === 'rewind' && !state.replaying) {
+      applyRewindInUI(ev, false);
       return;
     }
     trackStats(ev);
@@ -691,9 +740,34 @@ function connectEvents(id) {
       return;
     }
     renderEvent(ev);
+    // live 事件同样进入 historyBuf，作为轨迹视图的数据源；
+    // stream_event 增量太多且轨迹用不到（完整 assistant 事件兜底），不入。
+    if (ev.kind !== 'stream' || !ev.data || ev.data.type !== 'stream_event') {
+      state.historyBuf.push(ev);
+      trajOnEvent();
+    }
     scrollBottom();
     updateStatsUI();
   };
+}
+
+// EventSource 重连后重置会话视图：清空已渲染消息与 seq 去重集合，让服务端
+// 新一轮全量回放重建视图（回放覆盖所有已持久化事件，不会丢内容；进行中的
+// 流式消息由后续完整 assistant 事件兜底）。乐观气泡保留在末尾。
+function resetChatForReplay() {
+  const box = $('#messages');
+  const optimistic = [...box.querySelectorAll('.msg-optimistic')];
+  box.innerHTML = '';
+  for (const n of optimistic) box.appendChild(n);
+  state.seenSeq = new Set();
+  state.toolBlocks = {};
+  state.historyBuf = [];
+  state.histRenderedFrom = 0;
+  state.replaying = true;
+  state.live = null;
+  state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
+  trajReset();
+  updateLoadMoreBtn();
 }
 
 // ---------- session stats (轮数 / 步数 / 累计耗时) ----------
@@ -831,14 +905,19 @@ function updateStatusUI(st) {
   const badge = $('#status-badge');
   const stopBtn = $('#btn-stop');
   const hint = $('#queue-hint');
+  const spinner = $('#composer-spinner');
+  // Grey out rewind buttons while a turn is in flight (the API also 409s).
+  document.body.classList.toggle('session-running', !!(st && st.running));
   if (st.running) {
     badge.textContent = '● 运行中';
     badge.className = 'status-badge running';
     stopBtn.classList.remove('hidden');
+    if (spinner) spinner.classList.remove('hidden');
   } else {
     badge.textContent = '';
     badge.className = 'status-badge';
     stopBtn.classList.add('hidden');
+    if (spinner) spinner.classList.add('hidden');
   }
   hint.textContent = st.queued > 0 ? `队列中还有 ${st.queued} 条消息` : '';
 }
@@ -853,14 +932,163 @@ $('#messages').addEventListener('scroll', () => {
   state.nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
 });
 
-function addMsg(cls, roleTag, box) {
+function addMsg(cls, roleTag, box, ts) {
   box = box || $('#messages');
   const div = document.createElement('div');
   div.className = `msg ${cls}`;
-  div.innerHTML = `<div class="role-tag">${roleTag}</div><div class="bubble"></div>`;
+  const timeStr = ts ? formatMsgTime(ts) : '';
+  const timeHTML = timeStr ? `<span class="msg-time">${timeStr}</span>` : '';
+  div.innerHTML = `<div class="role-tag">${roleTag}${timeHTML}</div><div class="bubble"></div>`;
   box.appendChild(div);
   return div.querySelector('.bubble');
 }
+
+// ---------- rewind (file checkpoint + conversation truncation) ----------
+// Each user message whose event carries data.checkpoint gets a ⏪ button.
+// Clicking confirms, then POST /rewind: the CLI restores files, the server
+// truncates both claude's jsonl and our event log, and broadcasts a `rewind`
+// event. Live clients truncate their UI; the initiator also refills the
+// composer with the rolled-back message text.
+
+function addRewindBtn(msgDiv) {
+  if (msgDiv.querySelector('.rewind-btn')) return;
+  const btn = document.createElement('button');
+  btn.className = 'rewind-btn';
+  btn.type = 'button';
+  btn.title = '回滚到这条消息之前';
+  btn.innerHTML = '<i data-lucide="rotate-ccw"></i><span>回滚</span>';
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    if (document.body.classList.contains('session-running')) return;
+    openRewindModal(msgDiv);
+  };
+  msgDiv.appendChild(btn);
+  renderIcons(btn);
+}
+
+// Live checkpoint event → attach a button to the most recently rendered user
+// message (the turn that just ended). Safe because the next user message can't
+// be enqueued until this turn's cleanup (incl. this broadcast) finishes.
+function attachCheckpointToLastUser(checkpoint) {
+  if (!checkpoint) return;
+  const msgs = $('#messages').querySelectorAll('.msg-user');
+  if (!msgs.length) return;
+  const last = msgs[msgs.length - 1];
+  if (last.dataset.checkpoint) return; // already rewound-able
+  last.dataset.checkpoint = checkpoint;
+  addRewindBtn(last);
+}
+
+function appendRewindMarker(box, checkpoint, detail) {
+  const marker = document.createElement('div');
+  marker.className = 'rewind-marker';
+  if (checkpoint) marker.dataset.checkpoint = checkpoint;
+  marker.innerHTML = '<span class="rm-icon">⏪</span><span class="rm-text"></span>';
+  marker.querySelector('.rm-text').textContent = '已回滚到此处' + (detail ? ' · ' + detail : '');
+  box.appendChild(marker);
+}
+
+// Apply a rewind to the live UI: drop the target user message and everything
+// after it (DOM + historyBuf), re-project the trajectory, render a marker, and
+// optionally refill the composer (only the initiating client passes refill).
+// Idempotent on the checkpoint uuid.
+function applyRewindInUI(ev, refill) {
+  const d = (ev && ev.data) || {};
+  const checkpoint = d.checkpoint;
+  if (!checkpoint) return;
+  const box = $('#messages');
+  if (box.querySelector(`.rewind-marker[data-checkpoint="${checkpoint}"]`)) {
+    if (refill && d.draft_text) setDraftText(d.draft_text);
+    return;
+  }
+  // DOM: remove the target user message and all following siblings.
+  const target = box.querySelector(`.msg-user[data-checkpoint="${checkpoint}"]`);
+  if (target) {
+    let node = target;
+    while (node) {
+      const next = node.nextElementSibling;
+      node.remove();
+      node = next;
+    }
+  }
+  // Model: truncate historyBuf at the target user event, then make the rewind
+  // event the new tail so reconnect replay would match.
+  const buf = state.historyBuf;
+  let cutAt = buf.length;
+  for (let i = 0; i < buf.length; i++) {
+    const e = buf[i];
+    if (e.kind === 'user' && e.data && e.data.checkpoint === checkpoint) { cutAt = i; break; }
+  }
+  buf.splice(cutAt);
+  buf.push(ev);
+  trajReset();
+  trajSync();
+  if (trajActive()) trajRender();
+  appendRewindMarker(box, checkpoint, d.detail);
+  box.querySelectorAll('.msg-optimistic').forEach((n) => n.remove());
+  state.nearBottom = true;
+  scrollBottom();
+  updateLoadMoreBtn();
+  // Recompute stats from the truncated buffer.
+  state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
+  for (const e of buf) trackStats(e);
+  updateStatsUI();
+  if (refill && d.draft_text) setDraftText(d.draft_text);
+}
+
+function setDraftText(text) {
+  if (!state.current) return;
+  input.value = text;
+  draft().text = text;
+  renderInputMirror();
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+  input.focus();
+}
+
+let rewindTarget = null; // {checkpoint, text} for the in-flight confirm modal
+function openRewindModal(msgDiv) {
+  const bubble = msgDiv.querySelector('.bubble');
+  rewindTarget = {
+    checkpoint: msgDiv.dataset.checkpoint,
+    text: (bubble && bubble.textContent) || '',
+  };
+  const firstLine = (rewindTarget.text.split('\n').map((s) => s.trim()).find(Boolean) || '').slice(0, 120);
+  $('#rewind-preview').textContent = firstLine || '(空)';
+  openModal('#modal-rewind');
+}
+
+$('#rewind-submit').onclick = async () => {
+  if (!rewindTarget || !state.current) return;
+  const btn = $('#rewind-submit');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '回滚中…';
+  try {
+    const res = await api(`/api/sessions/${state.current.id}/rewind`, {
+      method: 'POST',
+      body: JSON.stringify({ checkpoint: rewindTarget.checkpoint }),
+    });
+    $('#modal-rewind').classList.add('hidden');
+    // Apply locally immediately (the SSE rewind broadcast keeps other clients
+    // in sync and is a no-op here thanks to idempotency).
+    applyRewindInUI({ kind: 'rewind', data: {
+      checkpoint: rewindTarget.checkpoint,
+      detail: res.files,
+      draft_text: res.draft_text,
+    } }, true);
+  } catch (e) {
+    let msg = e.message || '回滚失败';
+    if (/No file checkpoint found|not enabled|File rewinding/i.test(msg)) {
+      msg = '该会话未开启文件 checkpoint（或 CLI 版本过低），无法回滚';
+    }
+    alert(msg);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+    rewindTarget = null;
+  }
+};
 
 function toolSummary(input) {
   if (!input || typeof input !== 'object') return '';
@@ -877,7 +1105,7 @@ function toolSummary(input) {
   return keys.length ? JSON.stringify(input).slice(0, 120) : '';
 }
 
-function renderToolUse(block, box) {
+function renderToolUse(block, box, ts) {
   const details = document.createElement('details');
   details.className = 'tool-block';
   const summary = document.createElement('summary');
@@ -890,7 +1118,7 @@ function renderToolUse(block, box) {
     body.textContent = JSON.stringify(block.input, null, 2);
   }
   details.append(summary, body);
-  wrapInMsg(details, box);
+  wrapInMsg(details, box, ts);
   state.toolBlocks[block.id] = details;
 }
 
@@ -1221,14 +1449,14 @@ $('#fv-copy').onclick = async (e) => {
   } catch (_) {}
 };
 
-function wrapInMsg(node, box) {
+function wrapInMsg(node, box, ts) {
   // Attach to the last assistant message if present, else create one.
   const msgs = box || $('#messages');
   const last = msgs.lastElementChild;
   if (last && last.classList.contains('msg-assistant')) {
     last.querySelector('.bubble').appendChild(node);
   } else {
-    addMsg('msg-assistant', 'claude', msgs).appendChild(node);
+    addMsg('msg-assistant', 'claude', msgs, ts).appendChild(node);
   }
 }
 
@@ -1297,7 +1525,7 @@ function liveFinalizeAll() {
   state.live = null;
 }
 
-function renderStreamEvent(d, box) {
+function renderStreamEvent(d, box, ts) {
   const ev = d.event;
   if (!ev || typeof ev !== 'object') return;
   switch (ev.type) {
@@ -1310,7 +1538,7 @@ function renderStreamEvent(d, box) {
       const l = state.live;
       if (l && l.cur) liveFinalizeBlock(l.cur); // 新 block 开始，固化上一个（覆盖 text→text 等连续场景）
       if (cb.type === 'text') {
-        const bubble = addMsg('msg-assistant', 'claude', box);
+        const bubble = addMsg('msg-assistant', 'claude', box, ts);
         bubble.classList.add('streaming');
         const b = { kind: 'text', el: bubble.parentElement, bodyEl: bubble, buf: cb.text || '', done: false, taken: false, raf: null };
         livePush(b);
@@ -1324,7 +1552,7 @@ function renderStreamEvent(d, box) {
         const body = document.createElement('div');
         body.className = 'tool-body streaming';
         details.append(summary, body);
-        wrapInMsg(details, box);
+        wrapInMsg(details, box, ts);
         const b = { kind: 'thinking', el: details, bodyEl: body, buf: cb.thinking || '', done: false, taken: false, raf: null };
         livePush(b);
         liveSchedulePaint(b);
@@ -1357,13 +1585,24 @@ function renderStreamEvent(d, box) {
 function renderEvent(ev, box) {
   box = box || $('#messages');
   const d = ev.data;
+  if (ev.kind === 'rewind') {
+    // Replay-time marker: the server already truncated history, so just render.
+    appendRewindMarker(box, d && d.checkpoint, d && d.detail);
+    return;
+  }
   if (ev.kind === 'user') {
     // Replace any pending optimistic bubble with the authoritative one
     // (which contains only text — images are not stored in events).
     const last = box.lastElementChild;
     if (last && last.classList.contains('msg-optimistic')) last.remove();
-    const bubble = addMsg('msg-user', '你', box);
+    const bubble = addMsg('msg-user', '你', box, ev.ts);
     bubble.textContent = d.text;
+    // A checkpoint uuid means this message can be rewound (files + dialogue).
+    if (d && d.checkpoint) {
+      const msgDiv = bubble.parentElement;
+      msgDiv.dataset.checkpoint = d.checkpoint;
+      addRewindBtn(msgDiv);
+    }
   } else if (ev.kind === 'stream') {
     if (d.type === 'system') {
       if (d.subtype === 'init') {
@@ -1385,10 +1624,10 @@ function renderEvent(ev, box) {
         if (block.type === 'text' && block.text) {
           const lb = liveTake('text');
           if (lb) lb.el.remove(); // 完整版替换 live 气泡，避免重复
-          const bubble = addMsg('msg-assistant', 'claude', box);
+          const bubble = addMsg('msg-assistant', 'claude', box, ev.ts);
           bubble.innerHTML = md(block.text);
         } else if (block.type === 'tool_use') {
-          renderToolUse(block, box);
+          renderToolUse(block, box, ev.ts);
         } else if (block.type === 'thinking') {
           const lb = liveTake('thinking');
           if (block.thinking) {
@@ -1401,14 +1640,14 @@ function renderEvent(ev, box) {
             body.className = 'tool-body';
             body.textContent = block.thinking;
             details.append(summary, body);
-            wrapInMsg(details, box);
+            wrapInMsg(details, box, ev.ts);
           } else if (lb) {
             liveFinalizeBlock(lb); // 完整版被后端 strip 成空，保留 live 版
           }
         }
       }
     } else if (d.type === 'stream_event') {
-      renderStreamEvent(d, box);
+      renderStreamEvent(d, box, ev.ts);
     } else if (d.type === 'user' && d.message && Array.isArray(d.message.content)) {
       for (const block of d.message.content) {
         if (block && block.type === 'tool_result') renderToolResult(block, box);
@@ -1466,9 +1705,12 @@ const input = $('#input');
 // covers the bottom of the last messages.
 const composerEl = $('#composer');
 const messagesEl = $('#messages');
+const trajViewEl = $('#traj-view');
 function syncComposerSpace() {
   const gap = parseFloat(getComputedStyle(composerEl).bottom) || 0;
-  messagesEl.style.paddingBottom = `${composerEl.offsetHeight + gap + 8}px`;
+  const pad = `${composerEl.offsetHeight + gap + 8}px`;
+  messagesEl.style.paddingBottom = pad;
+  if (trajViewEl) trajViewEl.style.paddingBottom = pad;
 }
 new ResizeObserver(() => {
   syncComposerSpace();
@@ -1735,7 +1977,7 @@ async function sendMessage() {
 }
 
 function appendOptimisticUser(text, images) {
-  const bubble = addMsg('msg-user msg-optimistic', '你');
+  const bubble = addMsg('msg-user msg-optimistic', '你', null, new Date());
   if (images && images.length) {
     for (const img of images) {
       const im = document.createElement('img');
@@ -1867,8 +2109,55 @@ $('#btn-delete').onclick = async () => {
   loadSessions();
 };
 
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle('sidebar-collapsed', collapsed);
+}
 $('#btn-collapse').onclick = () => setSidebarCollapsed(true);
 $('#btn-expand').onclick = () => setSidebarCollapsed(false);
+
+// ---------- sidebar drag-to-resize ----------
+(function initSidebarResize() {
+  const splitter = $('#sidebar-splitter');
+  const sidebar = $('#sidebar');
+  if (!splitter || !sidebar) return;
+  const KEY = 'cc-webui-sidebar-width';
+  const MIN = 220, MAX = 480;
+  const saved = parseInt(localStorage.getItem(KEY), 10);
+  if (saved >= MIN && saved <= MAX) {
+    sidebar.style.width = saved + 'px';
+    sidebar.style.minWidth = saved + 'px';
+  }
+  let dragging = false, startX = 0, startW = 0;
+  splitter.addEventListener('pointerdown', (e) => {
+    if (document.body.classList.contains('sidebar-collapsed')) return;
+    dragging = true;
+    startX = e.clientX;
+    startW = sidebar.getBoundingClientRect().width;
+    splitter.setPointerCapture(e.pointerId);
+    splitter.classList.add('dragging');
+    sidebar.style.transition = 'none';
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  splitter.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const w = Math.min(MAX, Math.max(MIN, startW + e.clientX - startX));
+    sidebar.style.width = w + 'px';
+    sidebar.style.minWidth = w + 'px';
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove('dragging');
+    sidebar.style.transition = '';
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    const w = Math.round(parseFloat(sidebar.style.width));
+    if (w >= MIN && w <= MAX) localStorage.setItem(KEY, w);
+  };
+  splitter.addEventListener('pointerup', end);
+  splitter.addEventListener('pointercancel', end);
+})();
 
 // ---------- modals ----------
 function openModal(sel) { $(sel).classList.remove('hidden'); }

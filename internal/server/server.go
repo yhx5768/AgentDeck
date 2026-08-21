@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -77,6 +78,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/claude-sessions", s.auth(s.handleClaudeSessions))
 	s.mux.Handle("POST /api/sessions/import", s.auth(s.handleImport))
 	s.mux.Handle("POST /api/sessions/{id}/fork", s.auth(s.handleFork))
+	s.mux.Handle("POST /api/sessions/{id}/rewind", s.auth(s.handleRewind))
 	s.mux.Handle("GET /api/files", s.auth(s.handleReadFile))
 
 	// Static frontend (index redirects to login when unauthorized; the SPA
@@ -700,9 +702,23 @@ func eventFingerprint(e *store.Event) string {
 	switch d["type"] {
 	case "assistant":
 		if msg, ok := d["message"].(map[string]any); ok {
-			if id, ok := msg["id"].(string); ok {
-				return "assistant|" + id
+			// Include the block signature so split lines of one API step
+			// (thinking / tool_use blocks share a message id) survive dedup,
+			// while genuine duplicates (same id + same blocks) still collapse.
+			id, _ := msg["id"].(string)
+			var sig string
+			if content, ok := msg["content"].([]any); ok {
+				parts := make([]string, 0, len(content))
+				for _, b := range content {
+					if bm, ok := b.(map[string]any); ok {
+						t, _ := bm["type"].(string)
+						bid, _ := bm["id"].(string)
+						parts = append(parts, t+":"+bid)
+					}
+				}
+				sig = strings.Join(parts, ",")
 			}
+			return "assistant|" + id + "|" + sig
 		}
 	case "user":
 		if msg, ok := d["message"].(map[string]any); ok {
@@ -898,6 +914,154 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.view(sess))
+}
+
+// ---- rewind (conversation + files) ----
+
+// handleRewind rolls a session back to a user message: files are restored by
+// the claude CLI (--rewind-files), then both claude's jsonl transcript and
+// cc-webui's event log are truncated before that message. The rolled-back
+// message text is returned as a draft to refill the composer. Requires no
+// running/queued turn and a checkpoint uuid on the target user event.
+func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess := s.st.Get(id)
+	if sess == nil {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	var body struct {
+		Checkpoint string `json:"checkpoint"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if body.Checkpoint == "" {
+		writeErr(w, http.StatusBadRequest, "checkpoint is required")
+		return
+	}
+	// Atomically refuse if a turn is running/queued and mark the session busy
+	// for the duration of the rewind, so a message sent mid-rewind can't start
+	// a worker that races the truncation.
+	if !s.mgr.LockForRewind(id) {
+		writeErr(w, http.StatusConflict, "session is running")
+		return
+	}
+	defer s.mgr.UnlockFromRewind(id)
+	if sess.ClaudeSessionID == "" {
+		writeErr(w, http.StatusBadRequest, "session has no claude session id yet")
+		return
+	}
+
+	// Locate the target user event by its checkpoint uuid (the SSE handler
+	// renumbers seqs per-connection, so the client can't address by seq).
+	events, err := s.st.Events(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var (
+		target    *store.Event
+		draftText string
+	)
+	for _, ev := range events {
+		if ev.Kind != "user" {
+			continue
+		}
+		var d struct {
+			Text       string `json:"text"`
+			Checkpoint string `json:"checkpoint"`
+		}
+		_ = json.Unmarshal(ev.Data, &d)
+		if d.Checkpoint == body.Checkpoint {
+			target, draftText = ev, d.Text
+			break
+		}
+	}
+	if target == nil {
+		writeErr(w, http.StatusBadRequest, "no rewindable message with that checkpoint")
+		return
+	}
+	checkpoint := body.Checkpoint
+
+	// 1. File rewind. Must succeed before touching the conversation, otherwise
+	//    we'd leave files restored but dialogue intact (inconsistent).
+	detail, err := s.mgr.RewindFiles(sess, checkpoint)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "文件回滚失败："+err.Error())
+		return
+	}
+
+	// 2. Back up claude's transcript, then truncate it before the checkpoint
+	//    line (the rolled-back message becomes a draft, so it's removed too).
+	backupPath, err := s.backupClaudeHistory(sess)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "备份历史失败，对话未回滚："+err.Error())
+		return
+	}
+	if _, err := claudehist.TruncateBeforeUUID(sess.Cwd, sess.ClaudeSessionID, checkpoint); err != nil {
+		// Files already rewound; report the partial state honestly.
+		writeErr(w, http.StatusInternalServerError, "文件已回滚，但对话截断失败（备份在 "+backupPath+"）："+err.Error())
+		return
+	}
+	// If the truncation removed the last user prompt (rewinding the first
+	// message), the claude transcript is now empty and can't be --resume'd.
+	// Clear the id so the next turn starts a fresh claude session (the backed-
+	// up transcript preserves the old one).
+	if !claudehist.HasUserPrompt(sess.Cwd, sess.ClaudeSessionID) {
+		s.st.Upsert(sess, func(s *store.Session) { s.ClaudeSessionID = "" })
+	}
+
+	// 3. Truncate cc-webui's event log before the target user event, then
+	//    append a rewind marker as the new tail.
+	kept := make([]*store.Event, 0, len(events))
+	for _, ev := range events {
+		if ev.Seq < target.Seq {
+			kept = append(kept, ev)
+		}
+	}
+	if err := s.st.ReplaceEvents(id, kept); err != nil {
+		writeErr(w, http.StatusInternalServerError, "事件截断失败："+err.Error())
+		return
+	}
+	rewindEv, err := s.st.AppendEvent(id, "rewind", map[string]any{
+		"checkpoint": checkpoint,
+		"draft_text": draftText,
+		"ok":         true,
+		"detail":     detail,
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.mgr.BroadcastEvent(id, rewindEv)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"draft_text": draftText,
+		"files":      detail,
+	})
+}
+
+// backupClaudeHistory copies the session's jsonl transcript to
+// <data_dir>/backups/<sid>.<unix_ms>.jsonl and returns the backup path.
+// Truncating the transcript is irreversible, so a backup always precedes it.
+func (s *Server) backupClaudeHistory(sess *store.Session) (string, error) {
+	src := claudehist.HistoryPath(sess.Cwd, sess.ClaudeSessionID)
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return "", fmt.Errorf("read claude history: %w", err)
+	}
+	dir := filepath.Join(s.cfg.DataDir, "backups")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(dir, fmt.Sprintf("%s.%d.jsonl", sess.ClaudeSessionID, time.Now().UnixMilli()))
+	if err := os.WriteFile(dst, raw, 0o600); err != nil {
+		return "", err
+	}
+	return dst, nil
 }
 
 // ---- static ----

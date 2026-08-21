@@ -26,6 +26,7 @@ cc-webui 是 Claude Code（以及任何兼容 CLI）的 Web 控制台。它把�
 | 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。CLI 开启 `partial_messages` 后支持打字机式逐 token 增量渲染（`--include-partial-messages`）。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块。 |
 | 本地文件预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`），右侧面板只读打开并自动跳转到对应行号。 |
+| 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 claude transcript 一并截断，消息文本回填输入框重发。等价 TUI 双击 Esc。Bash 改的文件无法回滚。 |
 | TUI 与 Web 自由切换 | 每个会话都有 session id，点「resume」复制命令即可回到 TUI 继续跟进，Web 里做的一切状态都在。 |
 | 移动优先 PWA | 抽屉导航、底部操作面板、响应式布局、深浅主题切换。 |
 | 安全网关 | 单一 `gateway_token` 鉴权；文件预览严格限制在会话工作区内。 |
@@ -113,6 +114,7 @@ providers:
 - 首轮从 `system/init` 事件捕获 `session_id`，后续轮次用 `--resume` 续接，因此**切换 CLI / Provider / Model / 权限模式不会丢失上下文**。
 - 事件流持久化在 `data_dir`，SSE 先回放历史再实时推送；服务重启不影响会话数据。
 - 停止 = 杀掉当前 claude 进程组。
+- **回滚**：默认注入 `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`，每轮结束扫描 claude 的 jsonl 捕获该用户消息的 `uuid`（= 文件 checkpoint 标识）写回事件。⏪ 时先 `claude -p --resume <sid> --rewind-files <uuid>` 恢复文件，再备份并截断 claude jsonl 与 cc-webui 事件日志，消息文本回填输入框。回滚第一条消息后 claude transcript 变空，下一轮自动开新 claude session 续接。
 
 ### 关于 env 注入
 
@@ -159,6 +161,7 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 | GET / PATCH / DELETE | `/api/sessions/{id}` | 详情 / 改名·换 profile·model·权限 / 删除 |
 | POST | `/api/sessions/{id}/messages` | 发送消息 `{text, images}` |
 | POST | `/api/sessions/{id}/stop` | 中断当前轮 |
+| POST | `/api/sessions/{id}/rewind` | 回滚到某条用户消息 `{checkpoint}`（文件+对话） |
 | GET | `/api/sessions/{id}/events` | SSE：历史回放 + 实时事件 |
 | GET | `/api/claude-sessions?cwd=` | 扫描本机 `~/.claude/projects` |
 | POST | `/api/sessions/import` | 导入已有 claude session |

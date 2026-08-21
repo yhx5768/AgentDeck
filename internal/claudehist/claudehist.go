@@ -5,6 +5,7 @@ package claudehist
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,16 +54,109 @@ func HistoryPath(cwd, sessionID string) string {
 
 type histLine struct {
 	Type      string `json:"type"`
+	UUID      string `json:"uuid"`
 	SessionID string `json:"sessionId"`
 	Cwd       string `json:"cwd"`
 	Timestamp string `json:"timestamp"`
 	Message   struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
+		ID      string          `json:"id"`
+		Model   string          `json:"model"`
+		Usage   json.RawMessage `json:"usage"`
 	} `json:"message"`
 	Summary     string `json:"summary"`
 	IsSidechain bool   `json:"isSidechain"`
 	IsMeta      bool   `json:"isMeta"`
+}
+
+// isRealUserPrompt reports whether a jsonl line is a genuine user-typed prompt
+// (not a tool_result echo, sidechain, meta, or system-injected control text).
+func isRealUserPrompt(l histLine) (string, bool) {
+	if l.Type != "user" || l.IsSidechain || l.IsMeta {
+		return "", false
+	}
+	t := strings.TrimSpace(textOf(l.Message.Content))
+	if t == "" || strings.HasPrefix(t, "<") || strings.HasPrefix(t, "[Request interrupted") {
+		return "", false
+	}
+	return t, true
+}
+
+// HasUserPrompt reports whether the session jsonl still contains at least one
+// real user-prompt line. After truncating before the first user message, the
+// transcript has no user prompt left and can't be --resume'd ("No conversation
+// found"); the caller should clear the claude session id so the next turn
+// starts fresh instead.
+func HasUserPrompt(cwd, sessionID string) bool {
+	for _, l := range scanFile(HistoryPath(cwd, sessionID)) {
+		if _, ok := isRealUserPrompt(l); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// LastUserUUID returns the uuid of the most recent real user-prompt line in the
+// session jsonl whose text matches matchText (trimmed). After a turn ends, the
+// last matching line is that turn's prompt, so its uuid is the file-checkpoint
+// id. Returns "" if no match (e.g. multimodal/image-only messages, or the
+// prompt wasn't logged).
+func LastUserUUID(cwd, sessionID, matchText string) string {
+	matchText = strings.TrimSpace(matchText)
+	if matchText == "" {
+		return ""
+	}
+	var lastUUID string
+	for _, l := range scanFile(HistoryPath(cwd, sessionID)) {
+		if t, ok := isRealUserPrompt(l); ok && t == matchText {
+			lastUUID = l.UUID
+		}
+	}
+	return lastUUID
+}
+
+// TruncateBeforeUUID rewrites the session jsonl to keep only the lines BEFORE
+// the line whose uuid == uuid (that line and everything after it is removed).
+// It returns the number of lines removed. If the uuid is not found, the file is
+// left untouched and an error is returned. The caller must back up the file
+// first (truncation is irreversible).
+//
+// Lines are matched by raw byte index (not via scanFile, which skips
+// unparseable lines) so the kept prefix is an exact byte-for-byte prefix.
+func TruncateBeforeUUID(cwd, sessionID, uuid string) (int, error) {
+	path := HistoryPath(cwd, sessionID)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	// Preserve exact bytes: split on '\n'. A trailing newline yields no extra
+	// empty entry after TrimRight.
+	body := strings.TrimRight(string(raw), "\n")
+	if body == "" {
+		return 0, fmt.Errorf("checkpoint uuid %s not found in history", uuid)
+	}
+	rawLines := strings.Split(body, "\n")
+	idx := -1
+	for i, rl := range rawLines {
+		var l histLine
+		if json.Unmarshal([]byte(rl), &l) == nil && l.UUID == uuid {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, fmt.Errorf("checkpoint uuid %s not found in history", uuid)
+	}
+	kept := rawLines[:idx]
+	out := strings.Join(kept, "\n")
+	if len(kept) > 0 {
+		out += "\n"
+	}
+	if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
+		return 0, err
+	}
+	return len(rawLines) - idx, nil
 }
 
 func scanFile(path string) []histLine {
@@ -200,9 +294,25 @@ func Convert(cwd, sessionID string) ([]*store.Event, error) {
 				events = append(events, &store.Event{Ts: ts, Kind: "stream", Data: data})
 			}
 		case "assistant":
+			// Forward id/model/usage so history replay carries per-step token
+			// counts and split lines (thinking/tool_use blocks of one API step
+			// share a message id) can be merged by the trajectory projection.
+			msg := map[string]any{"role": "assistant", "content": l.Message.Content}
+			if l.Message.ID != "" {
+				msg["id"] = l.Message.ID
+			}
+			if l.Message.Model != "" {
+				msg["model"] = l.Message.Model
+			}
+			if len(l.Message.Usage) > 0 {
+				var usage any
+				if json.Unmarshal(l.Message.Usage, &usage) == nil {
+					msg["usage"] = usage
+				}
+			}
 			data, _ := json.Marshal(map[string]any{
 				"type":    "assistant",
-				"message": map[string]any{"role": "assistant", "content": l.Message.Content},
+				"message": msg,
 			})
 			events = append(events, &store.Event{Ts: ts, Kind: "stream", Data: data})
 		}

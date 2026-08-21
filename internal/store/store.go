@@ -214,7 +214,53 @@ func (s *Store) Events(sessionID string) ([]*Event, error) {
 	return out, nil
 }
 
-// ReplaceEvents overwrites the event log (used by session import).
+// UpdateEvent applies mutate to the event with the given seq, rewriting the
+// whole event log (events are few, so a full rewrite is simple and safe).
+// Returns the updated event, or an error if no event has that seq. Used to
+// attach a file-checkpoint uuid to a user event after the turn that produced
+// it completes.
+func (s *Store) UpdateEvent(sessionID string, seq int64, mutate func(*Event)) (*Event, error) {
+	s.eventsMu.Lock()
+	defer s.eventsMu.Unlock()
+	events, err := s.loadEventsLocked(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var found *Event
+	for _, ev := range events {
+		if ev.Seq == seq {
+			found = ev
+			break
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("event seq %d not found", seq)
+	}
+	if mutate != nil {
+		mutate(found)
+	}
+	f, err := os.OpenFile(s.eventPath(sessionID), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	for _, ev := range events {
+		line, err := json.Marshal(ev)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := w.Write(append(line, '\n')); err != nil {
+			return nil, err
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return nil, err
+	}
+	return found, nil
+}
+
+// ReplaceEvents overwrites the event log (used by session import / rewind).
 func (s *Store) ReplaceEvents(sessionID string, events []*Event) error {
 	s.eventsMu.Lock()
 	defer s.eventsMu.Unlock()

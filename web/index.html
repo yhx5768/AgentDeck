@@ -69,6 +69,8 @@
     </div>
   </aside>
 
+  <div id="sidebar-splitter" class="sidebar-splitter" title="拖拽调整宽度" aria-hidden="true"></div>
+
   <button id="btn-expand" class="icon-btn" title="展开侧边栏" aria-label="展开侧边栏"><i data-lucide="panel-left-open"></i></button>
 
   <!-- Main -->
@@ -90,59 +92,91 @@
           <button id="btn-drawer" class="icon-btn drawer-toggle" title="打开会话列表"><i data-lucide="menu"></i></button>
           <input id="session-name" class="name-input" spellcheck="false">
           <span id="status-badge" class="status-badge"></span>
-          <button id="btn-chat-menu" class="icon-btn chat-menu-toggle" title="更多操作"><i data-lucide="more-vertical"></i></button>
-        </div>
-        <div class="controls-row">
-          <label>CLI
-            <select id="session-cli"></select>
-          </label>
-          <label>Provider
-            <select id="session-provider"></select>
-          </label>
-          <label>Model
-            <select id="session-model"></select>
-          </label>
-          <label>推理
-            <select id="session-effort">
-              <option value="">继承</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-              <option value="max">max</option>
-            </select>
-          </label>
-          <label>权限
-            <select id="session-perm">
-              <option value="">profile 默认</option>
-              <option value="bypassPermissions">bypass</option>
-              <option value="acceptEdits">acceptEdits</option>
-              <option value="plan">plan</option>
-              <option value="default">default</option>
-            </select>
-          </label>
           <span class="cwd" id="session-cwd" title=""></span>
-          <span class="spacer"></span>
-          <button id="btn-resume" class="ghost-btn" title="复制终端恢复该会话的命令"><i data-lucide="terminal"></i><span class="label">resume</span></button>
-          <button id="btn-stop" class="danger-btn hidden"><i data-lucide="square"></i><span class="label">停止</span></button>
-          <button id="btn-delete" class="ghost-btn"><i data-lucide="trash-2"></i><span class="label">删除</span></button>
+          <div class="header-actions">
+            <button id="btn-resume" class="icon-btn" title="复制终端恢复该会话的命令"><i data-lucide="terminal"></i></button>
+            <button id="btn-stop" class="icon-btn stop-btn hidden" title="停止生成"><i data-lucide="square"></i></button>
+            <button id="btn-delete" class="icon-btn" title="删除会话"><i data-lucide="trash-2"></i></button>
+            <button id="btn-chat-menu" class="icon-btn chat-menu-toggle" title="更多操作"><i data-lucide="more-vertical"></i></button>
+          </div>
         </div>
       </header>
 
+      <div id="chat-tabs">
+        <button class="chat-tab active" data-tab="chat">对话</button>
+        <button class="chat-tab" data-tab="traj">轨迹</button>
+      </div>
+
       <div id="messages"></div>
+
+      <div id="traj-view" class="hidden">
+        <div id="traj-toolbar">
+          <button id="traj-toggle-turns" class="ghost-btn" title="折叠/展开全部轮次"><i data-lucide="list-collapse"></i><span class="label">轮次</span></button>
+          <div class="traj-filter" role="group" title="按角色筛选">
+            <button class="traj-filter-btn active" data-kind="user">用户</button>
+            <button class="traj-filter-btn active" data-kind="assistant">助手</button>
+            <button class="traj-filter-btn active" data-kind="tool">工具</button>
+          </div>
+          <span class="traj-toolbar-spacer"></span>
+          <div class="traj-search">
+            <i data-lucide="search"></i>
+            <input id="traj-search-input" placeholder="搜索轨迹" autocomplete="off">
+          </div>
+          <span id="traj-stats"></span>
+        </div>
+        <div id="traj-main">
+          <div id="traj-list-wrap">
+            <div id="traj-list"></div>
+          </div>
+          <aside id="traj-detail" class="hidden">
+            <div id="traj-detail-header"></div>
+            <div id="traj-detail-tabs">
+              <button class="traj-tab active" data-tab="summary">summary</button>
+              <button class="traj-tab" data-tab="preview">preview</button>
+              <button class="traj-tab" data-tab="raw">raw</button>
+            </div>
+            <div id="traj-detail-body"></div>
+          </aside>
+        </div>
+      </div>
 
       <footer id="composer">
         <div id="error-banner" class="hidden"></div>
         <div id="workspace-gate" class="hidden"><i data-lucide="alert-triangle"></i> 未选 workspace（cwd）— 聊天区已禁用</div>
-        <div id="attached-images" class="attached-images"></div>
-        <div class="composer-row">
-          <button id="btn-attach" class="icon-btn" title="添加图片"><i data-lucide="paperclip"></i></button>
+        <div class="composer-card">
+          <div id="attached-images" class="attached-images"></div>
           <div class="input-wrapper">
             <div id="slash-popup" class="slash-popup hidden"></div>
             <div id="input-mirror" class="input-mirror"></div>
             <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
           </div>
-          <button id="btn-send" class="primary-btn" aria-label="发送"><i data-lucide="send-horizontal"></i><span class="send-label">发送</span></button>
+          <div class="composer-toolbar">
+            <div class="ct-side">
+              <button id="btn-attach" class="round-icon-btn" title="添加图片（可粘贴/拖拽）"><i data-lucide="plus"></i></button>
+              <select id="session-perm" class="pill-select" title="权限模式">
+                <option value="">默认权限</option>
+                <option value="bypassPermissions">bypass</option>
+                <option value="acceptEdits">acceptEdits</option>
+                <option value="plan">plan</option>
+                <option value="default">default</option>
+              </select>
+            </div>
+            <div class="ct-side ct-right">
+              <select id="session-cli" class="pill-select" title="CLI"></select>
+              <select id="session-provider" class="pill-select" title="Provider"></select>
+              <select id="session-model" class="pill-select" title="Model"></select>
+              <select id="session-effort" class="pill-select" title="推理等级">
+                <option value="">默认</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
+              <span id="composer-spinner" class="ct-spinner hidden" title="运行中"></span>
+              <button id="btn-send" class="round-send-btn" aria-label="发送" title="发送"><i data-lucide="arrow-up"></i></button>
+            </div>
+          </div>
         </div>
         <div class="composer-footer">
           <span id="session-stats" class="session-stats"></span>
@@ -163,9 +197,9 @@
           </div>
           <div class="ns-toolbar">
             <div class="ns-toolbar-left">
-              <button id="ns-attach" class="ns-icon-btn" title="添加图片"><i data-lucide="paperclip"></i></button>
+              <button id="ns-attach" class="round-icon-btn" title="添加图片"><i data-lucide="paperclip"></i></button>
               <input type="file" id="ns-attach-file" accept="image/*" multiple hidden>
-              <select id="ns-perm" class="ns-pill" title="权限模式">
+              <select id="ns-perm" class="pill-select" title="权限模式">
                 <option value="">默认权限</option>
                 <option value="bypassPermissions">bypass</option>
                 <option value="acceptEdits">acceptEdits</option>
@@ -173,10 +207,10 @@
               </select>
             </div>
             <div class="ns-toolbar-right">
-              <select id="ns-cli" class="ns-pill"></select>
-              <select id="ns-provider" class="ns-pill"></select>
-              <select id="ns-model" class="ns-pill"></select>
-              <select id="ns-effort" class="ns-pill" title="推理等级">
+              <select id="ns-cli" class="pill-select"></select>
+              <select id="ns-provider" class="pill-select"></select>
+              <select id="ns-model" class="pill-select"></select>
+              <select id="ns-effort" class="pill-select" title="推理等级">
                 <option value="">默认</option>
                 <option value="low">low</option>
                 <option value="medium">medium</option>
@@ -184,7 +218,7 @@
                 <option value="xhigh">xhigh</option>
                 <option value="max">max</option>
               </select>
-              <button id="ns-send" class="ns-send-btn" title="发送"><i data-lucide="arrow-up"></i></button>
+              <button id="ns-send" class="round-send-btn" title="发送"><i data-lucide="arrow-up"></i></button>
             </div>
           </div>
         </div>
@@ -333,11 +367,29 @@
   </div>
 </div>
 
+<!-- Rewind confirm dialog -->
+<div id="modal-rewind" class="modal hidden">
+  <div class="modal-card">
+    <h3>回滚到这条消息之前？</h3>
+    <div class="rewind-preview" id="rewind-preview"></div>
+    <ul class="rewind-notes">
+      <li>此消息及之后的对话将被删除，消息文本回填到输入框</li>
+      <li>此消息之后 Claude 通过 Write/Edit 所做的文件修改将被恢复，期间新建的文件将被删除</li>
+    </ul>
+    <div class="rewind-caveat">说明：Bash 命令执行的文件修改无法回滚。</div>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close>取消</button>
+      <button class="primary-btn" id="rewind-submit">回滚</button>
+    </div>
+  </div>
+</div>
+
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
 <script src="/vendor/lucide.min.js"></script>
 <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+<script src="/trajectory.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
