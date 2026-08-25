@@ -453,18 +453,31 @@ function openRenameDialog(s) {
   setTimeout(() => input.focus(), 0);
 }
 
-$('#rename-submit').onclick = async () => {
+function closeRenameDialog() {
+  $('#modal-rename').classList.add('hidden');
+  renameTarget = null;
+}
+
+async function submitRename() {
   const name = $('#rename-input').value.trim();
   if (!name) return;
-  $('#modal-rename').classList.add('hidden');
-  if (renameTarget) {
-    await api(`/api/sessions/${renameTarget.id}`, {
+  const s = renameTarget;
+  closeRenameDialog();
+  if (s) {
+    await api(`/api/sessions/${s.id}`, {
       method: 'PATCH', body: JSON.stringify({ name }),
     });
-    renameTarget.name = name;
-    renameTarget = null;
+    s.name = name;
     loadSessions();
   }
+}
+
+$('#rename-submit').onclick = submitRename;
+
+// 回车保存、Esc 取消；isComposing 防止中文输入法选词的回车误提交
+$('#rename-input').onkeydown = (e) => {
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); submitRename(); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeRenameDialog(); }
 };
 
 async function forkSession(s) {
