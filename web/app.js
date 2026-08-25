@@ -72,6 +72,7 @@ const state = {
   archived: [],
   current: null,      // current session object
   es: null,
+  pendingBySid: {},   // sessionId -> 待发送消息 {text, images}；本轮结束后自动提交，切会话不丢
   seenSeq: new Set(), // seqs already rendered on this connection
   toolBlocks: {},     // tool_use_id -> details element
   nearBottom: true,
@@ -90,6 +91,7 @@ const state = {
   historyBuf: [],      // all replayed events (oldest first)
   histRenderedFrom: 0, // index in historyBuf of the oldest rendered event
   replaying: false,    // true until the server sends the replay_end marker
+  renderingHistory: false, // 正在渲染回放/翻页历史（旧 status 事件不触发 flushPending 等副作用）
   stats: null,         // {turns, steps, firstTs, lastTs} for the current session
   live: null,          // live partial-stream state: {msgId, blocks:[{kind,el,bodyEl,buf,done,taken,raf}]}
   slashCommandsCache: (() => { try { return JSON.parse(localStorage.getItem('cc-webui:slash-cache') || '{}'); } catch { return {}; } })(),
@@ -713,6 +715,7 @@ $('#view-menu').addEventListener('click', (e) => {
 async function openSession(id) {
   const s = await api(`/api/sessions/${id}`);
   state.current = s;
+  // 待发送消息按会话留在 pendingBySid 里，切换不清空；下面随视图重建恢复显示。
   state.seenSeq = new Set();
   state.toolBlocks = {};
   state.historyBuf = [];
@@ -727,6 +730,8 @@ async function openSession(id) {
   $('#new-session-view').classList.add('hidden');
   $('#chat-view').classList.remove('hidden');
   $('#messages').innerHTML = '';
+  // 恢复本会话的待发送 chip（若有）；flushHistory 回放结束后再把它固定到底部。
+  renderPendingBubble();
   $('#error-banner').classList.add('hidden');
   $('#session-name').value = s.name;
   $('#session-cwd').textContent = s.cwd;
@@ -986,10 +991,23 @@ function flushHistory() {
   const optimistic = [...box.querySelectorAll('.msg-optimistic')];
   const buf = state.historyBuf;
   state.histRenderedFrom = Math.max(0, buf.length - HISTORY_PAGE);
-  for (let i = state.histRenderedFrom; i < buf.length; i++) {
-    renderEvent(buf[i], box);
+  // 历史渲染期间旧 status 事件不得触发副作用（旧 turn_end 会把待发送消息
+  // 在轮次仍在跑时误提交；见 renderEvent 的 status 分支）。
+  state.renderingHistory = true;
+  try {
+    for (let i = state.histRenderedFrom; i < buf.length; i++) {
+      renderEvent(buf[i], box);
+    }
+  } finally {
+    state.renderingHistory = false;
   }
   for (const node of optimistic) box.appendChild(node);
+  // The held-message chip (if any) belongs at the very bottom, above the
+  // composer — render it after history so nothing sorts past it.
+  renderPendingBubble();
+  // 切走期间本轮已结束的会话：回放里的旧 turn_end 被上面挡住，在这里按
+  // 最新状态补交该会话的待发送消息。
+  if (state.current && state.pendingBySid[state.current.id] && !isRunning()) flushPending();
   state.nearBottom = true;
   scrollBottom();
   updateLoadMoreBtn();
@@ -1003,8 +1021,13 @@ function loadMoreHistory() {
   const box = $('#messages');
   const from = Math.max(0, state.histRenderedFrom - HISTORY_PAGE);
   const frag = document.createDocumentFragment();
-  for (let i = from; i < state.histRenderedFrom; i++) {
-    renderEvent(state.historyBuf[i], frag);
+  state.renderingHistory = true;
+  try {
+    for (let i = from; i < state.histRenderedFrom; i++) {
+      renderEvent(state.historyBuf[i], frag);
+    }
+  } finally {
+    state.renderingHistory = false;
   }
   state.histRenderedFrom = from;
   const prevHeight = box.scrollHeight;
@@ -1041,6 +1064,11 @@ function updateStatusUI(st) {
   const stopBtn = $('#btn-stop');
   const hint = $('#queue-hint');
   const spinner = $('#composer-spinner');
+  // Keep state.current.status in sync so isRunning() reflects the latest SSE
+  // status event immediately (refreshCurrentStatus overwrites it async later).
+  if (state.current) {
+    state.current.status = { running: !!(st && st.running), queued: (st && st.queued) || 0 };
+  }
   // Grey out rewind buttons while a turn is in flight (the API also 409s).
   document.body.classList.toggle('session-running', !!(st && st.running));
   if (st.running) {
@@ -1821,10 +1849,17 @@ function renderEvent(ev, box) {
     } else if (d.state === 'turn_end' || d.state === 'interrupted') {
       liveFinalizeAll(); // 中断时部分 block 永远等不到完整事件，固化已生成的内容
       updateStatusUI({ running: false, queued: 0 });
-      refreshCurrentStatus();
+      // Submit any message held while this turn was running. 历史回放里的旧
+      // turn_end 不算数——由 flushHistory 在回放结束后按最新状态统一补交。
+      if (!state.renderingHistory) {
+        flushPending();
+        refreshCurrentStatus();
+      }
     } else if (d.state === 'error') {
       liveFinalizeAll();
       updateStatusUI({ running: false, queued: 0 });
+      // Don't auto-flush on error — leave the pending bubble visible so the
+      // user can cancel or wait and resend after the failure is resolved.
       const banner = $('#error-banner');
       banner.textContent = d.error || 'unknown error';
       banner.classList.remove('hidden');
@@ -2103,13 +2138,18 @@ function renderAttachedThumbs() {
   renderIcons(box);
 }
 
+// Is a turn currently running for the open session? Derived from the session
+// status (set live by status SSE events and refreshCurrentStatus).
+function isRunning() {
+  return !!(state.current && state.current.status && state.current.status.running);
+}
+
 async function sendMessage() {
   const text = input.value.trim();
   if ((!text && state.attached.length === 0) || !state.current) return;
-  const payload = { text, images: state.attached };
-  // Optimistic user bubble showing images immediately (will be replaced
-  // by the server's user event which contains only text).
-  appendOptimisticUser(text, state.attached);
+  const images = state.attached;
+  // Clear the composer regardless of path: the text now lives either in the
+  // POST (sent now) or in state.pendingBySid (held for the running turn to end).
   input.value = '';
   input.style.height = 'auto';
   renderInputMirror();
@@ -2117,11 +2157,109 @@ async function sendMessage() {
   if (state.current) { draft().text = ''; draft().images = []; }
   renderAttachedThumbs();
   $('#error-banner').classList.add('hidden');
-  await api(`/api/sessions/${state.current.id}/messages`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-  updateStatusUI({ running: true, queued: 0 });
+
+  // While a turn is streaming, don't POST immediately — the backend would
+  // queue it, but the optimistic bubble lands mid-stream and the on-screen
+  // order diverges from the actual (post-turn) order. Hold the message and
+  // auto-submit when the running turn ends.
+  if (isRunning()) {
+    holdPending(text, images);
+    return;
+  }
+  await postMessage({ text, images });
+}
+
+// POST a message and optimistically render its user bubble.
+async function postMessage(payload) {
+  appendOptimisticUser(payload.text, payload.images);
+  try {
+    await api(`/api/sessions/${state.current.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    updateStatusUI({ running: true, queued: 0 });
+  } catch (e) {
+    // Send failed: drop the optimistic bubble and surface the error so the
+    // user can retry, instead of leaving a ghost message.
+    $('#messages').querySelectorAll('.msg-optimistic').forEach((n) => n.remove());
+    throw e;
+  }
+}
+
+// Hold a message until the running turn ends, then flushPending submits it.
+// 按会话保存：切走再切回 chip 仍在，轮次在切走期间结束的由 flushHistory 补交。
+// Renders a pending chip above the composer so the user sees what's queued.
+function holdPending(text, images) {
+  if (!state.current) return;
+  // A second send while one is already held replaces it (latest intent wins).
+  state.pendingBySid[state.current.id] = { text, images };
+  renderPendingBubble();
+}
+
+// Submit the held message (if any) now that the session is idle. Called from
+// the status event handler on live turn_end / interrupted, and from
+// flushHistory when the turn ended while the session was in the background.
+async function flushPending() {
+  if (!state.current) return;
+  const sid = state.current.id;
+  const payload = state.pendingBySid[sid];
+  if (!payload) return;
+  delete state.pendingBySid[sid];
+  clearPendingBubble();
+  try {
+    await postMessage(payload);
+  } catch (e) {
+    // Re-hold on transient failure so it isn't lost; surface the error.
+    // 若 await 期间用户已切走，payload 仍挂回原会话，chip 由 renderPendingBubble
+    // 按当前会话重绘（当前会话无 pending 时等于清除）。
+    state.pendingBySid[sid] = payload;
+    renderPendingBubble();
+    const banner = $('#error-banner');
+    banner.textContent = '待发送消息提交失败：' + (e.message || 'unknown error');
+    banner.classList.remove('hidden');
+  }
+}
+
+function cancelPending() {
+  if (state.current) delete state.pendingBySid[state.current.id];
+  clearPendingBubble();
+}
+
+// ---------- pending message bubble (above the composer) ----------
+// A held message shows as a chip pinned to the bottom of #messages (just above
+// the floating composer) with a 待发送 label and a cancel button. It replaces
+// nothing in the stream — it's purely a composer affordance until submitted.
+function pendingEl() { return $('#pending-bubble'); }
+
+function renderPendingBubble() {
+  const p = state.current && state.pendingBySid[state.current.id];
+  if (!p) { clearPendingBubble(); return; }
+  let el = pendingEl();
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'pending-bubble';
+    el.className = 'pending-bubble';
+    el.innerHTML = '<span class="pb-tag"></span><span class="pb-text"></span><button class="pb-cancel" type="button" title="取消待发送"></button>';
+    el.querySelector('.pb-cancel').onclick = cancelPending;
+    const cancelIcon = document.createElement('i');
+    cancelIcon.dataset.lucide = 'x';
+    el.querySelector('.pb-cancel').appendChild(cancelIcon);
+    renderIcons(el);
+  }
+  // 始终放在消息列表末尾（appendChild 对已有节点是移动），不让后渲染的
+  // 历史/流式事件排到它后面。
+  $('#messages').appendChild(el);
+  el.querySelector('.pb-tag').textContent = '待发送 · 本轮结束后自动提交';
+  const txt = el.querySelector('.pb-text');
+  txt.textContent = p.text || (p.images && p.images.length ? '(仅图片)' : '');
+  el.classList.toggle('has-text', !!(p.text));
+  el.classList.toggle('has-images', !!(p.images && p.images.length));
+  if (state.nearBottom) scrollBottom();
+}
+
+function clearPendingBubble() {
+  const el = pendingEl();
+  if (el) el.remove();
 }
 
 function appendOptimisticUser(text, images) {

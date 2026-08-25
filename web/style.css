@@ -710,6 +710,54 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   margin: var(--sp-1) var(--sp-1) 0 0;
 }
 
+/* Pending (held) message chip: shown above the composer while a turn is
+   running, auto-submitted when the turn ends. Dashed border + dimmed text
+   signal "not yet sent", distinct from a real user bubble. */
+.pending-bubble {
+  max-width: 880px;
+  margin: 0 auto var(--sp-4);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-xl);
+  background: var(--bg2);
+  font-size: var(--fs-sm);
+  color: var(--dim);
+  animation: msg-in var(--t-normal) var(--ease);
+}
+.pending-bubble .pb-tag {
+  flex: none;
+  white-space: nowrap;
+  text-transform: none;
+  font-weight: 500;
+}
+.pending-bubble .pb-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+  font-size: var(--fs-md);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.pending-bubble:not(.has-text) .pb-text { display: none; }
+.pending-bubble .pb-cancel {
+  flex: none;
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 50%;
+  background: transparent; color: var(--dim);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.pending-bubble .pb-cancel:hover { background: var(--bg3); color: var(--fg); }
+.pending-bubble .pb-cancel svg { width: 14px; height: 14px; }
+
 .msg .bubble pre {
   background: var(--code-bg);
   border: 1px solid var(--border);
