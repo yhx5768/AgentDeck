@@ -31,6 +31,7 @@
     <div class="sidebar-header">
       <span class="logo">cc-webui</span>
       <span class="header-btns">
+        <button id="btn-settings" class="icon-btn" title="设置"><i data-lucide="settings"></i></button>
         <button id="btn-theme" class="icon-btn" title="切换主题"><i data-lucide="moon"></i></button>
         <button id="btn-collapse" class="icon-btn" title="收起侧边栏"><i data-lucide="panel-left-close"></i></button>
       </span>
@@ -380,6 +381,31 @@
     <div class="modal-actions">
       <button class="ghost-btn" data-close>取消</button>
       <button class="primary-btn" id="rewind-submit">回滚</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置（存 localStorage，仅当前浏览器生效，不同终端各自配置） -->
+<div id="modal-settings" class="modal hidden">
+  <div class="modal-card">
+    <h3>设置</h3>
+    <div class="settings-note">仅保存在当前浏览器，不影响其他终端。</div>
+    <div class="settings-row">
+      <div class="settings-text">
+        <div class="settings-label">任务完成时弹出系统通知</div>
+        <div class="settings-sub" id="notify-perm-hint"></div>
+      </div>
+      <label class="switch"><input type="checkbox" id="pref-banner"><span class="slider"></span></label>
+    </div>
+    <div class="settings-row">
+      <div class="settings-text">
+        <div class="settings-label">任务完成时播放提示音</div>
+        <div class="settings-sub"><button id="btn-test-sound" class="link-btn" type="button">试听</button></div>
+      </div>
+      <label class="switch"><input type="checkbox" id="pref-sound"><span class="slider"></span></label>
+    </div>
+    <div class="modal-actions">
+      <button class="primary-btn" data-close>完成</button>
     </div>
   </div>
 </div>

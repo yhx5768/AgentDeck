@@ -138,7 +138,7 @@ function renderIcons(root) {
     'alert-triangle', 'file-text', 'file-plus', 'terminal-square',
     'rotate-ccw', 'pencil', 'search',
     'more-horizontal', 'archive', 'archive-restore', 'git-fork',
-    'settings-2', 'arrow-up',
+    'settings-2', 'arrow-up', 'settings',
     'menu', 'more-vertical', 'send-horizontal', 'folder',
     'panel-left-close', 'panel-left-open', 'list-collapse',
   ];
@@ -180,6 +180,110 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+// ---------- 任务完成通知（系统横幅 + 提示音） ----------
+// 开关存 localStorage，跟着浏览器走：多个终端同时连着时各自决定是否提醒。
+// 触发源是 loadSessions() 轮询后的 running 状态 diff（SSE 只订阅当前打开的
+// 会话，轮询才能覆盖其他会话）。两轮之间的调度间隙 running=false 但
+// queued>0，要求队列排空才算整轮跑完；interrupted（主动停止）不提醒。
+// last_error 每轮结束时被后端覆盖（成功清空），所以 diff 时读到的就是本轮结果。
+const NOTIFY_KEY = 'cc-webui-notify';
+function notifyPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(NOTIFY_KEY) || '{}');
+    return { banner: p.banner !== false, sound: p.sound !== false }; // 默认全开
+  } catch (_) {
+    return { banner: true, sound: true };
+  }
+}
+function saveNotifyPrefs(p) {
+  localStorage.setItem(NOTIFY_KEY, JSON.stringify(p));
+}
+
+// sessionId -> running；首次 loadSessions 只建基线，不把存量 running 当转变
+let runPrev = null;
+function diffRunningSessions(list) {
+  const prev = runPrev;
+  const now = {};
+  for (const s of list) now[s.id] = !!(s.status && s.status.running);
+  runPrev = now;
+  if (!prev) return;
+  for (const s of list) {
+    if (!prev[s.id]) continue; // 只有 running → 停止 的转变才算跑完
+    const st = s.status || {};
+    if (st.running || st.queued > 0) continue;
+    const err = st.last_error || '';
+    if (err === 'interrupted') continue;
+    notifyTurnDone(s, err);
+  }
+}
+
+function notifyTurnDone(s, err) {
+  const prefs = notifyPrefs();
+  const title = (err ? '任务出错：' : '任务完成：') + (s.name || '会话');
+  const body = err ? String(err).slice(0, 120) : (s.cwd || '');
+  if (prefs.sound) playNotifySound(!!err);
+  if (prefs.banner) showBannerNotify(title, body, s.id);
+}
+
+// 系统横幅通知。点击聚焦窗口并打开对应会话；tag 防止同一会话的通知堆叠。
+function showBannerNotify(title, body, sessionId) {
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return; // 授权在设置页/首次交互时请求
+  try {
+    const n = new Notification(title, {
+      body,
+      icon: '/icons/icon-192.png',
+      tag: 'cc-webui-done-' + sessionId,
+    });
+    n.onclick = () => {
+      window.focus();
+      if (sessionId) openSession(sessionId).catch(() => {});
+      n.close();
+    };
+  } catch (_) {}
+}
+
+// 提示音用 Web Audio 合成，无需音频文件。完成 = 上行双音；出错 = 下行双音。
+let audioCtx = null;
+function getAudioCtx() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (!audioCtx) audioCtx = new AC();
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+function playNotifySound(isError) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const notes = isError ? [440, 330] : [659.25, 880];
+  notes.forEach((freq, i) => {
+    const t0 = ctx.currentTime + i * 0.18;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(0.18, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.18);
+  });
+}
+
+// autoplay 策略：AudioContext 与通知权限请求都要求用户手势上下文。
+// 在首次交互时一次性预热/请求，之后轮询回调里才能真正出声、弹横幅。
+let notifyUnlocked = false;
+document.addEventListener('pointerdown', () => {
+  if (notifyUnlocked) return;
+  notifyUnlocked = true;
+  const prefs = notifyPrefs();
+  if (prefs.sound) getAudioCtx();
+  if (prefs.banner && 'Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+}, { capture: true });
+
 // ---------- sessions list ----------
 async function loadSessions() {
   const [active2, archived] = await Promise.all([
@@ -188,6 +292,7 @@ async function loadSessions() {
   ]);
   state.sessions = active2;
   state.archived = archived;
+  diffRunningSessions(active2);
   renderSessionList();
   renderArchiveList();
 }
@@ -2211,6 +2316,42 @@ document.querySelectorAll('[data-close]').forEach((b) => {
 document.querySelectorAll('.modal').forEach((m) => {
   m.addEventListener('click', (e) => { if (e.target === m) m.classList.add('hidden'); });
 });
+
+// ---------- 设置 modal（通知开关，存 localStorage，见上方通知模块） ----------
+function notifyPermText() {
+  if (!('Notification' in window)) return '当前浏览器不支持系统通知';
+  if (Notification.permission === 'granted') return '浏览器已授权';
+  if (Notification.permission === 'denied') return '已被浏览器拒绝，请在地址栏的站点设置中允许通知';
+  return '未授权，打开开关时将请求浏览器权限';
+}
+
+$('#btn-settings').onclick = () => {
+  const prefs = notifyPrefs();
+  $('#pref-banner').checked = prefs.banner;
+  $('#pref-sound').checked = prefs.sound;
+  $('#notify-perm-hint').textContent = notifyPermText();
+  openModal('#modal-settings');
+};
+
+$('#pref-banner').addEventListener('change', async (e) => {
+  const prefs = notifyPrefs();
+  prefs.banner = e.target.checked;
+  saveNotifyPrefs(prefs);
+  // 打开开关顺手请求权限（change 由点击触发，满足手势要求）
+  if (prefs.banner && 'Notification' in window && Notification.permission === 'default') {
+    try { await Notification.requestPermission(); } catch (_) {}
+  }
+  $('#notify-perm-hint').textContent = notifyPermText();
+});
+
+$('#pref-sound').addEventListener('change', (e) => {
+  const prefs = notifyPrefs();
+  prefs.sound = e.target.checked;
+  saveNotifyPrefs(prefs);
+  if (prefs.sound) playNotifySound(false); // 打开时试听一声，顺带解锁 AudioContext
+});
+
+$('#btn-test-sound').onclick = () => playNotifySound(false);
 
 $('#btn-new').onclick = async () => {
   const firstCli = state.clis[0] && state.clis[0].name;
