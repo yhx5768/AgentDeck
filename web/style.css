@@ -722,6 +722,29 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   line-height: var(--lh-normal);
 }
 .msg .bubble pre code.hljs { background: transparent; }
+/* md() 给每个 pre 包的容器：复制按钮相对它定位，pre 横向滚动时按钮不跟内容走 */
+.code-block { position: relative; }
+.code-copy-btn {
+  position: absolute;
+  top: 6px; right: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--dim);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease),
+              opacity var(--t-fast) var(--ease);
+}
+.code-copy-btn:hover { color: var(--fg); background: var(--bg3); }
+.code-copy-btn svg { width: 13px; height: 13px; }
+/* 与 rewind-btn 同一模式：有 hover 的设备悬停代码块才显示；触屏常显 */
+@media (hover: hover) {
+  .code-copy-btn { opacity: 0; }
+  .code-block:hover .code-copy-btn,
+  .code-copy-btn:focus-visible { opacity: 1; }
+}
 .msg .bubble code {
   font-family: var(--font-mono);
   font-size: 0.875em;

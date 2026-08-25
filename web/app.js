@@ -26,6 +26,10 @@ function parseFileLink(href) {
   return null;
 }
 
+// 代码块复制按钮的图标：直接内联 lucide copy 的 SVG，不走 <i data-lucide>。
+// 流式期间 md() 每帧重绘，renderIcons 每帧扫描会刷日志且没必要。
+const CODE_COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+
 // Render markdown to sanitized HTML; force all links to open in a new tab
 // so clicking a link never navigates away from the chat.
 const md = (text) => {
@@ -43,6 +47,19 @@ const md = (text) => {
     }
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
+  });
+  // 代码块：包一层 .code-block 容器，右上角悬浮复制按钮（点击走全局委托）。
+  // 按钮放在 pre 外面而不是里面：pre 横向滚动时按钮不跟着内容跑。
+  tpl.content.querySelectorAll('pre').forEach((pre) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'code-block';
+    const btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.type = 'button';
+    btn.title = '复制代码';
+    btn.innerHTML = CODE_COPY_ICON;
+    pre.replaceWith(wrap);
+    wrap.append(btn, pre);
   });
   return tpl.innerHTML;
 };
@@ -1439,6 +1456,19 @@ $('#messages').addEventListener('click', (e) => {
   if (!a) return;
   e.preventDefault();
   openFileViewer(a.dataset.filePath, parseInt(a.dataset.fileLine || '0', 10));
+});
+
+// 代码块复制按钮（md() 注入；主对话气泡和轨迹详情里的代码块都走这里）
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.code-copy-btn');
+  if (!btn) return;
+  const wrap = btn.closest('.code-block');
+  const code = wrap && (wrap.querySelector('pre code') || wrap.querySelector('pre'));
+  if (!code) return;
+  try {
+    await copyText(code.textContent);
+    flashCheck(btn, btn.innerHTML);
+  } catch (_) {}
 });
 $('#fv-close').onclick = closeFileViewer;
 $('#fv-copy').onclick = async (e) => {
