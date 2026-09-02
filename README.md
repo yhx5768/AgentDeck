@@ -108,6 +108,12 @@ providers:
 
 完整字段请参考 `config.example.yaml`。
 
+### 热加载
+
+运行中的进程每 3 秒检查一次 `config.yaml`，发现改动即热加载：clis / providers / models 的增删改立即生效——**已开启的会话也能在模型选择列表里看到新模型**（后端经 SSE 推送 `config_changed`，前端自动重拉并刷新下拉，已选模型不变）。配置文件解析失败时保持旧配置，并在日志里报错，修复后自动恢复。
+
+`listen` 与 `data_dir` 是启动时固化的字段，改动后需重启；`gateway_token` 改动会随热加载生效，但现有客户端的登录态会失效，需用新 token 重新登录。
+
 ---
 
 ## 工作原理（简要）
@@ -161,7 +167,8 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 | GET | `/api/profiles` | profile 列表（env 值不下发） |
 | GET / POST | `/api/sessions` | 会话列表 / 创建 |
 | GET / PATCH / DELETE | `/api/sessions/{id}` | 详情 / 改名·换 profile·model·权限 / 删除 |
-| POST | `/api/sessions/{id}/messages` | 发送消息 `{text, images}` |
+| POST | `/api/sessions/{id}/messages` | 发送消息 `{text, images, files}` |
+| POST | `/api/sessions/{id}/uploads?name=` | 上传附件（图片外的文件类型，落盘后经消息文本引用） |
 | POST | `/api/sessions/{id}/stop` | 中断当前轮 |
 | POST | `/api/sessions/{id}/rewind` | 回滚到某条用户消息 `{checkpoint}`（文件+对话） |
 | GET | `/api/sessions/{id}/events` | SSE：历史回放 + 实时事件 |

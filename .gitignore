@@ -2,3 +2,5 @@ cc-webui
 config.yaml
 data/
 *.log
+# local dev harnesses
+web/_*.html

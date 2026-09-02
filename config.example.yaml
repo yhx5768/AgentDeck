@@ -62,3 +62,83 @@ providers:
       ANTHROPIC_AUTH_TOKEN: "sk-..."
     models:
       - name: "MiniMax-M3[1m]"
+
+  - name: "sensenova"                # 商汤日日新（SenseNova），见 https://platform.sensenova.cn/docs
+    env:
+      # Anthropic Messages 兼容端点。注意：不带 /v1——带了会请求 /v1/v1/messages
+      # 返回 404。API Key 在 https://platform.sensenova.cn/console/keys 申请（sk- 开头）。
+      # 付费模型（SenseChat-5 等）走 api.sensenova.cn/compatible-mode/v2，仅 OpenAI
+      # 兼容格式，无法直连本 provider。
+      ANTHROPIC_BASE_URL: "https://token.sensenova.cn"
+      ANTHROPIC_AUTH_TOKEN: "sk-..."      # 替换为你的 SenseNova API Key
+      API_TIMEOUT_MS: "3000000"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      ENABLE_TOOL_SEARCH: "true"
+      CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: "1"
+    models:
+      - name: "sensenova-6.7-flash-lite"
+        input: [text, image]        # 多模态；256K 上下文
+        env:                        # 选中的模型名要写进 ANTHROPIC_MODEL 系列别名
+          ANTHROPIC_MODEL: "sensenova-6.7-flash-lite"
+          ANTHROPIC_SMALL_FAST_MODEL: "sensenova-6.7-flash-lite"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "sensenova-6.7-flash-lite"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "sensenova-6.7-flash-lite"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "sensenova-6.7-flash-lite"
+          CLAUDE_CODE_SUBAGENT_MODEL: "sensenova-6.7-flash-lite"
+          ANTHROPIC_REASONING_MODEL: "sensenova-6.7-flash-lite"
+      - name: "sensenova-6.8-flash-lite"
+        input: [text, image]        # 多模态；256K 上下文
+        env:
+          ANTHROPIC_MODEL: "sensenova-6.8-flash-lite"
+          ANTHROPIC_SMALL_FAST_MODEL: "sensenova-6.8-flash-lite"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "sensenova-6.8-flash-lite"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "sensenova-6.8-flash-lite"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "sensenova-6.8-flash-lite"
+          CLAUDE_CODE_SUBAGENT_MODEL: "sensenova-6.8-flash-lite"
+          ANTHROPIC_REASONING_MODEL: "sensenova-6.8-flash-lite"
+      - name: "deepseek-v4-flash"
+        input: [text]               # 纯文本；1M 上下文
+        env:
+          ANTHROPIC_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_SMALL_FAST_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash"
+          CLAUDE_CODE_SUBAGENT_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_REASONING_MODEL: "deepseek-v4-flash"
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "800000"
+      - name: "deepseek-v4-pro"
+        input: [text]               # 纯文本；1M 上下文
+        env:
+          ANTHROPIC_MODEL: "deepseek-v4-pro"
+          ANTHROPIC_SMALL_FAST_MODEL: "deepseek-v4-pro"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-pro"
+          CLAUDE_CODE_SUBAGENT_MODEL: "deepseek-v4-pro"
+          ANTHROPIC_REASONING_MODEL: "deepseek-v4-pro"
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "800000"
+      - name: "glm-5.2"
+        input: [text]               # 纯文本；1M 上下文，max output 128K
+        env:
+          ANTHROPIC_MODEL: "glm-5.2"
+          ANTHROPIC_SMALL_FAST_MODEL: "glm-5.2"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.2"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.2"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-5.2"
+          CLAUDE_CODE_SUBAGENT_MODEL: "glm-5.2"
+          ANTHROPIC_REASONING_MODEL: "glm-5.2"
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "800000"
+      - name: "kimi-k3"
+        input: [text]               # 纯文本；1M 上下文
+        env:
+          ANTHROPIC_MODEL: "kimi-k3"
+          ANTHROPIC_SMALL_FAST_MODEL: "kimi-k3"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "kimi-k3"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "kimi-k3"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "kimi-k3"
+          CLAUDE_CODE_SUBAGENT_MODEL: "kimi-k3"
+          ANTHROPIC_REASONING_MODEL: "kimi-k3"
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "800000"
+      # sensenova-u1-fast / sensenova-u1.5-lite：信息图生成专用（输出为 image，
+      # 不走 chat completions），无法用于对话，不列入。
