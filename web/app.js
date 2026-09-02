@@ -2516,11 +2516,15 @@ $('#new-submit').onclick = async () => {
     effort: $('#new-effort').value,
     permission_mode: $('#new-perm').value,
   };
-  const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
-  $('#modal-new').classList.add('hidden');
-  $('#new-name').value = ''; $('#new-cwd').value = '';
-  await loadSessions();
-  openSession(s.id);
+  try {
+    const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
+    $('#modal-new').classList.add('hidden');
+    $('#new-name').value = ''; $('#new-cwd').value = '';
+    await loadSessions();
+    openSession(s.id);
+  } catch (e) {
+    alert('新建会话失败：' + e.message);
+  }
 };
 
 $('#btn-import').onclick = () => {

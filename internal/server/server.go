@@ -370,6 +370,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "workspace (cwd) is required")
 		return
 	}
+	resolvedCwd, err := runner.ResolveCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	body.Cwd = resolvedCwd
 	if body.Effort != "" && !validEffort(body.Effort) {
 		writeErr(w, http.StatusBadRequest, "invalid effort: "+body.Effort)
 		return

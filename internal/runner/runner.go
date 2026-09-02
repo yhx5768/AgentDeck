@@ -365,6 +365,42 @@ func envMapToSlice(envMap map[string]string) []string {
 	return out
 }
 
+// ResolveCwd expands a leading "~" to the user's home directory and verifies
+// the path exists and is a directory, returning the resolved path.
+//
+// os/exec does not expand "~", and a missing cmd.Dir makes cmd.Start fail
+// with the baffling "fork/exec <binary>: no such file or directory" — which
+// blames the binary, not the directory — when Setpgid is set. Callers must
+// resolve and validate the cwd here so the real problem surfaces.
+func ResolveCwd(dir string) (string, error) {
+	if dir == "" {
+		return "", fmt.Errorf("工作目录不能为空")
+	}
+	if strings.HasPrefix(dir, "~") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("无法解析 ~（主目录不可用）：%w", err)
+		}
+		switch {
+		case dir == "~":
+			dir = home
+		case strings.HasPrefix(dir, "~/"):
+			dir = filepath.Join(home, dir[2:])
+		}
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("工作目录不存在：%s", dir)
+		}
+		return "", fmt.Errorf("无法访问工作目录 %s：%w", dir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("工作目录不是目录：%s", dir)
+	}
+	return dir, nil
+}
+
 // runTurn spawns one claude process for a single user message. If the
 // message contains images, claude is invoked with --input-format
 // stream-json and the message is encoded as a single JSON user message
@@ -382,6 +418,11 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	}
 	if prov == nil {
 		m.emit(sessionID, "status", map[string]string{"state": "error", "error": "provider not found: " + sess.Provider})
+		return
+	}
+	resolvedCwd, err := ResolveCwd(sess.Cwd)
+	if err != nil {
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
 		return
 	}
 
@@ -427,7 +468,7 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	m.setRunning(sessionID, cancel)
 
 	cmd := exec.CommandContext(ctx, cli.Path, args...)
-	cmd.Dir = sess.Cwd
+	cmd.Dir = resolvedCwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -616,8 +657,12 @@ func (m *Manager) RewindFiles(sess *store.Session, checkpoint string) (string, e
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	resolvedCwd, err := ResolveCwd(sess.Cwd)
+	if err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, cli.Path, args...)
-	cmd.Dir = sess.Cwd
+	cmd.Dir = resolvedCwd
 	cmd.Env = envMapToSlice(buildEnvMap(env))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
