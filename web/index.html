@@ -31,6 +31,8 @@
     <div class="sidebar-header">
       <span class="logo">cc-webui</span>
       <span class="header-btns">
+        <button id="btn-notes" class="icon-btn" title="待办备忘"><i data-lucide="list-todo"></i></button>
+        <button id="btn-stats" class="icon-btn" title="使用统计"><i data-lucide="bar-chart-3"></i></button>
         <button id="btn-settings" class="icon-btn" title="设置"><i data-lucide="settings"></i></button>
         <button id="btn-theme" class="icon-btn" title="切换主题"><i data-lucide="moon"></i></button>
         <button id="btn-collapse" class="icon-btn" title="收起侧边栏"><i data-lucide="panel-left-close"></i></button>
@@ -44,6 +46,7 @@
     <!-- workspace toolbar: title + search + view -->
     <div class="ws-bar">
       <span class="ws-title">工作区</span>
+      <span id="ws-activity" class="ws-activity hidden"></span>
       <span class="ws-spacer"></span>
       <button id="btn-search-toggle" class="icon-btn" title="搜索对话"><i data-lucide="search"></i></button>
       <button id="btn-view-toggle" class="icon-btn" title="视图选项"><i data-lucide="settings-2"></i></button>
@@ -95,6 +98,7 @@
           <span id="status-badge" class="status-badge"></span>
           <span class="cwd" id="session-cwd" title=""></span>
           <div class="header-actions">
+            <button id="btn-resident" class="icon-btn resident-icon-btn" title="常驻：保持进程在线，可被其他会话发消息"><i data-lucide="bot"></i></button>
             <button id="btn-resume" class="icon-btn" title="复制终端恢复该会话的命令"><i data-lucide="terminal"></i></button>
             <button id="btn-stop" class="icon-btn stop-btn hidden" title="停止生成"><i data-lucide="square"></i></button>
             <button id="btn-delete" class="icon-btn" title="删除会话"><i data-lucide="trash-2"></i></button>
@@ -153,7 +157,7 @@
           </div>
           <div class="composer-toolbar">
             <div class="ct-side">
-              <button id="btn-attach" class="round-icon-btn" title="添加图片（可粘贴/拖拽）"><i data-lucide="plus"></i></button>
+              <button id="btn-attach" class="round-icon-btn" title="添加图片或文件（可粘贴/拖拽）"><i data-lucide="plus"></i></button>
               <select id="session-perm" class="pill-select" title="权限模式">
                 <option value="">默认权限</option>
                 <option value="bypassPermissions">bypass</option>
@@ -198,8 +202,8 @@
           </div>
           <div class="ns-toolbar">
             <div class="ns-toolbar-left">
-              <button id="ns-attach" class="round-icon-btn" title="添加图片"><i data-lucide="paperclip"></i></button>
-              <input type="file" id="ns-attach-file" accept="image/*" multiple hidden>
+              <button id="ns-attach" class="round-icon-btn" title="添加图片或文件"><i data-lucide="paperclip"></i></button>
+              <input type="file" id="ns-attach-file" multiple hidden>
               <select id="ns-perm" class="pill-select" title="权限模式">
                 <option value="">默认权限</option>
                 <option value="bypassPermissions">bypass</option>
@@ -292,6 +296,23 @@
   <button data-action="delete" class="danger"><i data-lucide="trash-2"></i>删除</button>
 </div>
 
+<!-- 工作区任务 popover：悬停/点击 ws-activity 徽章，列出运行中 / 已完成的任务 -->
+<div id="ws-pop" class="ws-pop hidden"></div>
+
+<!-- resident (peer messaging) panel：常驻开关 + 地址名 -->
+<div id="resident-pop" class="popover-panel hidden">
+  <label class="rp-row rp-toggle">
+    <span>常驻进程（可被其他会话发消息）</span>
+    <label class="rp-switch" title="切换常驻"><input type="checkbox" id="resident-toggle"><span class="rp-switch-slider"></span></label>
+  </label>
+  <label class="rp-row">
+    <span class="rp-label">地址名</span>
+    <input id="resident-name" spellcheck="false" placeholder="默认取会话名">
+  </label>
+  <div class="rp-status" id="resident-status"></div>
+  <div class="rp-hint">开启后进程保持在线并注册地址名，其他 Claude 会话可用 SendMessage 发消息过来；修改地址名会自动重启常驻进程。</div>
+</div>
+
 <!-- rename dialog -->
 <div id="modal-rename" class="modal hidden">
   <div class="modal-card">
@@ -349,7 +370,7 @@
 
 <!-- Import modal -->
 <div id="modal-import" class="modal hidden">
-  <div class="modal-card wide">
+  <div class="modal-card wide import-modal">
     <h3>导入 Claude Code 已有会话</h3>
     <div class="import-hint">
       SSH 里找 session id：<code>ls -t ~/.claude/projects/*/*.jsonl | head</code>（文件名 <code>~/.claude/projects/&lt;cwd-slug&gt;/&lt;session-id&gt;.jsonl</code>）
@@ -361,7 +382,12 @@
       <select id="import-provider"></select>
       <button class="ghost-btn" id="import-scan">扫描</button>
     </div>
-    <div id="import-list"></div>
+    <div class="import-split">
+      <div id="import-list"></div>
+      <div id="import-preview" class="import-preview">
+        <div class="ip-empty">← 选择左侧会话查看预览</div>
+      </div>
+    </div>
     <div class="modal-actions">
       <button class="ghost-btn" data-close>关闭</button>
     </div>
@@ -381,6 +407,34 @@
     <div class="modal-actions">
       <button class="ghost-btn" data-close>取消</button>
       <button class="primary-btn" id="rewind-submit">回滚</button>
+    </div>
+  </div>
+</div>
+
+<!-- 使用统计：热力图 + 汇总方块，数据来自 GET /api/stats -->
+<div id="modal-stats" class="modal hidden">
+  <div class="modal-card stats-card">
+    <h3>使用统计</h3>
+    <div class="stats-note">统计 ~/.claude/projects 下全部会话（与导入列表同源）。消息按各自发生日期分桶，跨天会话会摊到各活跃日。</div>
+    <div id="stats-loading" class="stats-loading">统计中…</div>
+    <div id="stats-body" class="stats-body hidden">
+      <div class="stats-tiles" id="stats-tiles"></div>
+      <div class="stats-heat">
+        <!-- 可横向滚动的部分单独包一层，避免 overflow 裁剪 tooltip -->
+        <div class="heat-scroll">
+          <div class="heatmap" id="heatmap"></div>
+          <div class="heat-months" id="heat-months"></div>
+          <div class="heat-footer">
+            <span class="heat-legend" id="heat-legend"></span>
+            <span class="heat-detail" id="heat-detail"></span>
+          </div>
+        </div>
+        <div id="heat-tooltip" class="heat-tooltip hidden"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close>关闭</button>
+      <button class="ghost-btn" id="stats-refresh">刷新</button>
     </div>
   </div>
 </div>
@@ -410,11 +464,30 @@
   </div>
 </div>
 
+<!-- 待办备忘（服务端持久化，重启不丢） -->
+<div id="modal-notes" class="modal hidden">
+  <div class="modal-card notes-card">
+    <h3>待办备忘</h3>
+    <div class="notes-note">保存在服务器，后端重启后依然在。</div>
+    <div class="notes-input-row">
+      <input id="notes-new" placeholder="记一条待办，回车添加" autocomplete="off">
+      <button id="notes-add" class="primary-btn">添加</button>
+    </div>
+    <div id="notes-list" class="notes-list"></div>
+    <div id="notes-empty" class="notes-empty">还没有待办。</div>
+    <div id="notes-status" class="notes-status hidden"></div>
+    <div class="modal-actions">
+      <button class="ghost-btn" id="notes-clear">清空已完成</button>
+      <button class="ghost-btn" data-close>关闭</button>
+    </div>
+  </div>
+</div>
+
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
 <script src="/vendor/lucide.min.js"></script>
-<input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+<input type="file" id="file-input" multiple hidden>
 <script src="/trajectory.js"></script>
 <script src="/app.js"></script>
 </body>

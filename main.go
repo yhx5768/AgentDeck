@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"cc-webui/internal/config"
 	"cc-webui/internal/runner"
@@ -31,19 +32,29 @@ func main() {
 	if *listen != "" {
 		cfg.Listen = *listen
 	}
+	cm := config.NewManager(*configPath, cfg)
 
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
-	mgr := runner.NewManager(cfg, st)
+	mgr := runner.NewManager(cm, st)
 
 	static, err := fs.Sub(webFS, "web")
 	if err != nil {
 		log.Fatalf("embed fs: %v", err)
 	}
 
-	srv := server.New(cfg, st, mgr, static)
+	srv := server.New(cm, st, mgr, static)
+
+	// Respawn resident-mode sessions (peer-messaging reachable) in the
+	// background; staggered internally to avoid a boot storm.
+	go mgr.RestoreResidents()
+
+	// Hot-reload config.yaml (clis/providers/models); on every successful
+	// reload, tell connected clients so the UI refreshes model lists. The
+	// initial config itself is served via cm for later reads.
+	go cm.Watch(3*time.Second, mgr.BroadcastConfigChanged)
 
 	fmt.Printf("cc-webui\n")
 	fmt.Printf("  listen:      %s\n", cfg.Listen)

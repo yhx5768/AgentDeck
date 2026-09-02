@@ -25,6 +25,12 @@ type Status struct {
 	Running   bool   `json:"running"`
 	Queued    int    `json:"queued"`
 	LastError string `json:"last_error,omitempty"`
+	// Resident is true while a long-lived streaming-input process is alive
+	// (peer-messaging reachable). RegisteredName is the name the CLI actually
+	// registered under (~/.claude/sessions/<pid>.json) — it may differ from
+	// the requested peer name when another live session holds it.
+	Resident       bool   `json:"resident,omitempty"`
+	RegisteredName string `json:"registered_name,omitempty"`
 }
 
 // Image is an inline base64 image attached to a user message.
@@ -33,12 +39,47 @@ type Image struct {
 	Data      string `json:"data"`       // base64-encoded (no data: prefix)
 }
 
-// Message is a user turn: text plus optional images. Images trigger the
-// --input-format stream-json path; text-only messages use the simpler
-// argv path.
+// UploadedFile is a user-uploaded file that the server has persisted to disk
+// (data/uploads/<sid>/). The agent is told the absolute path and reads or
+// parses it with its own tools — the model API relays here reject inline
+// document/file content blocks, so files cannot ride the multimodal channel.
+type UploadedFile struct {
+	Name string `json:"name"` // original file name (display only)
+	Path string `json:"path"` // absolute on-disk path
+}
+
+// Message is a user turn: text plus optional images and files. Images trigger
+// the --input-format stream-json path; text-only messages (with or without
+// files, which are mentioned in the text) use the simpler argv path.
 type Message struct {
-	Text   string  `json:"text"`
-	Images []Image `json:"images,omitempty"`
+	Text   string         `json:"text"`
+	Images []Image        `json:"images,omitempty"`
+	Files  []UploadedFile `json:"files,omitempty"`
+}
+
+// turnText composes the text actually sent to the CLI for a user turn: the
+// user's text plus, for uploaded files, a mention block listing each file's
+// on-disk path so the agent can Read or parse them. The composed string must
+// be the single source of truth for every place that carries the turn's text:
+// the persisted user event (merged with the CLI's own transcript echo by
+// trimmed-text match in mergeStoredAndClaude), the stdin payload, and the
+// captureCheckpoint match text — they all have to agree or replay dedup /
+// rewind lookup break.
+func turnText(msg Message) string {
+	if len(msg.Files) == 0 {
+		return msg.Text
+	}
+	var b strings.Builder
+	b.WriteString(msg.Text)
+	if msg.Text != "" {
+		b.WriteString("\n\n")
+	}
+	fmt.Fprintf(&b, "（用户上传了 %d 个文件，已保存到磁盘：）", len(msg.Files))
+	for _, f := range msg.Files {
+		b.WriteString("\n- ")
+		b.WriteString(f.Path)
+	}
+	return b.String()
 }
 
 type sessionRuntime struct {
@@ -49,21 +90,25 @@ type sessionRuntime struct {
 	lastErr       string
 	subs          map[chan *store.Event]struct{}
 	statusCh      chan struct{} // closed/replaced on every status change
-	streamSeq     int64        // counter for synthetic (non-persisted) seqs
-	streamSeqBase int64        // base: max(persisted seq) + 1, set lazily
+	streamSeq     int64         // counter for synthetic (non-persisted) seqs
+	streamSeqBase int64         // base: max(persisted seq) + 1, set lazily
+	resident      *residentProc // live resident process (nil in one-shot mode)
 }
 
 // Manager spawns claude processes and fans out stream events.
 type Manager struct {
-	cfg   *config.Config
+	cm    *config.Manager
 	st    *store.Store
 	mu    sync.Mutex
 	procs map[string]*sessionRuntime
 }
 
-func NewManager(cfg *config.Config, st *store.Store) *Manager {
-	return &Manager{cfg: cfg, st: st, procs: map[string]*sessionRuntime{}}
+func NewManager(cm *config.Manager, st *store.Store) *Manager {
+	return &Manager{cm: cm, st: st, procs: map[string]*sessionRuntime{}}
 }
+
+// cfg returns the live config (hot-reloadable via config.Manager.Watch).
+func (m *Manager) cfg() *config.Config { return m.cm.Get() }
 
 func (m *Manager) rt(sessionID string) *sessionRuntime {
 	m.mu.Lock()
@@ -78,10 +123,31 @@ func (m *Manager) rt(sessionID string) *sessionRuntime {
 
 // GetStatus returns runtime status; unknown sessions are idle.
 func (m *Manager) GetStatus(sessionID string) Status {
+	// Fetch before r.mu: store lock must never be taken while holding r.mu.
+	sess := m.st.Get(sessionID)
 	r := m.rt(sessionID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return Status{Running: r.cancel != nil, Queued: len(r.queue), LastError: r.lastErr}
+	st := Status{Running: r.cancel != nil, Queued: len(r.queue), LastError: r.lastErr}
+	if r.resident != nil {
+		select {
+		case <-r.resident.dead:
+		default:
+			st.Resident = true
+			name, _ := r.resident.regName()
+			if name == "" && r.resident.registryRefreshDue() {
+				// Registration may lag spawn (slow warmup) or be written by a
+				// child process (launcher CLIs like ducc) — refresh on demand
+				// so the frontend doesn't sit at "注册中" forever.
+				if e := m.lookupRegistry(r.resident, sess); e != nil {
+					r.resident.setRegName(e.Name, e.NameSource)
+					name = e.Name
+				}
+			}
+			st.RegisteredName = name
+		}
+	}
+	return st
 }
 
 // LockForRewind atomically marks the session busy (so no turn can start) if it
@@ -199,6 +265,22 @@ func (m *Manager) BroadcastEvent(sessionID string, ev *store.Event) {
 	}
 }
 
+// BroadcastConfigChanged notifies every connected SSE client that the config
+// was hot-reloaded, so the UI can refresh its cli/provider/model lists. The
+// event is transient (never persisted); the SSE handler renumbers seqs anyway.
+func (m *Manager) BroadcastConfigChanged() {
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.procs))
+	for id := range m.procs {
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
+	ev := &store.Event{Kind: "config_changed", Ts: time.Now(), Data: json.RawMessage(`{}`)}
+	for _, id := range ids {
+		m.BroadcastEvent(id, ev)
+	}
+}
+
 // nextSyntheticSeq returns the next seq for transient (non-persisted)
 // events on this session. It seeds itself from the highest seq already
 // persisted to the events file, then increments. Values are unique within
@@ -237,8 +319,9 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 		return fmt.Errorf("session not found")
 	}
 	// Persist the user turn (text only — images are reconstructed from the
-	// current draft on the client and aren't durable state).
-	if _, err := m.st.AppendEvent(sessionID, "user", map[string]string{"text": msg.Text}); err != nil {
+	// current draft on the client and aren't durable state; uploaded files
+	// are mentioned in the composed text so replay shows where they live).
+	if _, err := m.st.AppendEvent(sessionID, "user", map[string]string{"text": turnText(msg)}); err != nil {
 		return err
 	}
 	events, _ := m.st.Events(sessionID)
@@ -292,7 +375,13 @@ func (m *Manager) work(sessionID string) {
 		r.queue = r.queue[1:]
 		r.notifyStatus()
 		r.mu.Unlock()
-		m.runTurn(sessionID, msg)
+		// Resident sessions run turns on their long-lived streaming-input
+		// process; everyone else spawns a one-shot process per turn.
+		if sess := m.st.Get(sessionID); sess != nil && sess.Resident {
+			m.runResidentTurn(sessionID, msg)
+		} else {
+			m.runTurn(sessionID, msg)
+		}
 	}
 }
 
@@ -323,16 +412,21 @@ func SettingsPath(dataDir, cliName, providerName, modelName string) string {
 // settingsFile materializes env into a claude --settings JSON file under
 // <data_dir>/settings/. Rewritten on every turn so config edits only need a
 // process restart (not a session rebuild).
+//
+// crossSessionInbound:"accept" is included unconditionally: cc-webui is a
+// single-user console where inbound peer messages come from the user's own
+// other sessions, and "hold" would park them forever (there is no interactive
+// approver in headless mode). Repo/managed settings can still tighten it.
 func (m *Manager) settingsFile(cliName, providerName, modelName string, env map[string]string) (string, error) {
-	dir := filepath.Join(m.cfg.DataDir, "settings")
+	dir := filepath.Join(m.cfg().DataDir, "settings")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	raw, err := json.Marshal(map[string]any{"env": env})
+	raw, err := json.Marshal(map[string]any{"env": env, "crossSessionInbound": "accept"})
 	if err != nil {
 		return "", err
 	}
-	path := SettingsPath(m.cfg.DataDir, cliName, providerName, modelName)
+	path := SettingsPath(m.cfg().DataDir, cliName, providerName, modelName)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		return "", err
 	}
@@ -410,8 +504,8 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	if sess == nil {
 		return
 	}
-	cli := m.cfg.CLIByName(sess.CLI)
-	prov := m.cfg.ProviderByName(sess.Provider)
+	cli := m.cfg().CLIByName(sess.CLI)
+	prov := m.cfg().ProviderByName(sess.Provider)
 	if cli == nil {
 		m.emit(sessionID, "status", map[string]string{"state": "error", "error": "cli not found: " + sess.CLI})
 		return
@@ -428,6 +522,7 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 
 	m.emit(sessionID, "status", map[string]string{"state": "turn_start"})
 
+	text := turnText(msg)
 	multimodal := len(msg.Images) > 0
 	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	if multimodal {
@@ -498,8 +593,8 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	}
 	if multimodal {
 		content := []map[string]any{}
-		if msg.Text != "" {
-			content = append(content, map[string]any{"type": "text", "text": msg.Text})
+		if text != "" {
+			content = append(content, map[string]any{"type": "text", "text": text})
 		}
 		for _, img := range msg.Images {
 			content = append(content, map[string]any{
@@ -517,7 +612,7 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 		})
 		stdin.Write(append(payload, '\n'))
 	} else {
-		stdin.Write([]byte(msg.Text))
+		stdin.Write([]byte(text))
 	}
 	stdin.Close()
 
@@ -567,7 +662,20 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 		if errMsg == "" {
 			errMsg = waitErr.Error()
 		}
-		m.emit(sessionID, "status", map[string]string{"state": "error", "error": errMsg})
+		// Surface structured claude-code errors in a friendlier shape and flag
+		// errors that are known to occur after usable output has already been
+		// streamed (e.g. model validation warnings from compatible CLIs).
+		errMeta := parseClaudeCodeError(errMsg)
+		if errMeta.Kind == "unrecognized_model" {
+			m.emit(sessionID, "status", map[string]any{
+				"state":          "error",
+				"error":          errMeta.Message,
+				"recoverable":    true,
+				"original_error": errMsg,
+			})
+		} else {
+			m.emit(sessionID, "status", map[string]string{"state": "error", "error": errMsg})
+		}
 		m.setIdle(sessionID, errMsg)
 	default:
 		m.emit(sessionID, "status", map[string]string{"state": "turn_end"})
@@ -578,16 +686,60 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	}
 }
 
+// claudeCodeError is a parsed [claude-code:<kind>] line from CLI stderr.
+type claudeCodeError struct {
+	Kind    string
+	Message string
+	Raw     string
+}
+
+// parseClaudeCodeError recognizes stderr lines like:
+//
+//	[claude-code:unrecognized_model] {"model":"glm-5.3-flash[1m]","query_source":"sdk"}
+//
+// and returns a human-readable message plus the structured kind. Unknown
+// shapes return an empty Kind.
+func parseClaudeCodeError(stderr string) claudeCodeError {
+	for _, rawLine := range strings.Split(stderr, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "[claude-code:") {
+			continue
+		}
+		end := strings.IndexByte(line, ']')
+		if end < 0 {
+			continue
+		}
+		kind := line[len("[claude-code:"):end]
+		jsonPart := strings.TrimSpace(line[end+1:])
+		switch kind {
+		case "unrecognized_model":
+			var payload struct {
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal([]byte(jsonPart), &payload); err == nil && payload.Model != "" {
+				return claudeCodeError{
+					Kind:    kind,
+					Message: fmt.Sprintf("CLI 报告模型未被识别：%s（但本轮输出可能已返回）", payload.Model),
+					Raw:     stderr,
+				}
+			}
+			return claudeCodeError{Kind: kind, Message: "CLI 报告模型未被识别（但本轮输出可能已返回）", Raw: stderr}
+		}
+	}
+	return claudeCodeError{}
+}
+
 // captureCheckpoint finds the uuid claude logged for this turn's user prompt,
 // writes it into the corresponding user event (data.checkpoint), and notifies
 // connected clients to attach a rewind button to the last rendered user msg.
 // No-op for multimodal/image-only messages (no matchable text) or if the uuid
 // can't be found.
 func (m *Manager) captureCheckpoint(sessionID string, msg Message, sess *store.Session) {
-	if sess.ClaudeSessionID == "" || strings.TrimSpace(msg.Text) == "" {
+	text := turnText(msg)
+	if sess.ClaudeSessionID == "" || strings.TrimSpace(text) == "" {
 		return
 	}
-	uuid := claudehist.LastUserUUID(sess.Cwd, sess.ClaudeSessionID, msg.Text)
+	uuid := claudehist.LastUserUUID(sess.Cwd, sess.ClaudeSessionID, text)
 	if uuid == "" {
 		return
 	}
@@ -630,11 +782,11 @@ func (m *Manager) RewindFiles(sess *store.Session, checkpoint string) (string, e
 	if sess.ClaudeSessionID == "" {
 		return "", fmt.Errorf("session has no claude session id")
 	}
-	cli := m.cfg.CLIByName(sess.CLI)
+	cli := m.cfg().CLIByName(sess.CLI)
 	if cli == nil {
 		return "", fmt.Errorf("cli not found: %s", sess.CLI)
 	}
-	prov := m.cfg.ProviderByName(sess.Provider)
+	prov := m.cfg().ProviderByName(sess.Provider)
 	model := ""
 	var env map[string]string
 	if prov != nil {

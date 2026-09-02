@@ -49,9 +49,10 @@ function trajCurrentTurn() {
 }
 
 // userText 为 null 时是系统初始化段（n=0），否则开启新一轮（n 从 1 递增）。
-function trajNewTurn(userText, ts) {
+function trajNewTurn(userText, ts, opts) {
   const n = userText == null ? 0 : ++traj.turnCount;
   const turn = { n, userText: userText || '', records: [], startTs: ts || 0, el: null, bodyEl: null, metaEl: null, dirty: true };
+  if (opts && opts.peer) turn.peer = opts.peer; // { name, body } when this turn was triggered by an inbound peer message
   traj.turns.push(turn);
   return turn;
 }
@@ -96,6 +97,17 @@ function trajProject(ev) {
         summary: `model ${d.model || '?'} · ${d.cwd || ''}`,
         detail: { session_id: d.session_id, model: d.model, cwd: d.cwd, tools, slash_commands: (d.slash_commands || []).join(', ') },
       });
+      return;
+    }
+    case 'user': {
+      // 入站 peer 消息：起一个新轮次，title 显示来源 name，正文按 md 渲染。
+      // 主对话的入站气泡是 msg-peer，这里在轨迹里走同样的语义但用台账视图。
+      const origin = d.origin || {};
+      if (origin.kind !== 'peer') return; // tool_result 等普通 user stream 留给 assistant/tool 分支
+      const name = origin.name || 'peer';
+      const body = origin.body || '';
+      const turn = trajNewTurn(`⇢ 来自 ${name}：${body.split('\n')[0].slice(0, 60)}`, ts, { peer: { name, body } });
+      trajAddRecord(turn, { kind: 'peer', ts, summary: `来自 ${name}`, body, name });
       return;
     }
     case 'assistant': {
@@ -262,6 +274,7 @@ function trajTurnMeta(turn) {
 
 function trajTurnTitle(turn) {
   if (turn.n === 0) return '系统初始化';
+  if (turn.peer) return `轮次 ${turn.n} · ⇢ ${turn.peer.name || 'peer'}`;
   return `轮次 ${turn.n}`;
 }
 
@@ -417,6 +430,18 @@ function trajDetailSummary(r) {
     if (r.toolResult) trajAddSec(det, r.isError ? '结果（错误）' : '结果', r.toolResult, r.isError ? 'traj-err' : '');
   } else if (r.kind === 'user') {
     trajAddSec(det, '内容', r.text);
+  } else if (r.kind === 'peer') {
+    const sec = document.createElement('div');
+    sec.className = 'traj-sec traj-peer';
+    const label = document.createElement('div');
+    label.className = 'traj-sec-label';
+    label.textContent = '来自 ' + (r.name || 'peer'); // textContent 自动转义
+    sec.appendChild(label);
+    const mdEl = document.createElement('div');
+    mdEl.className = 'traj-md';
+    mdEl.innerHTML = md(r.body || ''); // body 走 marked + DOMPurify 已在 md() 里处理
+    sec.appendChild(mdEl);
+    det.appendChild(sec);
   } else if (r.kind === 'system' && r.detail) {
     for (const [k, v] of Object.entries(r.detail)) if (v) trajAddSec(det, k, String(v));
   } else if (r.kind === 'result') {
@@ -487,7 +512,7 @@ function trajBuildTurnEl(turn) {
   root.dataset.turn = String(turn.n);
 
   const header = document.createElement('div');
-  header.className = 'traj-turn-header';
+  header.className = 'traj-turn-header' + (turn.peer ? ' peer' : '');
   const chev = trajIsCollapsed(turn) ? '▸' : '▾';
   header.innerHTML =
     `<span class="traj-chev">${chev}</span>` +

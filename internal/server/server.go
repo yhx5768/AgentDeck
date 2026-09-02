@@ -8,14 +8,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/config"
@@ -42,18 +45,21 @@ func validEffort(s string) bool {
 const cookieName = "ccgw_token"
 
 type Server struct {
-	cfg    *config.Config
+	cm     *config.Manager
 	st     *store.Store
 	mgr    *runner.Manager
 	static fs.FS
 	mux    *http.ServeMux
 }
 
-func New(cfg *config.Config, st *store.Store, mgr *runner.Manager, static fs.FS) *Server {
-	s := &Server{cfg: cfg, st: st, mgr: mgr, static: static, mux: http.NewServeMux()}
+func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS) *Server {
+	s := &Server{cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
+
+// cfg returns the live config (hot-reloadable via config.Manager.Watch).
+func (s *Server) cfg() *config.Config { return s.cm.Get() }
 
 func (s *Server) Handler() http.Handler { return s.mux }
 
@@ -73,10 +79,15 @@ func (s *Server) routes() {
 	s.mux.Handle("PATCH /api/sessions/{id}", s.auth(s.handlePatchSession))
 	s.mux.Handle("DELETE /api/sessions/{id}", s.auth(s.handleDeleteSession))
 	s.mux.Handle("POST /api/sessions/{id}/messages", s.auth(s.handlePostMessage))
+	s.mux.Handle("POST /api/sessions/{id}/uploads", s.auth(s.handleUpload))
 	s.mux.Handle("POST /api/sessions/{id}/stop", s.auth(s.handleStop))
 	s.mux.Handle("GET /api/sessions/{id}/events", s.auth(s.handleEvents))
 	s.mux.Handle("GET /api/claude-sessions", s.auth(s.handleClaudeSessions))
+	s.mux.Handle("GET /api/claude-sessions/preview", s.auth(s.handleClaudeSessionPreview))
 	s.mux.Handle("POST /api/sessions/import", s.auth(s.handleImport))
+	s.mux.Handle("GET /api/stats", s.auth(s.handleStats))
+	s.mux.Handle("GET /api/notes", s.auth(s.handleGetNotes))
+	s.mux.Handle("PUT /api/notes", s.auth(s.handlePutNotes))
 	s.mux.Handle("POST /api/sessions/{id}/fork", s.auth(s.handleFork))
 	s.mux.Handle("POST /api/sessions/{id}/rewind", s.auth(s.handleRewind))
 	s.mux.Handle("GET /api/files", s.auth(s.handleReadFile))
@@ -99,7 +110,7 @@ func (s *Server) tokenOK(r *http.Request) bool {
 	if token == "" {
 		token = r.URL.Query().Get("token")
 	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.GatewayToken)) == 1
+	return subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg().GatewayToken)) == 1
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.Handler {
@@ -110,6 +121,18 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 		}
 		next(w, r)
 	})
+}
+
+// sortedKeys returns m's keys sorted. Map iteration order is randomized, and
+// /api/clis / /api/providers render env_keys from maps, so sorting keeps the
+// payloads byte-stable — the frontend diffs them to detect config hot reloads.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -137,7 +160,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(s.cfg.GatewayToken)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(s.cfg().GatewayToken)) != 1 {
 		writeErr(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
@@ -165,19 +188,17 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCLIs(w http.ResponseWriter, r *http.Request) {
 	type item struct {
-		Name           string   `json:"name"`
-		Path           string   `json:"path"`
-		Args           []string `json:"args"`
-		PermissionMode string   `json:"permission_mode"`
-		PartialMessages bool    `json:"partial_messages"`
-		EnvKeys        []string `json:"env_keys"`
+		Name            string   `json:"name"`
+		Path            string   `json:"path"`
+		Args            []string `json:"args"`
+		PermissionMode  string   `json:"permission_mode"`
+		PartialMessages bool     `json:"partial_messages"`
+		EnvKeys         []string `json:"env_keys"`
 	}
 	out := []item{}
-	for _, c := range s.cfg.CLIs {
+	for _, c := range s.cfg().CLIs {
 		it := item{Name: c.Name, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode, PartialMessages: c.PartialMessages}
-		for k := range c.Env {
-			it.EnvKeys = append(it.EnvKeys, k)
-		}
+		it.EnvKeys = sortedKeys(c.Env)
 		out = append(out, it)
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -195,19 +216,15 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		Models  []model  `json:"models"`
 	}
 	out := []prov{}
-	for _, p := range s.cfg.Providers {
+	for _, p := range s.cfg().Providers {
 		item := prov{Name: p.Name}
-		for k := range p.Env {
-			item.EnvKeys = append(item.EnvKeys, k)
-		}
+		item.EnvKeys = sortedKeys(p.Env)
 		for _, m := range p.Models {
 			mm := model{Name: m.Name, Input: m.Input}
 			if mm.Input == nil {
 				mm.Input = []string{"text"}
 			}
-			for k := range m.Env {
-				mm.EnvKeys = append(mm.EnvKeys, k)
-			}
+			mm.EnvKeys = sortedKeys(m.Env)
 			item.Models = append(item.Models, mm)
 		}
 		out = append(out, item)
@@ -238,26 +255,20 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		CLIs      []cli  `json:"clis"`
 		Providers []prov `json:"providers"`
 	}{}
-	for _, c := range s.cfg.CLIs {
+	for _, c := range s.cfg().CLIs {
 		it := cli{Name: c.Name, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode}
-		for k := range c.Env {
-			it.EnvKeys = append(it.EnvKeys, k)
-		}
+		it.EnvKeys = sortedKeys(c.Env)
 		out.CLIs = append(out.CLIs, it)
 	}
-	for _, p := range s.cfg.Providers {
+	for _, p := range s.cfg().Providers {
 		item := prov{Name: p.Name}
-		for k := range p.Env {
-			item.EnvKeys = append(item.EnvKeys, k)
-		}
+		item.EnvKeys = sortedKeys(p.Env)
 		for _, m := range p.Models {
 			mm := model{Name: m.Name, Input: m.Input}
 			if mm.Input == nil {
 				mm.Input = []string{"text"}
 			}
-			for k := range m.Env {
-				mm.EnvKeys = append(mm.EnvKeys, k)
-			}
+			mm.EnvKeys = sortedKeys(m.Env)
 			item.Models = append(item.Models, mm)
 		}
 		out.Providers = append(out.Providers, item)
@@ -268,8 +279,8 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	home, _ := os.UserHomeDir()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"default_cwd": s.cfg.DefaultCwd,
-		"data_dir":    s.cfg.DataDir,
+		"default_cwd": s.cfg().DefaultCwd,
+		"data_dir":    s.cfg().DataDir,
 		"home":        home,
 	})
 }
@@ -296,8 +307,8 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 	if sess.ClaudeSessionID == "" {
 		return ""
 	}
-	cli := s.cfg.CLIByName(sess.CLI)
-	prov := s.cfg.ProviderByName(sess.Provider)
+	cli := s.cfg().CLIByName(sess.CLI)
+	prov := s.cfg().ProviderByName(sess.Provider)
 	var cliPath string
 	var settings string
 	if cli != nil {
@@ -309,7 +320,7 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 	if cli != nil && prov != nil {
 		model := prov.EffectiveModel(sess.ModelOverride)
 		if len(cli.EffectiveEnv(prov, model)) > 0 {
-			settings = runner.SettingsPath(s.cfg.DataDir, cli.Name, prov.Name, model)
+			settings = runner.SettingsPath(s.cfg().DataDir, cli.Name, prov.Name, model)
 		}
 	}
 	cmd := "cd " + shellQuote(sess.Cwd) + " && " + shellQuote(cliPath) + " --resume " + sess.ClaudeSessionID
@@ -346,18 +357,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if body.CLI == "" && len(s.cfg.CLIs) > 0 {
-		body.CLI = s.cfg.CLIs[0].Name
+	if body.CLI == "" && len(s.cfg().CLIs) > 0 {
+		body.CLI = s.cfg().CLIs[0].Name
 	}
-	if body.Provider == "" && len(s.cfg.Providers) > 0 {
-		body.Provider = s.cfg.Providers[0].Name
+	if body.Provider == "" && len(s.cfg().Providers) > 0 {
+		body.Provider = s.cfg().Providers[0].Name
 	}
-	cli := s.cfg.CLIByName(body.CLI)
+	cli := s.cfg().CLIByName(body.CLI)
 	if cli == nil {
 		writeErr(w, http.StatusBadRequest, "unknown cli: "+body.CLI)
 		return
 	}
-	prov := s.cfg.ProviderByName(body.Provider)
+	prov := s.cfg().ProviderByName(body.Provider)
 	if prov == nil {
 		writeErr(w, http.StatusBadRequest, "unknown provider: "+body.Provider)
 		return
@@ -427,16 +438,18 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		PermissionMode *string `json:"permission_mode"`
 		Archived       *bool   `json:"archived"`
 		SortOrder      *int    `json:"sort_order"`
+		Resident       *bool   `json:"resident"`
+		PeerName       *string `json:"peer_name"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if body.CLI != nil && s.cfg.CLIByName(*body.CLI) == nil {
+	if body.CLI != nil && s.cfg().CLIByName(*body.CLI) == nil {
 		writeErr(w, http.StatusBadRequest, "unknown cli: "+*body.CLI)
 		return
 	}
-	if body.Provider != nil && s.cfg.ProviderByName(*body.Provider) == nil {
+	if body.Provider != nil && s.cfg().ProviderByName(*body.Provider) == nil {
 		writeErr(w, http.StatusBadRequest, "unknown provider: "+*body.Provider)
 		return
 	}
@@ -446,7 +459,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		if body.Provider != nil {
 			provName = *body.Provider
 		}
-		if prov := s.cfg.ProviderByName(provName); prov != nil && prov.ModelByName(*body.Model) == nil {
+		if prov := s.cfg().ProviderByName(provName); prov != nil && prov.ModelByName(*body.Model) == nil {
 			writeErr(w, http.StatusBadRequest, "unknown model for provider "+provName+": "+*body.Model)
 			return
 		}
@@ -454,6 +467,39 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	if body.Effort != nil && *body.Effort != "" && !validEffort(*body.Effort) {
 		writeErr(w, http.StatusBadRequest, "invalid effort: "+*body.Effort)
 		return
+	}
+	// Peer-name changes write the claude transcript (custom-title). Validate
+	// and apply BEFORE storing so a transcript failure doesn't leave metadata
+	// the CLI never saw. A session without a claude id just stores the value;
+	// it's applied at the first resident spawn.
+	if body.PeerName != nil {
+		cleaned := runner.CleanPeerName(*body.PeerName)
+		if strings.TrimSpace(*body.PeerName) != "" && cleaned == "" {
+			writeErr(w, http.StatusBadRequest, "地址名无效：不能以 / 开头")
+			return
+		}
+		if sess.ClaudeSessionID != "" {
+			name := cleaned
+			if name == "" {
+				name = runner.CleanPeerName(sess.Name)
+			}
+			if name != "" {
+				if err := claudehist.RenameSession(sess.Cwd, sess.ClaudeSessionID, name); err != nil {
+					writeErr(w, http.StatusBadGateway, "写入会话地址名失败："+err.Error())
+					return
+				}
+			}
+		}
+		if err := s.st.Upsert(sess, func(cur *store.Session) { cur.PeerName = cleaned }); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if body.Resident != nil {
+		if err := s.st.Upsert(sess, func(cur *store.Session) { cur.Resident = *body.Resident }); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	err := s.st.Upsert(sess, func(cur *store.Session) {
 		if body.Name != nil {
@@ -466,7 +512,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			cur.Provider = *body.Provider
 			// The stored model override may not exist in the new provider.
 			if cur.ModelOverride != "" {
-				if prov := s.cfg.ProviderByName(cur.Provider); prov != nil && prov.ModelByName(cur.ModelOverride) == nil {
+				if prov := s.cfg().ProviderByName(cur.Provider); prov != nil && prov.ModelByName(cur.ModelOverride) == nil {
 					cur.ModelOverride = ""
 				}
 			}
@@ -492,12 +538,37 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Process-level side effects, after all metadata is stored so the manager
+	// sees the final values.
+	cur := s.st.Get(sess.ID)
+	if body.Resident != nil {
+		if *body.Resident {
+			if err := s.mgr.EnsureResident(sess.ID); err != nil {
+				writeErr(w, http.StatusBadGateway, "常驻进程启动失败："+err.Error())
+				return
+			}
+		} else {
+			s.mgr.TeardownResident(sess.ID)
+		}
+	} else if body.PeerName != nil {
+		// Rename a live resident under the new address (restart). Skipped when
+		// resident was toggled in the same request — EnsureResident's spawn
+		// already registered the new name.
+		if err := s.mgr.ApplyPeerName(cur); err != nil {
+			log.Printf("apply peer name for %s: %v", sess.ID, err)
+		}
+	}
 	writeJSON(w, http.StatusOK, s.view(s.st.Get(sess.ID)))
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	s.mgr.TeardownResident(id)
 	s.mgr.Stop(id)
+	// Uploaded attachments live under data/uploads/<sid>/ — drop them with
+	// the session. Best-effort: the store is the source of truth, a leftover
+	// uploads dir is only wasted space.
+	_ = os.RemoveAll(filepath.Join(s.cfg().DataDir, "uploads", id))
 	if err := s.st.Delete(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -513,27 +584,107 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Text   string             `json:"text"`
-		Images []runner.Image     `json:"images,omitempty"`
+		Text   string                `json:"text"`
+		Images []runner.Image        `json:"images,omitempty"`
+		Files  []runner.UploadedFile `json:"files,omitempty"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if strings.TrimSpace(body.Text) == "" && len(body.Images) == 0 {
+	if strings.TrimSpace(body.Text) == "" && len(body.Images) == 0 && len(body.Files) == 0 {
 		writeErr(w, http.StatusBadRequest, "empty message")
 		return
+	}
+	// Files must have come from this session's uploads dir — the paths are
+	// interpolated into the turn's text, so a crafted payload must not be
+	// able to point (or inject) outside what the upload endpoint wrote.
+	upDir := filepath.Join(s.cfg().DataDir, "uploads", id) + string(os.PathSeparator)
+	for _, f := range body.Files {
+		if !strings.HasPrefix(f.Path, upDir) {
+			writeErr(w, http.StatusBadRequest, "invalid file path")
+			return
+		}
 	}
 	// Workspace gate: refuse turns until the session has a cwd.
 	if sess.Cwd == "" {
 		writeErr(w, http.StatusBadRequest, "select a workspace before sending messages")
 		return
 	}
-	if err := s.mgr.Enqueue(id, runner.Message{Text: body.Text, Images: body.Images}); err != nil {
+	if err := s.mgr.Enqueue(id, runner.Message{Text: body.Text, Images: body.Images, Files: body.Files}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// maxUploadBytes caps a single uploaded attachment. Uploads are persisted
+// raw to disk (not embedded in the message), so the cap can be generous
+// without bloating the event stream.
+const maxUploadBytes = 48 << 20 // 48 MiB
+
+// handleUpload persists one uploaded file under data/uploads/<sid>/ and
+// returns its on-disk path. The agent is handed the path in the message text
+// (see runner.turnText) and reads it with its own tools. Single raw-body
+// request per file; the original name travels in the ?name= query param.
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.st.Get(id) == nil {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	name, err := sanitizeUploadName(r.URL.Query().Get("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid file name")
+		return
+	}
+	dir := filepath.Join(s.cfg().DataDir, "uploads", id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	data, err := io.ReadAll(body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("文件超过 %dMB 上限", maxUploadBytes>>20))
+		} else {
+			writeErr(w, http.StatusBadRequest, "read upload body: "+err.Error())
+		}
+		return
+	}
+	if len(data) == 0 {
+		writeErr(w, http.StatusBadRequest, "empty file")
+		return
+	}
+	dst := filepath.Join(dir, name)
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name,
+		"path": dst,
+		"mime": mime.TypeByExtension(filepath.Ext(name)),
+		"size": len(data),
+	})
+}
+
+// sanitizeUploadName keeps the client-supplied name to a bare single file
+// name (no separators, no control chars) so nothing escapes the upload dir.
+func sanitizeUploadName(raw string) (string, error) {
+	name := strings.TrimSpace(filepath.Base(strings.ReplaceAll(raw, "\\", "/")))
+	if name == "" || name == "." || name == ".." {
+		return "", errors.New("invalid upload name")
+	}
+	if strings.IndexFunc(name, func(r rune) bool { return unicode.IsControl(r) }) >= 0 {
+		return "", errors.New("invalid upload name")
+	}
+	if runes := []rune(name); len(runes) > 128 {
+		name = string(runes[:128])
+	}
+	return name, nil
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
@@ -794,17 +945,17 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "claude_session_id and cwd are required")
 		return
 	}
-	if body.CLI == "" && len(s.cfg.CLIs) > 0 {
-		body.CLI = s.cfg.CLIs[0].Name
+	if body.CLI == "" && len(s.cfg().CLIs) > 0 {
+		body.CLI = s.cfg().CLIs[0].Name
 	}
-	if body.Provider == "" && len(s.cfg.Providers) > 0 {
-		body.Provider = s.cfg.Providers[0].Name
+	if body.Provider == "" && len(s.cfg().Providers) > 0 {
+		body.Provider = s.cfg().Providers[0].Name
 	}
-	if s.cfg.CLIByName(body.CLI) == nil {
+	if s.cfg().CLIByName(body.CLI) == nil {
 		writeErr(w, http.StatusBadRequest, "unknown cli: "+body.CLI)
 		return
 	}
-	if s.cfg.ProviderByName(body.Provider) == nil {
+	if s.cfg().ProviderByName(body.Provider) == nil {
 		writeErr(w, http.StatusBadRequest, "unknown provider: "+body.Provider)
 		return
 	}
@@ -955,6 +1106,11 @@ func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.mgr.UnlockFromRewind(id)
+	// A resident process holds the conversation in memory and re-appends
+	// cached metadata on writes — never truncate the transcript under one.
+	// The lock above guarantees the worker can't start a turn while we tear
+	// it down; the next queued message respawns it over the truncated file.
+	s.mgr.TeardownResident(id)
 	if sess.ClaudeSessionID == "" {
 		writeErr(w, http.StatusBadRequest, "session has no claude session id yet")
 		return
@@ -1059,7 +1215,7 @@ func (s *Server) backupClaudeHistory(sess *store.Session) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read claude history: %w", err)
 	}
-	dir := filepath.Join(s.cfg.DataDir, "backups")
+	dir := filepath.Join(s.cfg().DataDir, "backups")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -1098,6 +1254,6 @@ func (s *Server) serveStatic() http.Handler {
 
 // Run starts the HTTP server.
 func (s *Server) Run() error {
-	log.Printf("cc-webui listening on %s", s.cfg.Listen)
-	return http.ListenAndServe(s.cfg.Listen, s.mux)
+	log.Printf("cc-webui listening on %s", s.cfg().Listen)
+	return http.ListenAndServe(s.cfg().Listen, s.mux)
 }

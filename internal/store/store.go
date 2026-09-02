@@ -13,20 +13,26 @@ import (
 
 // Session is the metadata of one managed chat session.
 type Session struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	CLI             string    `json:"cli"`
-	Provider        string    `json:"provider"`
-	ModelOverride   string    `json:"model_override,omitempty"`
-	EffortOverride  string    `json:"effort_override,omitempty"`
-	PermissionMode  string    `json:"permission_mode,omitempty"`
-	Cwd             string    `json:"cwd"`
-	ClaudeSessionID string    `json:"claude_session_id,omitempty"`
-	SlashCommands  []string  `json:"slash_commands,omitempty"`
-	Archived        bool      `json:"archived"`
-	SortOrder       int       `json:"sort_order"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	CLI             string   `json:"cli"`
+	Provider        string   `json:"provider"`
+	ModelOverride   string   `json:"model_override,omitempty"`
+	EffortOverride  string   `json:"effort_override,omitempty"`
+	PermissionMode  string   `json:"permission_mode,omitempty"`
+	Cwd             string   `json:"cwd"`
+	ClaudeSessionID string   `json:"claude_session_id,omitempty"`
+	SlashCommands   []string `json:"slash_commands,omitempty"`
+	// Resident keeps a long-lived streaming-input claude process alive for this
+	// session so other Claude sessions can reach it via SendMessage (peer
+	// messaging). PeerName is the addressable name written into the claude
+	// transcript as a custom-title; empty means "derive from Name".
+	Resident  bool      `json:"resident,omitempty"`
+	PeerName  string    `json:"peer_name,omitempty"`
+	Archived  bool      `json:"archived"`
+	SortOrder int       `json:"sort_order"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Event is one line in a session's event log.
@@ -52,6 +58,8 @@ type Store struct {
 
 	eventsMu sync.Mutex
 	events   map[string][]*Event // lazily loaded, append-only
+
+	notesMu sync.Mutex // protects notes.json (temp path collision + lost updates)
 }
 
 func Open(dir string) (*Store, error) {

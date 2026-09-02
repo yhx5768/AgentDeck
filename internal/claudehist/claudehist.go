@@ -6,10 +6,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"cc-webui/internal/store"
@@ -68,6 +71,15 @@ type histLine struct {
 	Summary     string `json:"summary"`
 	IsSidechain bool   `json:"isSidechain"`
 	IsMeta      bool   `json:"isMeta"`
+	// Origin carries the CLI's attribution for injected turns. Peer messages
+	// arrive as isMeta user lines with origin.kind=="peer" (name= sender's
+	// display name, body= decoded message text).
+	Origin *struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+		From string `json:"from"`
+		Body string `json:"body"`
+	} `json:"origin"`
 }
 
 // isRealUserPrompt reports whether a jsonl line is a genuine user-typed prompt
@@ -271,12 +283,32 @@ func Convert(cwd, sessionID string) ([]*store.Event, error) {
 	}
 	var events []*store.Event
 	for _, l := range lines {
-		if l.IsSidechain || l.IsMeta {
+		if l.IsSidechain {
+			continue
+		}
+		if l.IsMeta && !(l.Type == "user" && l.Origin != nil && l.Origin.Kind == "peer") {
+			// 跳过元数据行，但放行入站 peer 消息——否则别的会话发来的消息
+			// 在回放里完全消失（transcript 是其唯一持久层）。
 			continue
 		}
 		ts, _ := time.Parse(time.RFC3339Nano, l.Timestamp)
 		switch l.Type {
 		case "user":
+			if l.Origin != nil && l.Origin.Kind == "peer" {
+				// 入站 peer 消息：作为 stream 事件透传 origin，前端用
+				// origin.body 渲染专用气泡（不落盘成 cc-webui 的 user 事件）。
+				data, _ := json.Marshal(map[string]any{
+					"type":   "user",
+					"uuid":   l.UUID,
+					"origin": l.Origin,
+					"message": map[string]any{
+						"role":    "user",
+						"content": l.Message.Content,
+					},
+				})
+				events = append(events, &store.Event{Ts: ts, Kind: "stream", Data: data})
+				continue
+			}
 			if t := strings.TrimSpace(textOf(l.Message.Content)); t != "" {
 				// 跳过系统注入/控制类消息，它们不是真实用户输入：
 				// xml-ish 注入（<task-notification> 等）和中断标记。
@@ -318,4 +350,159 @@ func Convert(cwd, sessionID string) ([]*store.Event, error) {
 		}
 	}
 	return events, nil
+}
+
+// RenameSession appends a custom-title entry to the session's transcript —
+// the Go port of the Agent SDK's rename_session(). The CLI reads the LAST
+// custom-title from the file tail, so repeated calls are safe and the most
+// recent wins. The title doubles as the session's peer-messaging address:
+// a live process registers it in ~/.claude/sessions/<pid>.json at startup.
+//
+// Note: a running process absorbs the appended title into its cached metadata
+// (the CLI tail-scans before re-appending), but its registry name is written
+// at process start — callers renaming a live session should restart it for
+// the new address to take effect.
+func RenameSession(cwd, sessionID, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("title must be non-empty")
+	}
+	line, err := json.Marshal(map[string]string{
+		"type":        "custom-title",
+		"customTitle": title,
+		"sessionId":   sessionID,
+	})
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(HistoryPath(cwd, sessionID), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(line, '\n'))
+	return err
+}
+
+// RegistryEntry is one live-session record from ~/.claude/sessions/<pid>.json.
+// The CLI writes it at process start (and refreshes status); Name is the
+// peer-messaging address other sessions use in SendMessage.
+type RegistryEntry struct {
+	Pid        int    `json:"pid"`
+	SessionID  string `json:"sessionId"`
+	Name       string `json:"name"`
+	NameSource string `json:"nameSource"` // "derived" = auto from cwd; absent = custom title
+	Status     string `json:"status"`     // idle | busy | waiting
+}
+
+// ReadRegistryEntry returns the live-session registry entry for pid, or nil
+// when the file is absent/unparseable (process not registered — e.g. old CLI
+// without peerProtocol, or not fully started yet). Tries multiple home roots
+// in case $HOME differs between cc-webui and the CLI process (e.g. systemd
+// daemon, container with a clean env).
+func ReadRegistryEntry(pid int) *RegistryEntry {
+	home, herr := os.UserHomeDir()
+	// 诊断：每个 PID 首次查询时把候选路径打到日志（高频路径会节流）。
+	logOnceForPid(pid, home, herr)
+	for _, root := range registryRoots(home) {
+		raw, err := os.ReadFile(filepath.Join(root, ".claude", "sessions", fmt.Sprintf("%d.json", pid)))
+		if err != nil {
+			continue
+		}
+		var e RegistryEntry
+		if json.Unmarshal(raw, &e) != nil || e.Pid == 0 {
+			continue
+		}
+		return &e
+	}
+	return nil
+}
+
+// ReadRegistryForSession returns the live-session registry entry whose
+// sessionId matches, or nil. Launcher-style CLIs (e.g. baidu ducc) fork the
+// real claude as a child process, so the registry file is named after the
+// child's pid, not the pid the host spawned — a sessionId scan finds it where
+// ReadRegistryEntry(pid) can't.
+func ReadRegistryForSession(sessionID string) *RegistryEntry {
+	if sessionID == "" {
+		return nil
+	}
+	home, _ := os.UserHomeDir()
+	for _, root := range registryRoots(home) {
+		dir := filepath.Join(root, ".claude", "sessions")
+		names, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, de := range names {
+			if de.IsDir() || !strings.HasSuffix(de.Name(), ".json") {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, de.Name()))
+			if err != nil {
+				continue
+			}
+			var e RegistryEntry
+			if json.Unmarshal(raw, &e) != nil || e.Pid == 0 {
+				continue
+			}
+			if e.SessionID == sessionID {
+				return &e
+			}
+		}
+	}
+	return nil
+}
+
+// registryRoots returns candidate HOME directories in priority order:
+//   - $HOME if set (CLI usually inherits this)
+//   - os.UserHomeDir() (Go's fallback via /etc/passwd)
+//   - common hardcoded paths for daemon/container setups
+func registryRoots(primary string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	if v := os.Getenv("HOME"); v != "" {
+		add(v)
+	}
+	add(primary)
+	if u, err := user.Current(); err == nil {
+		add(u.HomeDir)
+	}
+	add("/home")
+	// /home 下真正的 username 还得遍历；这里只在 /home/<user>/.claude 直接存在时尝试。
+	if entries, err := os.ReadDir("/home"); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			add(filepath.Join("/home", e.Name()))
+		}
+	}
+	return out
+}
+
+var (
+	regLogMu      sync.Mutex
+	regLogSeenPid = map[int]bool{}
+)
+
+func logOnceForPid(pid int, home string, herr error) {
+	regLogMu.Lock()
+	defer regLogMu.Unlock()
+	if regLogSeenPid[pid] {
+		return
+	}
+	regLogSeenPid[pid] = true
+	if herr != nil {
+		log.Printf("registry: pid=%d os.UserHomeDir error: %v; HOME=%q", pid, herr, os.Getenv("HOME"))
+		return
+	}
+	log.Printf("registry: pid=%d scanning roots: HOME=%q UserHomeDir=%q", pid, os.Getenv("HOME"), home)
 }
