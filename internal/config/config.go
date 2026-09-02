@@ -12,15 +12,15 @@ import (
 
 // CLI describes one claude-compatible binary.
 type CLI struct {
-	Name           string            `yaml:"name" json:"name"`
-	Path           string            `yaml:"path" json:"path"`
-	Args           []string          `yaml:"args" json:"args"`
-	PermissionMode string            `yaml:"permission_mode" json:"permission_mode"`
+	Name           string   `yaml:"name" json:"name"`
+	Path           string   `yaml:"path" json:"path"`
+	Args           []string `yaml:"args" json:"args"`
+	PermissionMode string   `yaml:"permission_mode" json:"permission_mode"`
 	// PartialMessages passes --include-partial-messages to the CLI, enabling
 	// token-level stream_event deltas in the output stream. Only enable for
 	// recent Claude Code builds; compatible CLIs may not recognize the flag.
 	PartialMessages bool              `yaml:"partial_messages" json:"partial_messages"`
-	Env            map[string]string `yaml:"env" json:"-"` // never serialized to API clients
+	Env             map[string]string `yaml:"env" json:"-"` // never serialized to API clients
 }
 
 // Model is one model within a provider, with optional per-model env and
