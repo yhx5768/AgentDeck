@@ -76,6 +76,8 @@ const state = {
   pendingBySid: {},   // sessionId -> 待发送消息 {text, images}；本轮结束后自动提交，切会话不丢
   seenSeq: new Set(), // seqs already rendered on this connection
   toolBlocks: {},     // tool_use_id -> details element
+  subagentCards: {},  // parent_tool_use_id -> 子代理卡片 {summary, body, count, label}
+  agentToolMeta: {},  // Agent tool_use_id -> {title, type}（实时侧卡片标题来源）
   nearBottom: true,
   home: '',           // server home dir, for ~ path shortening
   drafts: {},         // sessionId -> {text, attachments}
@@ -709,6 +711,7 @@ let menuTargetSession = null;
 
 function openSessionMenu(s, anchor, isArchived) {
   menuTargetSession = s;
+  syncMenuForEngine(s);
   const menu = $('#session-menu');
   // toggle action labels based on whether the session is archived
   const archiveBtn = menu.querySelector('[data-action="archive"]');
@@ -1058,6 +1061,8 @@ async function openSession(id) {
   // 待发送消息按会话留在 pendingBySid 里，切换不清空；下面随视图重建恢复显示。
   state.seenSeq = new Set();
   state.toolBlocks = {};
+  state.subagentCards = {};
+  state.agentToolMeta = {};
   state.historyBuf = [];
   state.histRenderedFrom = 0;
   state.replaying = true;
@@ -1070,6 +1075,8 @@ async function openSession(id) {
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#chat-view').classList.remove('hidden');
+  // 清 DOM 前先摘 observer，防悬空引用 + 旧会话文本闪现
+  hidePinnedPrompt();
   $('#messages').innerHTML = '';
   // 恢复本会话的待发送 chip（若有）——chip 挂在输入框卡片上，不随消息流重建。
   renderPendingBubble();
@@ -1079,10 +1086,12 @@ async function openSession(id) {
   $('#session-cwd').textContent = s.cwd;
   $('#session-cwd').title = s.cwd;
   $('#session-perm').value = s.permission_mode || '';
-  fillCLISelect($('#session-cli'), s.cli);
-  fillProviderSelect($('#session-provider'), s.provider);
+  const engine = s.engine || 'claude';
+  fillCLISelect($('#session-cli'), s.cli, engine);
+  fillProviderSelect($('#session-provider'), s.provider, engine);
   fillModelSelect($('#session-model'), s.provider, s.model_override);
   $('#session-effort').value = s.effort_override || '';
+  setEngineUI(engine);
   // Restore draft (text + attachments) for this session.
   state.attached = (state.drafts[id] && state.drafts[id].attachments) || [];
   $('#input').value = (state.drafts[id] && state.drafts[id].text) || '';
@@ -1114,7 +1123,7 @@ function switchChatTab(tab) {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
   const isTraj = tab === 'traj';
-  $('#messages').classList.toggle('hidden', isTraj);
+  $('#msg-wrap').classList.toggle('hidden', isTraj);
   $('#traj-view').classList.toggle('hidden', !isTraj);
   $('#composer').classList.toggle('hidden', isTraj);
   if (isTraj) trajShow();
@@ -1136,6 +1145,21 @@ function applyWorkspaceGate(cwd) {
   } else {
     updateMobileInputHint();
   }
+}
+
+// 常驻/peer 消息、推理等级、fork 都是 Claude Code 协议面；opencode 会话不提供
+// 这些入口（服务端同样 400 拒绝），把对应控件藏起来。
+function setEngineUI(engine) {
+  const oc = engine === 'opencode';
+  $('#btn-resident').classList.toggle('hidden', oc);
+  $('#session-effort').classList.toggle('hidden', oc);
+  $('#sheet-effort').closest('label').classList.toggle('hidden', oc);
+}
+
+// 会话菜单随目标会话（而非当前打开的会话）引擎过滤；菜单每次打开前重设。
+function syncMenuForEngine(s) {
+  const forkItem = document.querySelector('#session-menu [data-action="fork"]');
+  if (forkItem) forkItem.classList.toggle('hidden', (s.engine || 'claude') === 'opencode');
 }
 
 // 附件按钮：任意模型都能拿文件让 agent 用工具处理（图片仍要求 input 含 image），
@@ -1163,12 +1187,19 @@ function fillSelect(sel, items, value, formatter) {
   if (value) sel.value = value;
 }
 
-function fillCLISelect(sel, value) {
-  fillSelect(sel, state.clis, value);
+// clis/providers 各带 kind（"claude"|"opencode"，config 归一化后必有值）。
+// 会话绑定单一 engine（不做跨引擎切换），所以按 kind 过滤下拉选项。
+const kindOf = (item) => (item && item.kind) || 'claude';
+const cliKind = (name) => kindOf(state.clis.find((c) => c.name === name));
+const provKind = (name) => kindOf(state.providers.find((p) => p.name === name));
+
+function fillCLISelect(sel, value, kind) {
+  fillSelect(sel, kind ? state.clis.filter((c) => kindOf(c) === kind) : state.clis, value,
+    (c) => (kindOf(c) === 'claude' ? c.name : `${c.name} · ${c.kind}`));
 }
 
-function fillProviderSelect(sel, value) {
-  fillSelect(sel, state.providers, value);
+function fillProviderSelect(sel, value, kind) {
+  fillSelect(sel, kind ? state.providers.filter((p) => kindOf(p) === kind) : state.providers, value);
 }
 
 // Model 下拉随 provider 联动；空值 = provider 默认模型（models 第一个）
@@ -1209,8 +1240,9 @@ async function refreshProfiles() {
 // 下拉（刷新选项不触发 change 事件，已选值原样保留；模型被删则退回默认项）。
 function rerenderProfileSelects() {
   if (!state.current) return;
-  fillCLISelect($('#session-cli'), state.current.cli);
-  fillProviderSelect($('#session-provider'), state.current.provider);
+  const engine = state.current.engine || 'claude';
+  fillCLISelect($('#session-cli'), state.current.cli, engine);
+  fillProviderSelect($('#session-provider'), state.current.provider, engine);
   fillModelSelect($('#session-model'), state.current.provider, state.current.model_override);
   applyAttachGate();
   patchSheetIfOpen(state.current);
@@ -1256,7 +1288,11 @@ function connectEvents(id) {
       refreshProfiles();
       return;
     }
-    trackStats(ev);
+    // 子代理（Agent 工具）消息：实时流由父进程 stdout 以 parent_tool_use_id
+    // 透传；回放侧由服务端 ConvertSubagents 从 subagents/*.jsonl 产出同形
+    // 事件。两侧都经 renderEvent 渲染成折叠卡片，但不计入统计/轨迹。
+    const isSubagent = ev.kind === 'stream' && ev.data && ev.data.parent_tool_use_id;
+    if (!isSubagent) trackStats(ev);
     // Buffer replayed history; render only the latest page when the
     // replay_end marker arrives. Live events render immediately.
     if (state.replaying) {
@@ -1280,12 +1316,16 @@ function connectEvents(id) {
 // 新一轮全量回放重建视图（回放覆盖所有已持久化事件，不会丢内容；进行中的
 // 流式消息由后续完整 assistant 事件兜底）。乐观气泡保留在末尾。
 function resetChatForReplay() {
+  // 清 DOM 前先摘悬浮条，防旧会话文本闪现（flushHistory 会重挂）
+  if (typeof hidePinnedPrompt === 'function') hidePinnedPrompt();
   const box = $('#messages');
   const optimistic = [...box.querySelectorAll('.msg-optimistic')];
   box.innerHTML = '';
   for (const n of optimistic) box.appendChild(n);
   state.seenSeq = new Set();
   state.toolBlocks = {};
+  state.subagentCards = {};
+  state.agentToolMeta = {};
   state.historyBuf = [];
   state.histRenderedFrom = 0;
   state.replaying = true;
@@ -1388,7 +1428,10 @@ function flushHistory() {
   } finally {
     state.renderingHistory = false;
   }
-  for (const node of optimistic) box.appendChild(node);
+  // 只回填仍在文档里的乐观气泡：新任务流程（nsSend）里回放已含本条 user
+  // 事件，renderEvent 会摘掉已对账的乐观气泡，这里不能把摘掉的又接回来
+  //（否则 prompt 显示两次，切走再切回才恢复一条）。
+  for (const node of optimistic) if (node.isConnected) box.appendChild(node);
   // 回放事件只渲染了最新一页，但任务面板要覆盖全部历史——从缓冲区全量重折。
   taskFoldAll();
   syncTaskPanel();
@@ -1399,6 +1442,7 @@ function flushHistory() {
   scrollBottom();
   updateLoadMoreBtn();
   updateStatsUI();
+  refreshPinnedPrompt();
 }
 
 // Prepend the previous page of buffered history, keeping the viewport
@@ -1470,6 +1514,169 @@ function updateStatusUI(st) {
     if (spinner) spinner.classList.add('hidden');
   }
   hint.textContent = st.queued > 0 ? `队列中还有 ${st.queued} 条消息` : '';
+}
+
+// ---------- pinned prompt（钉住最后一条输入） ----------
+// 悬浮条状态全派生、零持久化：内容 = 最后一条 .msg-user 的 textContent；显隐
+// = 本端 IntersectionObserver；展开/折叠 = 本端内存瞬态（切会话/新消息即重置）。
+// 单一幂等入口 refreshPinnedPrompt() 处理任何时序（回放/重连/多端乱序）。
+const pinnedPrompt = {
+  observer: null,
+  target: null,
+  expanded: false,
+  fadeTimer: null,
+};
+
+// 幂等重算：摘旧 observer → 取最后一条 .msg-user → 无则隐藏，有则更新文本并
+// 复位折叠/滚动/渐隐后重挂。任何调用点重复调用都安全。
+function refreshPinnedPrompt() {
+  if (pinnedPrompt.observer) {
+    pinnedPrompt.observer.disconnect();
+    pinnedPrompt.observer = null;
+  }
+  const pp = $('#pinned-prompt');
+  const msgs = $('#messages');
+  const text = $('#pp-text');
+  if (!pp || !text) return;
+  const users = msgs.querySelectorAll('.msg-user');
+  if (!users.length) { hidePinnedPrompt(); return; }
+  const last = users[users.length - 1];
+  // 只取 .bubble 文本：rewind 按钮（「回滚」）与 role-tag（「你」+ 时间）挂在
+  // .msg-user 直接子级，用整条 textContent 会把 UI 文字带进悬浮条；附件 chip
+  // 文件名在 bubble 内，仍包含。兜底（无 .bubble 的结构）克隆后剔除 UI 节点。
+  let src = last.querySelector('.bubble');
+  if (!src) {
+    const clone = last.cloneNode(true);
+    clone.querySelectorAll('.role-tag, .msg-time, .rewind-btn').forEach((n) => n.remove());
+    src = clone;
+  }
+  text.textContent = src.textContent || '';
+  // 换钉一律复位折叠态 + 正文滚动 + 渐隐
+  pinnedPrompt.expanded = false;
+  pp.classList.remove('expanded');
+  text.scrollTop = 0;
+  const fade = pp.querySelector('.pp-fade');
+  if (fade) fade.classList.add('hidden');
+  renderIcons(pp);
+  updatePpExpandBtn();
+  const root = msgs;
+  const io = new IntersectionObserver((entries) => {
+    for (const ent of entries) {
+      if (ent.isIntersecting) { hidePinnedPrompt(false); return; }
+      // gate：切轨迹 tab 或 #chat-view 被隐藏时一律不显示
+      const mw = $('#msg-wrap');
+      const cv = $('#chat-view');
+      if (mw && mw.offsetParent === null) { hidePinnedPrompt(false); return; }
+      if (cv && cv.offsetParent === null) { hidePinnedPrompt(false); return; }
+      if (ent.boundingClientRect.top < root.getBoundingClientRect().top) {
+        showPinnedPrompt();
+      } else {
+        hidePinnedPrompt(false);
+      }
+    }
+  }, { root, threshold: 0 });
+  io.observe(last);
+  pinnedPrompt.observer = io;
+  pinnedPrompt.target = last;
+}
+
+function hidePinnedPrompt(disconnect) {
+  const pp = $('#pinned-prompt');
+  if (!pp) return;
+  if (disconnect !== false && pinnedPrompt.observer) {
+    pinnedPrompt.observer.disconnect();
+    pinnedPrompt.observer = null;
+  }
+  pinnedPrompt.target = null;
+  if (pinnedPrompt.expanded) {
+    pinnedPrompt.expanded = false;
+    pp.classList.remove('expanded');
+    const text = $('#pp-text');
+    if (text) text.scrollTop = 0;
+    const fade = pp.querySelector('.pp-fade');
+    if (fade) fade.classList.add('hidden');
+    renderIcons(pp);
+    updatePpExpandBtn();
+  }
+  pp.classList.remove('shown');
+  clearTimeout(pinnedPrompt.fadeTimer);
+  pinnedPrompt.fadeTimer = setTimeout(() => pp.classList.add('hidden'), 180);
+}
+
+function showPinnedPrompt() {
+  const pp = $('#pinned-prompt');
+  if (!pp) return;
+  // 取消 hide 的延时 hidden：滚回（hide 180ms 后加 hidden）又立即滚出（show）
+  // 时，若不清定时器，hidden 会在 show 之后补上，悬浮条再也看不见。
+  clearTimeout(pinnedPrompt.fadeTimer);
+  pp.classList.remove('hidden');
+  void pp.offsetHeight;
+  pp.classList.add('shown');
+  // 刷新时若悬浮条处于 display:none 无法测量溢出，展开按钮判定会漏；现身时校正。
+  updatePpExpandBtn();
+}
+
+// 折叠态下正文是否超过 2 行截断（决定展开按钮显隐）：
+// line-clamp 只裁剪显示，scrollHeight 仍是全文高 → scrollHeight > clientHeight 即溢出。
+// 只在可布局时有效（.hidden 的 display:none 下两者都算 0），showPinnedPrompt 会再校正。
+function updatePpExpandBtn() {
+  const btn = $('#pp-expand');
+  const text = $('#pp-text');
+  if (!btn || !text) return;
+  const overflow = text.scrollHeight - text.clientHeight > 1;
+  btn.classList.toggle('hidden', !overflow);
+}
+
+$('#pp-expand').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const pp = $('#pinned-prompt');
+  const text = $('#pp-text');
+  const fade = pp.querySelector('.pp-fade');
+  const expand = pp.querySelector('.pp-expand i');
+  pinnedPrompt.expanded = !pinnedPrompt.expanded;
+  pp.classList.toggle('expanded', pinnedPrompt.expanded);
+  if (expand) {
+    expand.dataset.lucide = pinnedPrompt.expanded ? 'chevron-up' : 'chevron-down';
+    renderIcons(pp);
+  }
+  if (pinnedPrompt.expanded) {
+    // 展开后立即按当前滚动位置校正遮罩（短文本不可滚时遮罩应隐藏，等 scroll 事件会漏）
+    updatePpFade();
+  } else {
+    if (fade) fade.classList.add('hidden');
+    if (text) text.scrollTop = 0;
+    // 折叠后重新按溢出状态校正按钮显隐（收起只可能在内容溢出时发生，一般无变化）
+    updatePpExpandBtn();
+  }
+});
+
+// 渐隐遮罩显隐的唯一判定：正文可滚且未滚到底时显示。
+// 展开、滚动、换钉都会经此校正，避免"内容不可滚但遮罩残留"。
+function updatePpFade() {
+  const text = $('#pp-text');
+  const pp = $('#pinned-prompt');
+  if (!text || !pp) return;
+  const fade = pp.querySelector('.pp-fade');
+  if (!fade) return;
+  const canScroll = text.scrollHeight > text.clientHeight;
+  const atBottom = text.scrollTop + text.clientHeight >= text.scrollHeight - 4;
+  fade.classList.toggle('hidden', !canScroll || atBottom);
+}
+
+$('#pp-text').addEventListener('scroll', () => {
+  updatePpFade();
+});
+
+$('#pp-text').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (pinnedPrompt.expanded) return;
+  jumpToPinned();
+});
+
+function jumpToPinned() {
+  if (pinnedPrompt.target && pinnedPrompt.target.isConnected) {
+    pinnedPrompt.target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 // ---------- event rendering ----------
@@ -1587,6 +1794,7 @@ function applyRewindInUI(ev, refill) {
   for (const e of buf) trackStats(e);
   updateStatsUI();
   if (refill && d.draft_text) setDraftText(d.draft_text);
+  refreshPinnedPrompt();
 }
 
 function setDraftText(text) {
@@ -1661,7 +1869,13 @@ function toolSummary(input) {
   return keys.length ? JSON.stringify(input).slice(0, 120) : '';
 }
 
-function renderToolUse(block, box, ts) {
+function renderToolUse(block, box, ts, raw) {
+  // 记录 Agent 工具调用的元数据：实时子代理事件只带 parent_tool_use_id，
+  // 卡片标题从这里回查（回放侧由服务端在事件里直接给 d.subagent）。
+  const bn = (block.name || '').toLowerCase();
+  if ((bn === 'agent' || bn === 'task') && block.id && block.input) {
+    state.agentToolMeta[block.id] = { title: block.input.description || '', type: block.input.subagent_type || '' };
+  }
   const details = document.createElement('details');
   details.className = 'tool-block';
   const summary = document.createElement('summary');
@@ -1674,7 +1888,9 @@ function renderToolUse(block, box, ts) {
     body.textContent = JSON.stringify(block.input, null, 2);
   }
   details.append(summary, body);
-  wrapInMsg(details, box, ts);
+  // raw：直接挂进调用方给的容器（子代理卡片体），不包消息气泡壳
+  if (raw) box.appendChild(details);
+  else wrapInMsg(details, box, ts);
   state.toolBlocks[block.id] = details;
 }
 
@@ -1934,7 +2150,7 @@ function toolResultText(content) {
   return content ? JSON.stringify(content) : '';
 }
 
-function renderToolResult(block, box) {
+function renderToolResult(block, box, raw) {
   const text = toolResultText(block.content);
   const target = block.tool_use_id && state.toolBlocks[block.tool_use_id];
   if (target) {
@@ -1964,7 +2180,8 @@ function renderToolResult(block, box) {
   body.className = 'tool-body';
   body.textContent = text.length > 4000 ? text.slice(0, 4000) + '\n… (截断)' : text;
   details.append(summary, body);
-  wrapInMsg(details, box);
+  if (raw) box.appendChild(details); // 子代理卡片体：不包消息气泡壳
+  else wrapInMsg(details, box);
 }
 
 // ---------- file viewer（右侧栏预览本地文件） ----------
@@ -2210,6 +2427,8 @@ function renderEvent(ev, box) {
       msgDiv.dataset.checkpoint = d.checkpoint;
       addRewindBtn(msgDiv);
     }
+    // User event authoritative bubble rendered → refresh pinned target
+    if (box === $('#messages')) refreshPinnedPrompt();
   } else if (ev.kind === 'stream') {
     if (d.type === 'system') {
       if (d.subtype === 'init') {
@@ -2226,7 +2445,11 @@ function renderEvent(ev, box) {
       }
       return; // ignore thinking_tokens and other system noise
     }
-    if (d.type === 'assistant' && d.message && Array.isArray(d.message.content)) {
+    if (d.type === 'assistant' && d.parent_tool_use_id) {
+      // 子代理消息（Agent 工具派生）：聚合进按 parent_tool_use_id 分组的
+      // 折叠卡片，不作为主对话气泡渲染。
+      renderSubagentEvent(d, box, ev.ts);
+    } else if (d.type === 'assistant' && d.message && Array.isArray(d.message.content)) {
       for (const block of d.message.content) {
         if (block.type === 'text' && block.text) {
           const lb = liveTake('text');
@@ -2261,7 +2484,14 @@ function renderEvent(ev, box) {
       const name = escapeHtml(d.origin.name || '另一个会话');
       const bubble = addMsg('msg-peer', `⇢ 来自 ${name}`, box, ev.ts);
       bubble.innerHTML = md(d.origin.body || '');
-    } else if (d.type === 'user' && d.message && Array.isArray(d.message.content)) {
+    } else if (d.type === 'user' && d.parent_tool_use_id && d.message && Array.isArray(d.message.content)) {
+      // 子代理的 tool_result：配对进对应卡片的工具视图（result 到得早于
+      // 卡片创建时也会先把卡片壳建出来）
+      const card = ensureSubagentCard(d.parent_tool_use_id, d, box, ev.ts);
+      for (const b of d.message.content) {
+        if (b && b.type === 'tool_result') renderToolResult(b, card.body, true);
+      }
+    } else if (d.type === 'user' && !d.parent_tool_use_id && d.message && Array.isArray(d.message.content)) {
       for (const block of d.message.content) {
         if (block && block.type === 'tool_result') renderToolResult(block, box);
       }
@@ -2316,6 +2546,59 @@ function renderEvent(ev, box) {
       }
     }
   }
+}
+
+// 子代理消息卡片：Agent 工具派生的 subagent 在聊天流里按 parent_tool_use_id
+// 聚合成一个可折叠卡片。标题优先用服务端回放给的 d.subagent（来自
+// meta.json），实时流没有它时回查 agentToolMeta（Agent tool_use 的 input）。
+// 渲染 text 块与 tool_use 块（与回放侧 ConvertSubagents 的产出一致，
+// thinking 两侧都剔——CLI 实时透传会把完整事件里的 thinking strip 掉）；
+// 子代理的 tool_result 经 renderEvent 的 user 分支配对进卡片。默认折叠。
+function ensureSubagentCard(key, d, box, ts) {
+  let card = state.subagentCards[key];
+  if (card) return card;
+  const sa = (d && d.subagent) || {};
+  const meta = state.agentToolMeta[key] || {};
+  const title = sa.title || meta.title || '子代理';
+  const type = sa.type || meta.type || '';
+  const details = document.createElement('details');
+  details.className = 'tool-block subagent-block';
+  const summary = document.createElement('summary');
+  const body = document.createElement('div');
+  body.className = 'tool-body subagent-body';
+  details.append(summary, body);
+  wrapInMsg(details, box, ts);
+  const label = `🤖 子代理${type ? ' · ' + escapeHtml(type) : ''} · ${escapeHtml(title)}`;
+  card = state.subagentCards[key] = { summary, body, count: 0, tools: 0, label };
+  return card;
+}
+
+function subagentRefreshSummary(card) {
+  const parts = [];
+  if (card.count) parts.push(card.count + ' 条');
+  if (card.tools) parts.push(card.tools + ' 次调用');
+  card.summary.innerHTML = card.label + (parts.length ? `<span class="subagent-count">${parts.join(' · ')}</span>` : '');
+}
+
+function renderSubagentEvent(d, box, ts) {
+  const card = ensureSubagentCard(d.parent_tool_use_id, d, box, ts);
+  const blocks = (d.message && Array.isArray(d.message.content)) ? d.message.content : [];
+  for (const b of blocks) {
+    if (!b) continue;
+    if (b.type === 'text' && b.text) {
+      const div = document.createElement('div');
+      div.className = 'subagent-msg';
+      div.innerHTML = md(b.text);
+      card.body.appendChild(div);
+      card.count++;
+    } else if (b.type === 'tool_use' && b.name) {
+      // raw：工具视图直接挂进卡片体，不包消息气泡壳；结果由 tool_result
+      // 事件经 state.toolBlocks 配对回同一个 details 里
+      renderToolUse(b, card.body, ts, true);
+      card.tools++;
+    }
+  }
+  subagentRefreshSummary(card);
 }
 
 async function refreshCurrentStatus() {
@@ -2544,8 +2827,12 @@ input.addEventListener('drop', async (e) => {
 });
 
 async function attachFiles(files) {
+  // opencode 引擎没有内嵌图片（base64）通道（服务端 400）；图片降级为文件
+  // 附件上传，runner 以 `opencode run -f` 官方附件传给模型——视觉模型直接
+  // 可见，文本模型也能用工具读取。
+  const ocSession = state.current && state.current.engine === 'opencode';
   for (const f of files) {
-    if (ALLOWED_MIME.includes(f.type)) {
+    if (ALLOWED_MIME.includes(f.type) && !ocSession) {
       const imgs = state.attached.filter((a) => a.kind === 'image').length;
       if (imgs >= MAX_IMAGES) {
         alert(`最多 ${MAX_IMAGES} 张图片`);
@@ -2984,6 +3271,7 @@ function appendOptimisticUser(text, images, files) {
   if (text) bubble.appendChild(document.createTextNode((text ? ' ' : '') + text));
   if (bubble.querySelector('i')) renderIcons(bubble);
   scrollBottom();
+  refreshPinnedPrompt();
 }
 
 $('#btn-stop').onclick = async () => {
@@ -3017,10 +3305,11 @@ $('#btn-resume').onclick = async () => {
   const btn = $('#btn-resume');
   const cmd = state.current.resume_command;
   if (!cmd) {
-    alert('该会话还没有产生 claude session（发过首轮消息后可用）');
+    alert(state.current.engine === 'opencode'
+      ? '该会话还没有产生 opencode session（发过首轮消息后可用）'
+      : '该会话还没有产生 claude session（发过首轮消息后可用）');
     return;
   }
-  const originalHTML = btn.innerHTML;
   try {
     await copyText(cmd);
     flashCheck(btn, originalHTML);
@@ -3514,14 +3803,28 @@ $('#heatmap').addEventListener('click', (e) => {
 
 $('#btn-new').onclick = async () => {
   const firstCli = state.clis[0] && state.clis[0].name;
-  const firstProv = state.providers[0] && state.providers[0].name;
   fillCLISelect($('#new-cli'), firstCli);
-  fillProviderSelect($('#new-provider'), firstProv);
-  fillModelSelect($('#new-model'), firstProv, '');
+  const k0 = cliKind(firstCli);
+  fillProviderSelect($('#new-provider'), '', k0);
+  fillModelSelect($('#new-model'), $('#new-provider').value, '');
+  applyNewEngineUI(k0);
   const cfg = await api('/api/config');
   $('#new-cwd').placeholder = cfg.default_cwd || '/path/to/project';
   openModal('#modal-new');
 };
+
+// quick-create 弹窗：clis 列表本就带 kind 后缀（fillCLISelect 标签），切 cli
+// 时 provider 归位同 kind 首个、隐藏推理等级（opencode 无此概念）
+function applyNewEngineUI(kind) {
+  $('#new-effort').closest('label').classList.toggle('hidden', kind === 'opencode');
+}
+
+$('#new-cli').addEventListener('change', () => {
+  const kind = cliKind($('#new-cli').value);
+  fillProviderSelect($('#new-provider'), '', kind);
+  fillModelSelect($('#new-model'), $('#new-provider').value, '');
+  applyNewEngineUI(kind);
+});
 
 $('#new-provider').addEventListener('change', (e) => {
   fillModelSelect($('#new-model'), e.target.value, '');
@@ -3548,12 +3851,42 @@ $('#new-submit').onclick = async () => {
   }
 };
 
+// 两引擎共用一套列表/预览 UI，源由 #import-cli 的 kind 决定；顶部页签是
+// 快捷切换（把 import-cli 指到该 kind 的第一个 cli 并重扫）。
+const IMPORT_HINTS = {
+  claude: 'SSH 里找 session id：<code>ls -t ~/.claude/projects/*/*.jsonl | head</code>（文件名 <code>~/.claude/projects/&lt;cwd-slug&gt;/&lt;session-id&gt;.jsonl</code>）',
+  opencode: 'opencode 会话存于 opencode 自己的存储（<code>opencode session list</code>）。导入时会话按导出里的模型对齐到所选 provider。',
+};
+
+function syncImportTabs(kind) {
+  $('#import-hint').innerHTML = IMPORT_HINTS[kind] || '';
+  document.querySelectorAll('#import-tabs .import-tab').forEach((t) => {
+    t.classList.toggle('active', t.dataset.kind === kind);
+  });
+}
+
+$('#import-tabs').addEventListener('click', (e) => {
+  const tab = e.target.closest('.import-tab');
+  if (!tab || tab.classList.contains('hidden') || tab.classList.contains('active')) return;
+  const cli = state.clis.find((c) => kindOf(c) === tab.dataset.kind);
+  if (!cli) return;
+  $('#import-cli').value = cli.name;
+  $('#import-cli').dispatchEvent(new Event('change'));
+});
+
 $('#btn-import').onclick = () => {
-  fillCLISelect($('#import-cli'), state.clis[0] && state.clis[0].name);
-  fillProviderSelect($('#import-provider'), state.providers[0] && state.providers[0].name);
+  // 页签只显示有对应 kind cli 的引擎
+  document.querySelectorAll('#import-tabs .import-tab').forEach((t) => {
+    const has = state.clis.some((c) => kindOf(c) === t.dataset.kind);
+    t.classList.toggle('hidden', !has);
+  });
+  const cli = state.clis[0];
+  fillCLISelect($('#import-cli'), cli && cli.name);
+  fillProviderSelect($('#import-provider'), '', cli && kindOf(cli));
   state.importList = [];
   $('#import-cwd').value = '';
   $('#import-prefix').value = '';
+  syncImportTabs(cli && kindOf(cli));
   openModal('#modal-import');
   scanImport();
 };
@@ -3561,16 +3894,31 @@ $('#btn-import').onclick = () => {
 $('#import-scan').onclick = scanImport;
 $('#import-prefix').addEventListener('input', renderImportList);
 $('#import-cwd').addEventListener('input', renderImportList);
+// 切 cli（含页签驱动）→ provider 归位到同 kind 首个 + 重扫
+$('#import-cli').addEventListener('change', () => {
+  const kind = cliKind($('#import-cli').value);
+  syncImportTabs(kind);
+  fillProviderSelect($('#import-provider'), '', kind);
+  scanImport();
+});
 
 async function scanImport() {
   const el = $('#import-list');
   el.innerHTML = '<div style="color:var(--dim);padding:20px;text-align:center">扫描中...</div>';
+  const cliSel = $('#import-cli');
+  const kind = cliKind(cliSel.value);
+  state.importKind = kind;
   const cwd = $('#import-cwd').value.trim();
   const prefix = $('#import-prefix').value.trim();
   const params = new URLSearchParams();
+  if (kind === 'opencode') {
+    // opencode 会话源在 opencode 自己的存储，按 cli 查询
+    params.set('cli', cliSel.value);
+  }
   if (cwd) params.set('cwd', cwd);
   if (prefix) params.set('prefix', prefix);
-  const url = '/api/claude-sessions' + (params.toString() ? '?' + params : '');
+  const url = (kind === 'opencode' ? '/api/opencode-sessions' : '/api/claude-sessions')
+    + '?' + params.toString();
   try {
     state.importList = await api(url);
   } catch (e) {
@@ -3605,7 +3953,7 @@ function renderImportList() {
       </div>
       <button class="ghost-btn copy-id" title="复制完整 session id"><i data-lucide="copy"></i></button>
       <button class="primary-btn import-btn">导入</button>`;
-    row.querySelector('.t').textContent = item.title;
+    row.querySelector('.t').textContent = item.title || '(untitled)';
     row.querySelector('.m').textContent = `${item.session_id.slice(0, 8)} · ${item.cwd || '?'} · ${timeAgo(item.updated_at)}`;
     row.onclick = (e) => {
       if (e.target.closest('button')) return;
@@ -3621,19 +3969,23 @@ function renderImportList() {
       }
     };
     row.querySelector('.import-btn').onclick = async () => {
-      const s = await api('/api/sessions/import', {
-        method: 'POST',
-        body: JSON.stringify({
-          claude_session_id: item.session_id,
-          cwd: item.cwd || cwd,
-          cli: $('#import-cli').value,
-          provider: $('#import-provider').value,
-          name: item.title.slice(0, 60),
-        }),
-      });
-      $('#modal-import').classList.add('hidden');
-      await loadSessions();
-      openSession(s.id);
+      try {
+        const s = await api('/api/sessions/import', {
+          method: 'POST',
+          body: JSON.stringify({
+            claude_session_id: item.session_id,
+            cwd: item.cwd || cwd,
+            cli: $('#import-cli').value,
+            provider: $('#import-provider').value,
+            name: item.title.slice(0, 60),
+          }),
+        });
+        $('#modal-import').classList.add('hidden');
+        await loadSessions();
+        openSession(s.id);
+      } catch (e) {
+        alert('导入失败：' + e.message);
+      }
     };
     el.appendChild(row);
   }
@@ -3652,9 +4004,13 @@ async function selectImportPreview(item, row) {
   if (!p) {
     pane.innerHTML = '<div class="ip-empty">加载中…</div>';
     const params = new URLSearchParams({ id: item.session_id });
-    if (item.cwd) params.set('cwd', item.cwd);
+    if (state.importKind === 'opencode') {
+      params.set('cli', $('#import-cli').value);
+    } else if (item.cwd) {
+      params.set('cwd', item.cwd);
+    }
     try {
-      p = await api('/api/claude-sessions/preview?' + params.toString());
+      p = await api('/api/' + (state.importKind === 'opencode' ? 'opencode-sessions' : 'claude-sessions') + '/preview?' + params.toString());
     } catch (e) {
       pane.innerHTML = '<div class="ip-empty">加载失败：' + e.message + '</div>';
       return;
@@ -3711,16 +4067,39 @@ async function openNewSessionView(cwd) {
   const cliSel = $('#ns-cli');
   const providerSel = $('#ns-provider');
   const modelSel = $('#ns-model');
-  cliSel.innerHTML = state.clis.map((c) => `<option value="${c.name}">${c.name}</option>`).join('');
+  cliSel.innerHTML = state.clis.map((c) => `<option value="${c.name}">${c.name}${kindOf(c) === 'claude' ? '' : ' · ' + c.kind}</option>`).join('');
   if (state.clis.length) cliSel.value = state.clis[0].name;
-  renderProviderOptions(providerSel);
+  const k0 = cliKind(cliSel.value);
+  renderProviderOptions(providerSel, k0);
   renderModelOptions(modelSel, providerSel.value);
+  applyNsEngineUI(k0);
+  // cli 决定引擎 → provider 列表、推理等级控件、已附图片随之联动
+  cliSel.onchange = () => {
+    const kind = cliKind(cliSel.value);
+    renderProviderOptions(providerSel, kind);
+    renderModelOptions(modelSel, providerSel.value);
+    applyNsEngineUI(kind);
+    if (kind === 'opencode') dropNsImages('已切换到 opencode 引擎，暂不支持图片消息，已移除图片附件');
+  };
   providerSel.onchange = () => renderModelOptions(modelSel, providerSel.value);
 }
 
-function renderProviderOptions(sel) {
-  sel.innerHTML = state.providers.map((p) => `<option value="${p.name}">${p.name}</option>`).join('');
-  if (state.providers.length) sel.value = state.providers[0].name;
+function renderProviderOptions(sel, kind) {
+  const items = kind ? state.providers.filter((p) => kindOf(p) === kind) : state.providers;
+  sel.innerHTML = items.map((p) => `<option value="${p.name}">${p.name}</option>`).join('');
+  if (items.length) sel.value = items[0].name;
+}
+
+// 新建会话视图的引擎可见面：opencode 无推理等级概念，隐藏控件
+function applyNsEngineUI(kind) {
+  $('#ns-effort').classList.toggle('hidden', kind === 'opencode');
+}
+
+function dropNsImages(msg) {
+  if (!(state.nsAttached || []).some((a) => a.kind === 'image')) return;
+  state.nsAttached = state.nsAttached.filter((a) => a.kind !== 'image');
+  renderNsAttached();
+  alert(msg);
 }
 function renderModelOptions(sel, providerName) {
   const p = state.providers.find((x) => x.name === providerName);
@@ -3770,6 +4149,10 @@ async function nsSend() {
     media_type: img.mime,
     data: stripDataURLPrefix(img.data),
   }));
+  if (images.length && cliKind(cli) === 'opencode') {
+    alert('opencode 引擎暂不支持图片消息（文件附件可用）');
+    return;
+  }
   const nAttach = state.nsAttached ? state.nsAttached.length : 0;
   const name = content
     ? (content.length > 30 ? content.slice(0, 30) + '…' : content)
@@ -3851,6 +4234,13 @@ async function nsAttachFiles(files) {
   for (const f of files) {
     if (!nsAttachOk(f)) continue;
     state.nsAttached = state.nsAttached || [];
+    const ocFile = cliKind($('#ns-cli').value) === 'opencode';
+    if (ALLOWED_MIME.includes(f.type) && ocFile) {
+      // opencode 引擎没有内嵌图片通道：图片按文件附件走（`opencode run -f`，
+      // 视觉模型可直接看到）。会话建成后 nsSend 统一上传为 path。
+      state.nsAttached.push({ kind: 'file', name: f.name, size: f.size, file: f });
+      continue;
+    }
     if (ALLOWED_MIME.includes(f.type)) {
       const data = await new Promise((res) => {
         const r = new FileReader();
@@ -3867,22 +4257,24 @@ async function nsAttachFiles(files) {
 
 function nsAttachOk(f) {
   const atts = state.nsAttached || [];
-  if (ALLOWED_MIME.includes(f.type)) {
-    if (atts.filter((a) => a.kind === 'image').length >= MAX_IMAGES) {
-      alert(`最多 ${MAX_IMAGES} 张图片`);
-      return false;
-    }
-    if (f.size > MAX_IMAGE_BYTES) {
-      alert(`图片过大：${f.name}（${(f.size / 1024 / 1024).toFixed(1)}MB > ${MAX_IMAGE_BYTES / 1024 / 1024}MB）`);
-      return false;
-    }
-  } else {
+  // opencode 引擎的图片按文件附件计（见 nsAttachFiles）
+  const asFile = ALLOWED_MIME.includes(f.type) && cliKind($('#ns-cli').value) === 'opencode';
+  if (!ALLOWED_MIME.includes(f.type) || asFile) {
     if (atts.filter((a) => a.kind === 'file').length >= MAX_FILES) {
       alert(`最多 ${MAX_FILES} 个文件附件`);
       return false;
     }
     if (f.size > MAX_FILE_BYTES) {
       alert(`文件过大：${f.name}（${fmtMiB(f.size)}MB > ${MAX_FILE_BYTES >> 20}MB）`);
+      return false;
+    }
+  } else {
+    if (atts.filter((a) => a.kind === 'image').length >= MAX_IMAGES) {
+      alert(`最多 ${MAX_IMAGES} 张图片`);
+      return false;
+    }
+    if (f.size > MAX_IMAGE_BYTES) {
+      alert(`图片过大：${f.name}（${(f.size / 1024 / 1024).toFixed(1)}MB > ${MAX_IMAGE_BYTES / 1024 / 1024}MB）`);
       return false;
     }
   }
@@ -3920,8 +4312,9 @@ function closeDrawer() {
 
 function syncSheetFromCurrent() {
   if (!state.current) return;
-  fillCLISelect($('#sheet-cli'), state.current.cli);
-  fillProviderSelect($('#sheet-provider'), state.current.provider);
+  const engine = state.current.engine || 'claude';
+  fillCLISelect($('#sheet-cli'), state.current.cli, engine);
+  fillProviderSelect($('#sheet-provider'), state.current.provider, engine);
   fillModelSelect($('#sheet-model'), state.current.provider, state.current.model_override);
   $('#sheet-effort').value = state.current.effort_override || '';
   $('#sheet-perm').value = state.current.permission_mode || '';
@@ -3993,8 +4386,9 @@ $('#sheet-archive').onclick = async () => {
 // （重建选项列表，保证 provider 切换后 model 列表联动刷新）
 function patchSheetIfOpen(s) {
   if (!document.body.classList.contains('sheet-open')) return;
-  fillCLISelect($('#sheet-cli'), s.cli);
-  fillProviderSelect($('#sheet-provider'), s.provider);
+  const engine = s.engine || 'claude';
+  fillCLISelect($('#sheet-cli'), s.cli, engine);
+  fillProviderSelect($('#sheet-provider'), s.provider, engine);
   fillModelSelect($('#sheet-model'), s.provider, s.model_override);
   $('#sheet-effort').value = s.effort_override || '';
   $('#sheet-perm').value = s.permission_mode || '';

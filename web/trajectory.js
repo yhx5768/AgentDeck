@@ -88,6 +88,7 @@ function trajProject(ev) {
   }
   if (ev.kind !== 'stream') return;
   const d = ev.data || {};
+  if (d.parent_tool_use_id) return; // 子代理消息：聊天侧卡片渲染，轨迹不重复记
   switch (d.type) {
     case 'system': {
       if (d.subtype !== 'init') return;
@@ -103,11 +104,31 @@ function trajProject(ev) {
       // 入站 peer 消息：起一个新轮次，title 显示来源 name，正文按 md 渲染。
       // 主对话的入站气泡是 msg-peer，这里在轨迹里走同样的语义但用台账视图。
       const origin = d.origin || {};
-      if (origin.kind !== 'peer') return; // tool_result 等普通 user stream 留给 assistant/tool 分支
-      const name = origin.name || 'peer';
-      const body = origin.body || '';
-      const turn = trajNewTurn(`⇢ 来自 ${name}：${body.split('\n')[0].slice(0, 60)}`, ts, { peer: { name, body } });
-      trajAddRecord(turn, { kind: 'peer', ts, summary: `来自 ${name}`, body, name });
+      if (origin.kind === 'peer') {
+        const name = origin.name || 'peer';
+        const body = origin.body || '';
+        const turn = trajNewTurn(`⇢ 来自 ${name}：${body.split('\n')[0].slice(0, 60)}`, ts, { peer: { name, body } });
+        trajAddRecord(turn, { kind: 'peer', ts, summary: `来自 ${name}`, body, name });
+        return;
+      }
+      // 普通 user stream（tool_result 块）：配对到既有 tool 记录。
+      const content = (d.message && d.message.content) || [];
+      for (const b of content) {
+        if (!b || b.type !== 'tool_result') continue;
+        const t = traj.byCallId[b.tool_use_id];
+        const txt = toolResultText(b.content);
+        if (t) {
+          t.toolResult = txt;
+          t.isError = !!b.is_error;
+          t.durMs = ts && t.ts ? Math.max(0, ts - t.ts) : null;
+          trajTouchRecord(t);
+        } else {
+          trajAddRecord(trajCurrentTurn(), {
+            kind: 'tool', ts, toolName: '(未知工具)', toolResult: txt,
+            isError: !!b.is_error, summary: '(工具结果)',
+          });
+        }
+      }
       return;
     }
     case 'assistant': {
@@ -145,27 +166,6 @@ function trajProject(ev) {
       rec.summary = trajFirstLine(text.replace(/[#*`>\[\]]/g, ''))
         || (thinking ? '(thinking)' : toolCount ? `(调用 ${toolCount} 个工具)` : '(空)');
       trajTouchRecord(rec);
-      return;
-    }
-    case 'user': {
-      // tool_result 块：配对到既有 tool 记录
-      const content = (d.message && d.message.content) || [];
-      for (const b of content) {
-        if (!b || b.type !== 'tool_result') continue;
-        const t = traj.byCallId[b.tool_use_id];
-        const txt = toolResultText(b.content);
-        if (t) {
-          t.toolResult = txt;
-          t.isError = !!b.is_error;
-          t.durMs = ts && t.ts ? Math.max(0, ts - t.ts) : null;
-          trajTouchRecord(t);
-        } else {
-          trajAddRecord(trajCurrentTurn(), {
-            kind: 'tool', ts, toolName: '(未知工具)', toolResult: txt,
-            isError: !!b.is_error, summary: '(工具结果)',
-          });
-        }
-      }
       return;
     }
     case 'result': {

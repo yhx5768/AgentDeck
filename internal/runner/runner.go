@@ -17,6 +17,7 @@ import (
 
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/config"
+	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/store"
 )
 
@@ -321,7 +322,15 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	// Persist the user turn (text only — images are reconstructed from the
 	// current draft on the client and aren't durable state; uploaded files
 	// are mentioned in the composed text so replay shows where they live).
-	if _, err := m.st.AppendEvent(sessionID, "user", map[string]string{"text": turnText(msg)}); err != nil {
+	// opencode turns echo only the raw prompt text: files ride as `-f`
+	// attachments outside the text, and opencode's export re-states the
+	// prompt verbatim (quoted) — mergeStoredAndClaude's text-match dedup
+	// needs stored echo == replayed echo.
+	echoText := turnText(msg)
+	if cli := m.cm.Get().CLIByName(sess.CLI); cli != nil && cli.IsOpenCode() {
+		echoText = msg.Text
+	}
+	if _, err := m.st.AppendEvent(sessionID, "user", map[string]string{"text": echoText}); err != nil {
 		return err
 	}
 	events, _ := m.st.Events(sessionID)
@@ -495,10 +504,9 @@ func ResolveCwd(dir string) (string, error) {
 	return dir, nil
 }
 
-// runTurn spawns one claude process for a single user message. If the
-// message contains images, claude is invoked with --input-format
-// stream-json and the message is encoded as a single JSON user message
-// on stdin; otherwise the text is piped via stdin as before.
+// runTurn dispatches one user message to the session's engine: claude-kind
+// CLIs spawn a one-shot `claude -p` process (runClaudeTurn), opencode-kind
+// CLIs spawn `opencode run --format json` (runOpenCodeTurn).
 func (m *Manager) runTurn(sessionID string, msg Message) {
 	sess := m.st.Get(sessionID)
 	if sess == nil {
@@ -522,6 +530,18 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 
 	m.emit(sessionID, "status", map[string]string{"state": "turn_start"})
 
+	if cli.IsOpenCode() {
+		m.runOpenCodeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
+		return
+	}
+	m.runClaudeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
+}
+
+// runClaudeTurn spawns one claude process for a single user message. If the
+// message contains images, claude is invoked with --input-format
+// stream-json and the message is encoded as a single JSON user message
+// on stdin; otherwise the text is piped via stdin as before.
+func (m *Manager) runClaudeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
 	text := turnText(msg)
 	multimodal := len(msg.Images) > 0
 	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
@@ -684,6 +704,158 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 		// can offer a rewind. Best-effort: silent on failure (no button).
 		m.captureCheckpoint(sessionID, msg, sess)
 	}
+}
+
+// runOpenCodeTurn runs one user message through the opencode engine
+// (`opencode run --format json`). Every stdout line is one JSON event whose
+// part is adapted to the canonical cc-webui stream shape and broadcast live
+// (opencodehist.AdaptPart — same mapping as the replay path). The session id
+// is captured from the first event line (every line carries it), replacing
+// claude's system/init capture. The transcript itself stays in opencode's own
+// store and is read via `opencode export` on later SSE connects.
+//
+// No stdin channel: the message rides as a positional argument. Inline
+// images are not supported (rejected at the API layer) — images and files
+// both travel as opencode's official file attachments (`-f`, one flag per
+// file), which the model receives as expansion content; vision-capable
+// models see images that way. The positionals carry only the raw prompt
+// text (see the echo rule in Enqueue).
+func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
+	args := []string{"run", "--format", "json"}
+	permMode := sess.PermissionMode
+	if permMode == "" {
+		permMode = cli.PermissionMode
+	}
+	// opencode has no headless permission prompt: anything but the default
+	// interactive mode maps to --auto (auto-approve). cc-webui's own config
+	// default is bypassPermissions, which lands here.
+	if permMode != "" && permMode != "default" {
+		args = append(args, "--auto")
+	}
+	model := prov.EffectiveModel(sess.ModelOverride)
+	if model != "" {
+		args = append(args, "-m", openCodeModelID(prov.Name, model))
+	}
+	if sess.ClaudeSessionID != "" {
+		args = append(args, "-s", sess.ClaudeSessionID)
+	} else if sess.Name != "" {
+		// New session: give opencode's own side a readable title.
+		args = append(args, "--title", sess.Name)
+	}
+	args = append(args, cli.Args...)
+	// Message positional must precede the -f flags: with `-f <path> <msg>`
+	// opencode's -f (an array flag) swallows the trailing positional.
+	if msg.Text != "" {
+		args = append(args, msg.Text)
+	}
+	for _, f := range msg.Files {
+		args = append(args, "-f", f.Path)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.setRunning(sessionID, cancel)
+
+	cmd := exec.CommandContext(ctx, cli.Path, args...)
+	cmd.Dir = resolvedCwd
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	envMap := buildEnvMap(cli.EffectiveEnv(prov, model))
+	cmd.Env = envMapToSlice(envMap)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
+		return
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": "start opencode: " + err.Error()})
+		return
+	}
+
+	// Adapt stdout JSON events one by one. Every line carries the session id
+	// (unlike claude's init event), so capture it on first sight.
+	tx := opencodehist.NewToolTx()
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(strings.TrimSpace(string(line))) == 0 {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(line, &obj); err != nil {
+			continue
+		}
+		if sid, _ := obj["sessionID"].(string); sid != "" && sid != sess.ClaudeSessionID {
+			m.st.Upsert(sess, func(s *store.Session) { s.ClaudeSessionID = sid })
+			sess.ClaudeSessionID = sid
+		}
+		part, _ := obj["part"].(map[string]any)
+		if part == nil {
+			continue
+		}
+		messageID, _ := part["messageID"].(string)
+		ts := time.UnixMilli(tsMillis(obj["timestamp"]))
+		for _, payload := range opencodehist.AdaptPart(messageID, part, ts, tx) {
+			m.emit(sessionID, "stream", payload)
+		}
+	}
+
+	waitErr := cmd.Wait()
+	m.st.Upsert(sess, func(s *store.Session) { s.UpdatedAt = time.Now() })
+
+	switch {
+	case ctx.Err() != nil:
+		m.emit(sessionID, "status", map[string]string{"state": "interrupted"})
+		m.setIdle(sessionID, "interrupted")
+	case waitErr != nil:
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = waitErr.Error()
+		}
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": errMsg})
+		m.setIdle(sessionID, errMsg)
+	default:
+		m.emit(sessionID, "status", map[string]string{"state": "turn_end"})
+		m.setIdle(sessionID, "")
+	}
+	// No captureCheckpoint here: opencode has no file-rewind surface, and its
+	// step snapshots live in its own store without a CLI rollback command.
+}
+
+// openCodeModelID composes the -m argument for the opencode CLI: models are
+// addressed as <providerID>/<modelID>. A model name that already contains a
+// slash is passed through verbatim.
+func openCodeModelID(providerName, modelName string) string {
+	if strings.Contains(modelName, "/") {
+		return modelName
+	}
+	if providerName == "" {
+		return modelName
+	}
+	return providerName + "/" + modelName
+}
+
+// tsMillis converts an opencode event timestamp (ms since epoch, possibly
+// float from JSON) to milliseconds; 0/unset yields 0.
+func tsMillis(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	}
+	return 0
 }
 
 // claudeCodeError is a parsed [claude-code:<kind>] line from CLI stderr.

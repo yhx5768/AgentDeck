@@ -10,9 +10,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CLI describes one claude-compatible binary.
+// Engine kinds for clis and providers. A session's engine is the kind of its
+// cli, and cli/provider pairs must share a kind (validated on create/patch/
+// import). kind "claude" covers Claude Code and compatible CLIs (stream-json
+// stdout + ~/.claude jsonl transcript); kind "opencode" is the opencode
+// engine (run --format json stdout + `opencode export` transcript).
+const (
+	KindClaude   = "claude"
+	KindOpenCode = "opencode"
+)
+
+// CLI describes one chat CLI binary.
 type CLI struct {
 	Name           string   `yaml:"name" json:"name"`
+	Kind           string   `yaml:"kind" json:"kind"` // engine kind, defaults to KindClaude
 	Path           string   `yaml:"path" json:"path"`
 	Args           []string `yaml:"args" json:"args"`
 	PermissionMode string   `yaml:"permission_mode" json:"permission_mode"`
@@ -32,12 +43,19 @@ type Model struct {
 	Input []string          `yaml:"input" json:"input"`
 }
 
-// Provider groups an API backend (BASE_URL/TOKEN) and its selectable models.
+// Provider groups a model backend and its selectable models. For claude-kind
+// clis the backend is an Anthropic-compatible API (env = BASE_URL/TOKEN); for
+// opencode-kind clis the provider name must equal the opencode CLI's provider
+// id (auth comes from opencode's own auth.json, env is not consulted).
 type Provider struct {
 	Name   string            `yaml:"name" json:"name"`
-	Env    map[string]string `yaml:"env" json:"-"` // shared by all models
+	Kind   string            `yaml:"kind" json:"kind"` // engine kind, defaults to KindClaude
+	Env    map[string]string `yaml:"env" json:"-"`     // shared by all models
 	Models []Model           `yaml:"models" json:"-"`
 }
+
+// IsOpenCode reports whether this cli speaks the opencode protocol.
+func (c *CLI) IsOpenCode() bool { return c.Kind == KindOpenCode }
 
 // ModelByName returns the model with the given name, or nil.
 func (p *Provider) ModelByName(name string) *Model {
@@ -161,8 +179,16 @@ func Load(path string) (*Config, error) {
 		cfg.Providers = []Provider{{Name: "default", Models: []Model{{Name: "default"}}}}
 	}
 	for i := range cfg.CLIs {
+		if cfg.CLIs[i].Kind == "" {
+			cfg.CLIs[i].Kind = KindClaude
+		}
 		if cfg.CLIs[i].PermissionMode == "" {
 			cfg.CLIs[i].PermissionMode = "bypassPermissions"
+		}
+	}
+	for i := range cfg.Providers {
+		if cfg.Providers[i].Kind == "" {
+			cfg.Providers[i].Kind = KindClaude
 		}
 	}
 	return cfg, nil

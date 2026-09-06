@@ -112,7 +112,17 @@
         <button class="chat-tab" data-tab="traj">轨迹</button>
       </div>
 
-      <div id="messages"></div>
+      <div id="msg-wrap">
+        <div id="pinned-prompt" class="hidden">
+          <div class="pp-head">
+            <span class="pp-tag">你</span>
+            <button id="pp-expand" class="pp-expand icon-btn" title="展开"><i data-lucide="chevron-down"></i></button>
+          </div>
+          <div class="pp-text" id="pp-text"></div>
+          <div class="pp-fade hidden"></div>
+        </div>
+        <div id="messages"></div>
+      </div>
 
       <div id="traj-view" class="hidden">
         <div id="traj-toolbar">
@@ -371,10 +381,12 @@
 <!-- Import modal -->
 <div id="modal-import" class="modal hidden">
   <div class="modal-card wide import-modal">
-    <h3>导入 Claude Code 已有会话</h3>
-    <div class="import-hint">
-      SSH 里找 session id：<code>ls -t ~/.claude/projects/*/*.jsonl | head</code>（文件名 <code>~/.claude/projects/&lt;cwd-slug&gt;/&lt;session-id&gt;.jsonl</code>）
+    <h3>导入已有会话</h3>
+    <div class="import-tabs" id="import-tabs">
+      <button class="import-tab active" data-kind="claude">Claude Code</button>
+      <button class="import-tab hidden" data-kind="opencode">opencode</button>
     </div>
+    <div class="import-hint" id="import-hint"></div>
     <div class="import-filter">
       <input id="import-cwd" placeholder="工作目录过滤">
       <input id="import-prefix" placeholder="session-id 前缀筛选（留空看全部）" style="flex:1.2">

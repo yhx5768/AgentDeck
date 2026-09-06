@@ -22,6 +22,7 @@ import (
 
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/config"
+	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/runner"
 	"cc-webui/internal/store"
 )
@@ -84,6 +85,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/sessions/{id}/events", s.auth(s.handleEvents))
 	s.mux.Handle("GET /api/claude-sessions", s.auth(s.handleClaudeSessions))
 	s.mux.Handle("GET /api/claude-sessions/preview", s.auth(s.handleClaudeSessionPreview))
+	s.mux.Handle("GET /api/opencode-sessions", s.auth(s.handleOpenCodeSessions))
+	s.mux.Handle("GET /api/opencode-sessions/preview", s.auth(s.handleOpenCodeSessionPreview))
 	s.mux.Handle("POST /api/sessions/import", s.auth(s.handleImport))
 	s.mux.Handle("GET /api/stats", s.auth(s.handleStats))
 	s.mux.Handle("GET /api/notes", s.auth(s.handleGetNotes))
@@ -189,6 +192,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCLIs(w http.ResponseWriter, r *http.Request) {
 	type item struct {
 		Name            string   `json:"name"`
+		Kind            string   `json:"kind"`
 		Path            string   `json:"path"`
 		Args            []string `json:"args"`
 		PermissionMode  string   `json:"permission_mode"`
@@ -197,7 +201,7 @@ func (s *Server) handleCLIs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []item{}
 	for _, c := range s.cfg().CLIs {
-		it := item{Name: c.Name, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode, PartialMessages: c.PartialMessages}
+		it := item{Name: c.Name, Kind: c.Kind, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode, PartialMessages: c.PartialMessages}
 		it.EnvKeys = sortedKeys(c.Env)
 		out = append(out, it)
 	}
@@ -212,12 +216,13 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	type prov struct {
 		Name    string   `json:"name"`
+		Kind    string   `json:"kind"`
 		EnvKeys []string `json:"env_keys"`
 		Models  []model  `json:"models"`
 	}
 	out := []prov{}
 	for _, p := range s.cfg().Providers {
-		item := prov{Name: p.Name}
+		item := prov{Name: p.Name, Kind: p.Kind}
 		item.EnvKeys = sortedKeys(p.Env)
 		for _, m := range p.Models {
 			mm := model{Name: m.Name, Input: m.Input}
@@ -241,11 +246,13 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 	}
 	type prov struct {
 		Name    string   `json:"name"`
+		Kind    string   `json:"kind"`
 		EnvKeys []string `json:"env_keys"`
 		Models  []model  `json:"models"`
 	}
 	type cli struct {
 		Name           string   `json:"name"`
+		Kind           string   `json:"kind"`
 		Path           string   `json:"path"`
 		Args           []string `json:"args"`
 		PermissionMode string   `json:"permission_mode"`
@@ -256,12 +263,12 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		Providers []prov `json:"providers"`
 	}{}
 	for _, c := range s.cfg().CLIs {
-		it := cli{Name: c.Name, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode}
+		it := cli{Name: c.Name, Kind: c.Kind, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode}
 		it.EnvKeys = sortedKeys(c.Env)
 		out.CLIs = append(out.CLIs, it)
 	}
 	for _, p := range s.cfg().Providers {
-		item := prov{Name: p.Name}
+		item := prov{Name: p.Name, Kind: p.Kind}
 		item.EnvKeys = sortedKeys(p.Env)
 		for _, m := range p.Models {
 			mm := model{Name: m.Name, Input: m.Input}
@@ -289,12 +296,33 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 type sessionView struct {
 	*store.Session
+	Engine        string        `json:"engine"` // "claude" | "opencode" (cli kind)
 	Status        runner.Status `json:"status"`
 	ResumeCommand string        `json:"resume_command,omitempty"`
 }
 
 func (s *Server) view(sess *store.Session) sessionView {
-	return sessionView{Session: sess, Status: s.mgr.GetStatus(sess.ID), ResumeCommand: s.resumeCommand(sess)}
+	return sessionView{Session: sess, Engine: s.engineOf(sess), Status: s.mgr.GetStatus(sess.ID), ResumeCommand: s.resumeCommand(sess)}
+}
+
+// engineOf resolves a session's engine kind from its cli config entry
+// (config.KindClaude when the cli is unknown).
+func (s *Server) engineOf(sess *store.Session) string {
+	if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
+		return cli.Kind
+	}
+	return config.KindClaude
+}
+
+// firstProviderOfKind returns the first configured provider of the engine
+// kind, or nil.
+func (s *Server) firstProviderOfKind(kind string) *config.Provider {
+	for i := range s.cfg().Providers {
+		if s.cfg().Providers[i].Kind == kind {
+			return &s.cfg().Providers[i]
+		}
+	}
+	return nil
 }
 
 func shellQuote(s string) string {
@@ -302,18 +330,26 @@ func shellQuote(s string) string {
 }
 
 // resumeCommand builds the shell command that resumes this session from a
-// terminal, mirroring the session's CLI and effective env (--settings).
+// terminal. claude engine: cli --resume <sid> with the effective env via
+// --settings. opencode engine: opencode -s <sid> (its own store/auth).
 func (s *Server) resumeCommand(sess *store.Session) string {
 	if sess.ClaudeSessionID == "" {
 		return ""
 	}
 	cli := s.cfg().CLIByName(sess.CLI)
-	prov := s.cfg().ProviderByName(sess.Provider)
-	var cliPath string
-	var settings string
+	cliPath := ""
 	if cli != nil {
 		cliPath = cli.Path
 	}
+	base := "cd " + shellQuote(sess.Cwd) + " && "
+	if s.engineOf(sess) == config.KindOpenCode {
+		if cliPath == "" {
+			cliPath = "opencode"
+		}
+		return base + shellQuote(cliPath) + " -s " + sess.ClaudeSessionID
+	}
+	prov := s.cfg().ProviderByName(sess.Provider)
+	var settings string
 	if cliPath == "" {
 		cliPath = "claude"
 	}
@@ -323,7 +359,7 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 			settings = runner.SettingsPath(s.cfg().DataDir, cli.Name, prov.Name, model)
 		}
 	}
-	cmd := "cd " + shellQuote(sess.Cwd) + " && " + shellQuote(cliPath) + " --resume " + sess.ClaudeSessionID
+	cmd := base + shellQuote(cliPath) + " --resume " + sess.ClaudeSessionID
 	if settings != "" {
 		cmd += " --settings " + shellQuote(settings)
 	}
@@ -360,17 +396,25 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if body.CLI == "" && len(s.cfg().CLIs) > 0 {
 		body.CLI = s.cfg().CLIs[0].Name
 	}
-	if body.Provider == "" && len(s.cfg().Providers) > 0 {
-		body.Provider = s.cfg().Providers[0].Name
-	}
 	cli := s.cfg().CLIByName(body.CLI)
 	if cli == nil {
 		writeErr(w, http.StatusBadRequest, "unknown cli: "+body.CLI)
 		return
 	}
+	if body.Provider == "" {
+		// Default to the first provider of the cli's engine kind, so the
+		// opencode cli doesn't silently pair with an Anthropic-env provider.
+		if p := s.firstProviderOfKind(cli.Kind); p != nil {
+			body.Provider = p.Name
+		}
+	}
 	prov := s.cfg().ProviderByName(body.Provider)
 	if prov == nil {
 		writeErr(w, http.StatusBadRequest, "unknown provider: "+body.Provider)
+		return
+	}
+	if prov.Kind != cli.Kind {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind))
 		return
 	}
 	if body.Model != "" && prov.ModelByName(body.Model) == nil {
@@ -466,6 +510,28 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Effort != nil && *body.Effort != "" && !validEffort(*body.Effort) {
 		writeErr(w, http.StatusBadRequest, "invalid effort: "+*body.Effort)
+		return
+	}
+	// The cli and provider of a session must share an engine kind.
+	cliName := sess.CLI
+	if body.CLI != nil {
+		cliName = *body.CLI
+	}
+	provName := sess.Provider
+	if body.Provider != nil {
+		provName = *body.Provider
+	}
+	cli := s.cfg().CLIByName(cliName)
+	prov := s.cfg().ProviderByName(provName)
+	if cli != nil && prov != nil && cli.Kind != prov.Kind {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind))
+		return
+	}
+	// Resident/peer messaging is a Claude Code protocol feature; opencode
+	// sessions must not enable it (the cli kind that applies after this
+	// patch decides).
+	if (body.Resident != nil || body.PeerName != nil) && cli != nil && cli.IsOpenCode() {
+		writeErr(w, http.StatusBadRequest, "opencode 引擎不支持常驻/peer 消息")
 		return
 	}
 	// Peer-name changes write the claude transcript (custom-title). Validate
@@ -596,6 +662,13 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "empty message")
 		return
 	}
+	// opencode's headless run has no multimodal channel (v1): image blocks
+	// would be silently dropped, so refuse them up front. File uploads still
+	// work (they ride as path mentions in the text).
+	if len(body.Images) > 0 && s.engineOf(sess) == config.KindOpenCode {
+		writeErr(w, http.StatusBadRequest, "opencode 引擎暂不支持图片消息（文件附件可用）")
+		return
+	}
 	// Files must have come from this session's uploads dir — the paths are
 	// interpolated into the turn's text, so a crafted payload must not be
 	// able to point (or inject) outside what the upload endpoint wrote.
@@ -723,8 +796,27 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	var merged []*store.Event
 	if sess.ClaudeSessionID != "" {
-		claudeEvents, _ := claudehist.Convert(sess.Cwd, sess.ClaudeSessionID)
-		merged = mergeStoredAndClaude(stored, claudeEvents)
+		// Replay source depends on the engine: claude sessions are parsed from
+		// ~/.claude jsonl on disk, opencode sessions are exported via the CLI
+		// (its transcript lives in opencode's own store).
+		var extEvents []*store.Event
+		if s.engineOf(sess) == config.KindOpenCode {
+			if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
+				if oc, err := opencodehist.FetchSession(cli.Path, sess.ClaudeSessionID); err == nil {
+					extEvents = oc.ToEvents()
+				} else {
+					log.Printf("opencode replay %s: %v", sess.ClaudeSessionID, err)
+				}
+			}
+		} else {
+			extEvents, _ = claudehist.Convert(sess.Cwd, sess.ClaudeSessionID)
+			// 子代理 transcript 单独解析（subagents/agent-*.jsonl），补齐回放侧
+			// 与实时流（parent_tool_use_id 透传）同形的子代理消息事件。
+			if subEvents, err := claudehist.ConvertSubagents(sess.Cwd, sess.ClaudeSessionID); err == nil {
+				extEvents = append(extEvents, subEvents...)
+			}
+		}
+		merged = mergeStoredAndClaude(stored, extEvents)
 	} else {
 		for _, e := range stored {
 			merged = append(merged, e)
@@ -948,15 +1040,62 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	if body.CLI == "" && len(s.cfg().CLIs) > 0 {
 		body.CLI = s.cfg().CLIs[0].Name
 	}
-	if body.Provider == "" && len(s.cfg().Providers) > 0 {
-		body.Provider = s.cfg().Providers[0].Name
-	}
-	if s.cfg().CLIByName(body.CLI) == nil {
+	cli := s.cfg().CLIByName(body.CLI)
+	if cli == nil {
 		writeErr(w, http.StatusBadRequest, "unknown cli: "+body.CLI)
 		return
 	}
-	if s.cfg().ProviderByName(body.Provider) == nil {
+	if body.Provider == "" {
+		// Default to the first provider of the cli's engine kind.
+		if p := s.firstProviderOfKind(cli.Kind); p != nil {
+			body.Provider = p.Name
+		}
+	}
+	prov := s.cfg().ProviderByName(body.Provider)
+	if prov == nil {
 		writeErr(w, http.StatusBadRequest, "unknown provider: "+body.Provider)
+		return
+	}
+	if prov.Kind != cli.Kind {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind))
+		return
+	}
+	now := time.Now()
+	sess := &store.Session{
+		ID:              newID(),
+		Name:            body.Name,
+		CLI:             body.CLI,
+		Provider:        body.Provider,
+		Cwd:             body.Cwd,
+		ClaudeSessionID: body.ClaudeSessionID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if sess.Name == "" {
+		sess.Name = "imported-" + body.ClaudeSessionID[:8]
+	}
+	if cli.IsOpenCode() {
+		// opencode import: the transcript lives in opencode's own store. The
+		// export doubles as the readability check (SSE re-exports on connect)
+		// and as the source of the session's model, aligned onto the chosen
+		// provider when the model id exists there.
+		if _, err := runner.ResolveCwd(body.Cwd); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		oc, err := opencodehist.FetchSession(cli.Path, body.ClaudeSessionID)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "opencode session not found: "+err.Error())
+			return
+		}
+		if oc.ModelID != "" && prov.ModelByName(oc.ModelID) != nil {
+			sess.ModelOverride = oc.ModelID
+		}
+		if err := s.st.Upsert(sess, nil); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, s.view(sess))
 		return
 	}
 	// Validate that the source file exists; the SSE handler will read it
@@ -979,25 +1118,89 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = events // used only to ensure the file is readable; SSE will parse on connect
-	now := time.Now()
-	sess := &store.Session{
-		ID:              newID(),
-		Name:            body.Name,
-		CLI:             body.CLI,
-		Provider:        body.Provider,
-		Cwd:             body.Cwd,
-		ClaudeSessionID: body.ClaudeSessionID,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	if sess.Name == "" {
-		sess.Name = "imported-" + body.ClaudeSessionID[:8]
-	}
 	if err := s.st.Upsert(sess, nil); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, s.view(sess))
+}
+
+// handleOpenCodeSessions lists sessions from the opencode engine's own store
+// (via `opencode session list --format json`), the import source for the
+// opencode tab. Requires the cli name so the backend knows which binary to
+// ask; cwd/prefix filter like the claude history endpoint.
+func (s *Server) handleOpenCodeSessions(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
+	if cli == nil || !cli.IsOpenCode() {
+		writeErr(w, http.StatusBadRequest, "an opencode kind cli is required")
+		return
+	}
+	cwd := q.Get("cwd")
+	prefix := strings.ToLower(strings.TrimSpace(q.Get("prefix")))
+	// `session list` 只返回进程 cwd 所属 opencode 项目桶的会话；cwd 参数选桶
+	//（git 仓库根 = 该仓库桶，非 git 目录 = global 桶），空则用服务器自身 cwd。
+	listDir := ""
+	if cwd != "" {
+		abs, err := runner.ResolveCwd(cwd)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		listDir = abs
+		cwd = abs
+	}
+	list, err := opencodehist.List(cli.Path, listDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	filtered := list[:0]
+	for _, item := range list {
+		if cwd != "" && item.Cwd != cwd {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(item.SessionID), prefix) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	list = filtered
+	if list == nil {
+		list = []opencodehist.SessionInfo{}
+	}
+	if len(list) > 200 {
+		list = list[:200]
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// handleOpenCodeSessionPreview returns a single opencode session's import
+// preview: metadata + the most recent messages.
+func (s *Server) handleOpenCodeSessionPreview(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
+	if cli == nil || !cli.IsOpenCode() {
+		writeErr(w, http.StatusBadRequest, "an opencode kind cli is required")
+		return
+	}
+	id := strings.TrimSpace(q.Get("id"))
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	oc, err := opencodehist.FetchSession(cli.Path, id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "opencode session not found: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": oc.ID,
+		"cwd":        oc.Directory,
+		"branch":     gitBranch(oc.Directory),
+		"updated_at": oc.UpdatedAt,
+		"messages":   oc.Preview(8),
+	})
 }
 
 // forkClaudeHistory duplicates the on-disk claude transcript of oldID under a
@@ -1033,6 +1236,10 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 	src := s.st.Get(id)
 	if src == nil {
 		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if s.engineOf(src) == config.KindOpenCode {
+		writeErr(w, http.StatusBadRequest, "opencode 引擎暂不支持 fork")
 		return
 	}
 	if src.ClaudeSessionID == "" {
@@ -1085,6 +1292,10 @@ func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 	sess := s.st.Get(id)
 	if sess == nil {
 		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if s.engineOf(sess) == config.KindOpenCode {
+		writeErr(w, http.StatusBadRequest, "opencode 引擎不支持 rewind（checkpoint 仅 claude 会话产生）")
 		return
 	}
 	var body struct {

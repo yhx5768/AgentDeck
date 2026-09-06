@@ -184,6 +184,11 @@ func (m *Manager) EnsureResident(sessionID string) error {
 	if !sess.Resident {
 		return fmt.Errorf("session is not resident-enabled")
 	}
+	// Resident/peer messaging is a Claude Code protocol feature (stream-json
+	// input + registry); opencode has no equivalent.
+	if cli := m.cfg().CLIByName(sess.CLI); cli != nil && cli.IsOpenCode() {
+		return fmt.Errorf("opencode 引擎不支持常驻/peer 消息")
+	}
 	_, err := m.ensureProc(sessionID, sess)
 	return err
 }
