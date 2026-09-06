@@ -71,6 +71,9 @@ type histLine struct {
 	Summary     string `json:"summary"`
 	IsSidechain bool   `json:"isSidechain"`
 	IsMeta      bool   `json:"isMeta"`
+	// AttributionAgent records the subagent type on subagent-transcript
+	// assistant lines (e.g. "Explore") — fallback label for the chat card.
+	AttributionAgent string `json:"attributionAgent"`
 	// Origin carries the CLI's attribution for injected turns. Peer messages
 	// arrive as isMeta user lines with origin.kind=="peer" (name= sender's
 	// display name, body= decoded message text).
