@@ -1276,6 +1276,16 @@ async function ocVariantsFor(cliName, providerName) {
   return state.ocVariants[key];
 }
 
+// 用 config 的 model 名从 variants 映射里取键。映射的键是 opencode CLI 打印的
+// <providerID>/<modelID> 全路径，但 config 的 model 名两种形态都有：多数 provider
+// 是裸 modelID（openCodeModelID 运行时补前缀），openrouter 那类带斜杠的模型名是
+// 全路径原样配置（走 openCodeModelID 的原样透传）。两种都能对上，不能只查一种——
+// 只按裸名查会让 opencode-go 整条 provider 的下拉全空。
+function variantKeysFor(v, providerName, modelName) {
+  if (!v || !modelName) return [];
+  return v[modelName] || v[`${providerName}/${modelName}`] || [];
+}
+
 // 会话视图：按当前会话的 cli/provider/model 刷新 session 与 sheet 两处
 // effort 下拉。挂在 rerenderProfileSelects / 各 PATCH 成功 / openSession 尾部。
 async function refreshSessionEffort() {
@@ -1292,7 +1302,9 @@ async function refreshSessionEffort() {
   }
   const prov = state.providers.find((p) => p.name === s.provider);
   const model = s.model_override || ((prov && prov.models[0]) || {}).name || '';
-  const keys = model ? (await ocVariantsFor(s.cli, s.provider) || {})[model] || [] : [];
+  const keys = model
+    ? variantKeysFor(await ocVariantsFor(s.cli, s.provider), s.provider, model)
+    : [];
   applyEffortOptions(main, 'opencode', keys);
   applyEffortOptions(sheet, 'opencode', keys, sheetWrap);
 }
@@ -1306,7 +1318,7 @@ async function refreshNsEffort() {
     return;
   }
   const v = await ocVariantsFor(cliName, $('#ns-provider').value);
-  applyEffortOptions(sel, 'opencode', v && v[$('#ns-model').value]);
+  applyEffortOptions(sel, 'opencode', variantKeysFor(v, $('#ns-provider').value, $('#ns-model').value));
 }
 
 async function refreshNewEffort() {
@@ -1318,7 +1330,7 @@ async function refreshNewEffort() {
     return;
   }
   const v = await ocVariantsFor(cliName, $('#new-provider').value);
-  applyEffortOptions(sel, 'opencode', v && v[$('#new-model').value], wrap);
+  applyEffortOptions(sel, 'opencode', variantKeysFor(v, $('#new-provider').value, $('#new-model').value), wrap);
 }
 
 // Model 下拉随 provider 联动；空值 = provider 默认模型（models 第一个）
