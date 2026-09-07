@@ -19,10 +19,20 @@ import (
 //go:embed all:web
 var webFS embed.FS
 
+// version is the release version, injected at build time via
+// -ldflags "-X main.version=<tag>"; "dev" for local/non-release builds.
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", config.DefaultPath(), "path to config.yaml")
 	listen := flag.String("listen", "", "override listen address (e.g. 0.0.0.0:8321)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("cc-webui %s\n", version)
+		return
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {

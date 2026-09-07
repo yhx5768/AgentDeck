@@ -1,0 +1,85 @@
+# Tag-triggered release. Push a tag like `v0.1.0` (or run this workflow with an
+# existing tag) and it builds a self-contained binary for every supported host,
+# then creates a GitHub Release with the binaries, config.example.yaml, and a
+# checksums file attached.
+#
+# Targets are Linux + macOS (amd64/arm64) only: the runner manages subprocess
+# groups with syscall.Setpgid / syscall.Kill, which are Unix-only — a Windows
+# host build would need platform-specific process code that doesn't exist yet.
+# Cross-compilation is otherwise trivial (the web frontend is //go:embed all:web
+# and there are no cgo/sqlite deps, only gopkg.in/yaml.v3), so CGO_ENABLED=0
+# produces static binaries on every target here.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (must already exist on the remote)'
+        required: true
+
+permissions:
+  contents: write  # create release + upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            # refs/tags/v0.1.0 -> v0.1.0
+            echo "tag=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build binaries (linux + darwin, amd64 + arm64)
+        env:
+          VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p dist
+          build() {
+            local goos="$1" goarch="$2"
+            local out="dist/cc-webui-${goos}-${goarch}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$out" .
+            echo "built $out"
+          }
+          for goos in linux darwin; do
+            for goarch in amd64 arm64; do
+              build "$goos" "$goarch"
+            done
+          done
+
+      - name: Stage release assets
+        run: |
+          cp config.example.yaml dist/
+          (cd dist && sha256sum cc-webui-* config.example.yaml > checksums.txt)
+          ls -la dist
+
+      - name: Create or update release & upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-running on an existing tag (e.g. a fixed build): clobber assets.
+            gh release upload "$TAG" dist/cc-webui-* dist/config.example.yaml dist/checksums.txt --clobber
+          else
+            gh release create "$TAG" \
+              dist/cc-webui-* dist/config.example.yaml dist/checksums.txt \
+              --title "$TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
