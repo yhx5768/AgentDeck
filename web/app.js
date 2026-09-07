@@ -78,6 +78,7 @@ const state = {
   toolBlocks: {},     // tool_use_id -> details element
   subagentCards: {},  // parent_tool_use_id -> 子代理卡片 {summary, body, count, label}
   agentToolMeta: {},  // Agent tool_use_id -> {title, type}（实时侧卡片标题来源）
+  ocVariants: {},     // "cli/provider" -> {model: [--variant 键]} | null（拉取失败）
   nearBottom: true,
   home: '',           // server home dir, for ~ path shortening
   drafts: {},         // sessionId -> {text, attachments}
@@ -1107,6 +1108,7 @@ async function openSession(id) {
   renderSessionList();
   renderWsActivity();
   connectEvents(id);
+  refreshSessionEffort(); // opencode 会话按模型 variants 重建推理等级下拉（异步）
   // 切会话后光标直接进输入框，省一次点击；无 cwd 时输入框被禁用则不 focus，
   // 移动端也不 focus——自动弹软键盘会挡住刚加载的历史。
   if (!isMobile() && !input.disabled) {
@@ -1152,8 +1154,8 @@ function applyWorkspaceGate(cwd) {
 function setEngineUI(engine) {
   const oc = engine === 'opencode';
   $('#btn-resident').classList.toggle('hidden', oc);
-  $('#session-effort').classList.toggle('hidden', oc);
-  $('#sheet-effort').closest('label').classList.toggle('hidden', oc);
+  // 推理等级不再随引擎一刀切隐藏：opencode 走 --variant，由 refreshSessionEffort
+  // 按模型的 variants 键填充/隐藏（openSession 尾部触发）。
 }
 
 // 会话菜单随目标会话（而非当前打开的会话）引擎过滤；菜单每次打开前重设。
@@ -1202,6 +1204,123 @@ function fillProviderSelect(sel, value, kind) {
   fillSelect(sel, kind ? state.providers.filter((p) => kindOf(p) === kind) : state.providers, value);
 }
 
+// ---- 推理深度下拉（engine-aware）----
+// claude 引擎用固定 --effort 集合（HTML 静态选项）；opencode 引擎走
+// --variant，可选项 = 该模型 metadata 的 variants 键，模型间差异很大
+// （gpt-5.6-luna 有六个、kimi-k3 只有 max、minimax-m3 是 none/thinking，
+// 还有模型完全没有）。opencode 会话/新建视图按所选模型重建下拉，
+// claude 会话恢复静态集合；无 variants 的模型隐藏控件。
+const EFFORT_STATIC = {}; // select id -> 静态 HTML（claude 全集）
+
+// 页面加载即快照（script 在 body 尾部，元素已就绪）：任何重建都发生在用户
+// 操作之后，这里保证 claude 全集永远是初始 HTML。effortStaticHTML 的懒
+// 缓存只作兜底——首个打开的会话若是 opencode 它也不会被污染（opencode
+// 分支不读静态 HTML）。
+for (const eid of ['session-effort', 'sheet-effort', 'ns-effort', 'new-effort']) {
+  const el = $(eid);
+  if (el) EFFORT_STATIC[eid] = el.innerHTML;
+}
+
+function effortStaticHTML(sel) {
+  if (!EFFORT_STATIC[sel.id]) EFFORT_STATIC[sel.id] = sel.innerHTML;
+  return EFFORT_STATIC[sel.id];
+}
+
+// 按 engine + 模型 variants 键重建/恢复一个 effort 下拉并决定显隐。
+// wrap 可选：随下拉一起显隐的外层 label（sheet/new 面板里的 select 裸着
+// 不好看）。重建时保留当前选中值（能对上才恢复）。
+function applyEffortOptions(sel, kind, keys, wrap) {
+  const show = (v) => {
+    sel.classList.toggle('hidden', !v);
+    if (wrap) wrap.classList.toggle('hidden', !v);
+  };
+  if (kind !== 'opencode') {
+    const cur = sel.value;
+    sel.innerHTML = effortStaticHTML(sel);
+    if (cur) sel.value = cur;
+    show(true);
+    return;
+  }
+  if (!keys || !keys.length) {
+    show(false);
+    return;
+  }
+  const cur = sel.value;
+  const firstText = sel.options[0] ? sel.options[0].textContent : '默认';
+  sel.innerHTML = '';
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = firstText;
+  sel.appendChild(def);
+  for (const k of keys) {
+    const opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = k;
+    sel.appendChild(opt);
+  }
+  if (keys.includes(cur)) sel.value = cur;
+  show(true);
+}
+
+// 按 cli+provider 取一次模型 variants（服务端进程内缓存，前端会话内缓存）。
+async function ocVariantsFor(cliName, providerName) {
+  const key = `${cliName}/${providerName}`;
+  if (key in state.ocVariants) return state.ocVariants[key];
+  let data = null;
+  try {
+    data = await api(`/api/opencode-model-variants?cli=${encodeURIComponent(cliName)}&provider=${encodeURIComponent(providerName)}`);
+  } catch (_) {
+    // 拉取失败 = 无数据，effort 下拉保持隐藏，不打扰对话
+  }
+  state.ocVariants[key] = (data && data.models) || null;
+  return state.ocVariants[key];
+}
+
+// 会话视图：按当前会话的 cli/provider/model 刷新 session 与 sheet 两处
+// effort 下拉。挂在 rerenderProfileSelects / 各 PATCH 成功 / openSession 尾部。
+async function refreshSessionEffort() {
+  const s = state.current;
+  if (!s) return;
+  const engine = s.engine || 'claude';
+  const main = $('#session-effort');
+  const sheet = $('#sheet-effort');
+  const sheetWrap = sheet.closest('label');
+  if (engine !== 'opencode') {
+    applyEffortOptions(main, 'claude');
+    applyEffortOptions(sheet, 'claude', null, sheetWrap);
+    return;
+  }
+  const prov = state.providers.find((p) => p.name === s.provider);
+  const model = s.model_override || ((prov && prov.models[0]) || {}).name || '';
+  const keys = model ? (await ocVariantsFor(s.cli, s.provider) || {})[model] || [] : [];
+  applyEffortOptions(main, 'opencode', keys);
+  applyEffortOptions(sheet, 'opencode', keys, sheetWrap);
+}
+
+// ns 视图与 quick-create 弹窗：effort 跟随所选 cli/provider/model（读下拉值）
+async function refreshNsEffort() {
+  const cliName = $('#ns-cli').value;
+  const sel = $('#ns-effort');
+  if (cliKind(cliName) !== 'opencode') {
+    applyEffortOptions(sel, 'claude');
+    return;
+  }
+  const v = await ocVariantsFor(cliName, $('#ns-provider').value);
+  applyEffortOptions(sel, 'opencode', v && v[$('#ns-model').value]);
+}
+
+async function refreshNewEffort() {
+  const cliName = $('#new-cli').value;
+  const sel = $('#new-effort');
+  const wrap = sel.closest('label');
+  if (cliKind(cliName) !== 'opencode') {
+    applyEffortOptions(sel, 'claude', null, wrap);
+    return;
+  }
+  const v = await ocVariantsFor(cliName, $('#new-provider').value);
+  applyEffortOptions(sel, 'opencode', v && v[$('#new-model').value], wrap);
+}
+
 // Model 下拉随 provider 联动；空值 = provider 默认模型（models 第一个）
 function fillModelSelect(sel, providerName, value) {
   const p = state.providers.find((x) => x.name === providerName);
@@ -1246,6 +1365,7 @@ function rerenderProfileSelects() {
   fillModelSelect($('#session-model'), state.current.provider, state.current.model_override);
   applyAttachGate();
   patchSheetIfOpen(state.current);
+  refreshSessionEffort(); // fire-and-forget：opencode 需拉模型 variants 重建 effort
 }
 
 function connectEvents(id) {
@@ -3340,6 +3460,7 @@ $('#session-cli').addEventListener('change', async (e) => {
   state.current = updated;
   patchSheetIfOpen(updated);
   loadSessions();
+  refreshSessionEffort();
 });
 
 $('#session-provider').addEventListener('change', async (e) => {
@@ -3352,6 +3473,7 @@ $('#session-provider').addEventListener('change', async (e) => {
   fillModelSelect($('#session-model'), updated.provider, updated.model_override);
   patchSheetIfOpen(updated);
   loadSessions();
+  refreshSessionEffort();
 });
 
 $('#session-model').addEventListener('change', async (e) => {
@@ -3361,6 +3483,7 @@ $('#session-model').addEventListener('change', async (e) => {
   });
   state.current = updated;
   patchSheetIfOpen(updated);
+  refreshSessionEffort(); // 模型变了 → opencode 的 variants 键集合可能变
 });
 
 $('#session-effort').addEventListener('change', async (e) => {
@@ -3814,9 +3937,10 @@ $('#btn-new').onclick = async () => {
 };
 
 // quick-create 弹窗：clis 列表本就带 kind 后缀（fillCLISelect 标签），切 cli
-// 时 provider 归位同 kind 首个、隐藏推理等级（opencode 无此概念）
+// 时 provider 归位同 kind 首个；effort 下拉由 refreshNewEffort 按模型 variants
+// 动态填充（原「opencode 无此概念」的固定隐藏不再适用）
 function applyNewEngineUI(kind) {
-  $('#new-effort').closest('label').classList.toggle('hidden', kind === 'opencode');
+  refreshNewEffort();
 }
 
 $('#new-cli').addEventListener('change', () => {
@@ -3828,6 +3952,7 @@ $('#new-cli').addEventListener('change', () => {
 
 $('#new-provider').addEventListener('change', (e) => {
   fillModelSelect($('#new-model'), e.target.value, '');
+  refreshNewEffort();
 });
 
 $('#new-submit').onclick = async () => {
@@ -4081,7 +4206,10 @@ async function openNewSessionView(cwd) {
     applyNsEngineUI(kind);
     if (kind === 'opencode') dropNsImages('已切换到 opencode 引擎，暂不支持图片消息，已移除图片附件');
   };
-  providerSel.onchange = () => renderModelOptions(modelSel, providerSel.value);
+  providerSel.onchange = () => {
+    renderModelOptions(modelSel, providerSel.value);
+    refreshNsEffort(); // provider/模型变了 → variants 键集合可能变
+  };
 }
 
 function renderProviderOptions(sel, kind) {
@@ -4090,9 +4218,10 @@ function renderProviderOptions(sel, kind) {
   if (items.length) sel.value = items[0].name;
 }
 
-// 新建会话视图的引擎可见面：opencode 无推理等级概念，隐藏控件
+// 新建会话视图的引擎可见面：effort 下拉由 refreshNsEffort 按所选模型
+// variants 动态填充（opencode 无 variants 的模型自然隐藏）
 function applyNsEngineUI(kind) {
-  $('#ns-effort').classList.toggle('hidden', kind === 'opencode');
+  refreshNsEffort();
 }
 
 function dropNsImages(msg) {

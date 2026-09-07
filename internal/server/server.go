@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -33,7 +34,7 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-// validEffort reports whether s is an accepted --effort level.
+// validEffort reports whether s is an accepted --effort level (claude engine).
 func validEffort(s string) bool {
 	for _, v := range []string{"low", "medium", "high", "xhigh", "max"} {
 		if s == v {
@@ -41,6 +42,29 @@ func validEffort(s string) bool {
 		}
 	}
 	return false
+}
+
+// effortOKFor validates a session effort/推理 override per engine kind.
+// Claude sessions take the fixed --effort level set above; opencode sessions
+// take a --variant key, whose values are provider- and model-specific (e.g.
+// low/high/max, none/thinking, or nothing at all) — only the shape is checked
+// here, the UI offers the actual keys from the model metadata.
+func effortOKFor(kind, s string) bool {
+	if s == "" {
+		return true // empty = default / clear the override
+	}
+	if kind == config.KindOpenCode {
+		if s == "" || len(s) > 32 {
+			return false
+		}
+		for _, r := range s {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+				return false
+			}
+		}
+		return true
+	}
+	return validEffort(s)
 }
 
 const cookieName = "ccgw_token"
@@ -51,10 +75,23 @@ type Server struct {
 	mgr    *runner.Manager
 	static fs.FS
 	mux    *http.ServeMux
+
+	// variantsCache memoizes `opencode models --verbose` per cli+provider.
+	// The metadata (reasoning-effort variant keys per model) is static until
+	// the user runs `opencode models --refresh`, so a slow TTL suffices.
+	variantsMu    sync.Mutex
+	variantsCache map[string]variantsEntry
 }
 
+type variantsEntry struct {
+	ts   time.Time
+	data map[string][]string // model id -> --variant keys
+}
+
+const variantsTTL = 10 * time.Minute
+
 func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS) *Server {
-	s := &Server{cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux()}
+	s := &Server{cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux(), variantsCache: map[string]variantsEntry{}}
 	s.routes()
 	return s
 }
@@ -87,6 +124,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/claude-sessions/preview", s.auth(s.handleClaudeSessionPreview))
 	s.mux.Handle("GET /api/opencode-sessions", s.auth(s.handleOpenCodeSessions))
 	s.mux.Handle("GET /api/opencode-sessions/preview", s.auth(s.handleOpenCodeSessionPreview))
+	s.mux.Handle("GET /api/opencode-model-variants", s.auth(s.handleOpenCodeModelVariants))
 	s.mux.Handle("POST /api/sessions/import", s.auth(s.handleImport))
 	s.mux.Handle("GET /api/stats", s.auth(s.handleStats))
 	s.mux.Handle("GET /api/notes", s.auth(s.handleGetNotes))
@@ -431,7 +469,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.Cwd = resolvedCwd
-	if body.Effort != "" && !validEffort(body.Effort) {
+	if !effortOKFor(cli.Kind, body.Effort) {
 		writeErr(w, http.StatusBadRequest, "invalid effort: "+body.Effort)
 		return
 	}
@@ -508,10 +546,6 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if body.Effort != nil && *body.Effort != "" && !validEffort(*body.Effort) {
-		writeErr(w, http.StatusBadRequest, "invalid effort: "+*body.Effort)
-		return
-	}
 	// The cli and provider of a session must share an engine kind.
 	cliName := sess.CLI
 	if body.CLI != nil {
@@ -526,6 +560,19 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	if cli != nil && prov != nil && cli.Kind != prov.Kind {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind))
 		return
+	}
+	// Effort levels are engine-specific: fixed --effort set for claude, any
+	// well-formed --variant key for opencode (validated against the final cli
+	// kind after possible cli/provider switches above).
+	if body.Effort != nil {
+		kind := config.KindClaude
+		if cli != nil {
+			kind = cli.Kind
+		}
+		if !effortOKFor(kind, *body.Effort) {
+			writeErr(w, http.StatusBadRequest, "invalid effort: "+*body.Effort)
+			return
+		}
 	}
 	// Resident/peer messaging is a Claude Code protocol feature; opencode
 	// sessions must not enable it (the cli kind that applies after this
@@ -1123,6 +1170,38 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.view(sess))
+}
+
+// handleOpenCodeModelVariants reports the --variant (reasoning effort) keys
+// opencode accepts per model of one provider (`opencode models <provider>
+// --verbose`, memoized). The effort dropdowns query this so an opencode
+// session only ever offers the variant keys its model really supports.
+func (s *Server) handleOpenCodeModelVariants(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
+	if cli == nil || !cli.IsOpenCode() {
+		writeErr(w, http.StatusBadRequest, "an opencode kind cli is required")
+		return
+	}
+	prov := s.cfg().ProviderByName(strings.TrimSpace(q.Get("provider")))
+	if prov == nil || !prov.IsOpenCode() {
+		writeErr(w, http.StatusBadRequest, "an opencode kind provider is required")
+		return
+	}
+	key := cli.Name + "\x00" + prov.Name
+	s.variantsMu.Lock()
+	defer s.variantsMu.Unlock()
+	if e, ok := s.variantsCache[key]; ok && time.Since(e.ts) < variantsTTL {
+		writeJSON(w, http.StatusOK, map[string]any{"models": e.data})
+		return
+	}
+	data, err := opencodehist.ModelVariants(cli.Path, prov.Name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.variantsCache[key] = variantsEntry{ts: time.Now(), data: data}
+	writeJSON(w, http.StatusOK, map[string]any{"models": data})
 }
 
 // handleOpenCodeSessions lists sessions from the opencode engine's own store

@@ -152,6 +152,7 @@ CLI 操作全部 `exec` 配置里的 cli path（子进程 30s 超时；list 无�
 - **工具卡双事件**（风险 #3 实测确认）：`run --format json` 对工具先发 `status:"running"` 再发 `status:"completed"` 的同 callID 两个 part——`ToolTx` 按 callID 记 assistant/result 已发，实测单卡单结果。
 - **`-f` 附件 = 多模态通道**：`opencode run` 不接受内嵌 base64 图片（API 层拒绝），官方附件通道是 `-f <path>`（可重复）——图片/文件都走它，`run` 会把文件内容展开注入模型上下文（视觉模型直接见图）。**解析陷阱**：`-f` 是数组 flag，消息位置参数必须放前面（`-f a.png "msg"` 会把 `"msg"` 吞进文件数组报 `File not found`）；实测 `message-first` 或 `--file=` 两种排布都通。**echo 规则**：stored user echo 只存 `msg.Text`（不用 turnText 的路径 mention 拼装版）——export 回显 = 原 prompt 原文，`-f` 内容只进部分展开不进 echo 文本，去重才成立。
 - **带附件 export 的 user 消息多三个 part**（工具前导文本 `Called the Read tool with the following input: …`、`<path>/<type>/<content>` 文件展开、`type:"file"`）——`userPromptText` 只认其余 text（即 prompt echo），回放/预览共用该过滤，否则用户气泡会带文件转储、echo 失配重复。
+- **推理深度 = `--variant`，不是 effort**：`run --variant <key>` 的键集合按模型走（`opencode models <provider> --verbose` 的 `variants` 字段，`opencodehist.ModelVariants`/`parseModelsOutput` 解析，有单测）。实测集合差异巨大：gpt-5.6-luna `[none low medium high xhigh max]`、deepseek-v4-flash `[low high max]`、kimi-k3 只有 `[max]`、minimax-m3 `[none thinking]`、半数模型无 variants。→ server `/api/opencode-model-variants`（进程内缓存 10 分钟）+ 前端 effort 下拉按模型键动态重建（`EFFORT_STATIC` 页面加载即快照 claude 全集，首个会话是 opencode 也不污染），effort 服务端校验按 engine 分流（claude 固定集合 / opencode 形状校验）。
 - **风险 #6/#7 定案**：慢响应是网关抖动（复现一轮 3.5 分钟才回话，无零输出）；env 的 `ANTHROPIC_BASE_URL` 等对 opencode 子进程无感（自带 auth.json）。
 
 ## 实施顺序（每步可独立合入）

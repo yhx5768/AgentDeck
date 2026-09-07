@@ -57,6 +57,9 @@ type Provider struct {
 // IsOpenCode reports whether this cli speaks the opencode protocol.
 func (c *CLI) IsOpenCode() bool { return c.Kind == KindOpenCode }
 
+// IsOpenCode mirrors CLI.IsOpenCode for providers.
+func (p *Provider) IsOpenCode() bool { return p.Kind == KindOpenCode }
+
 // ModelByName returns the model with the given name, or nil.
 func (p *Provider) ModelByName(name string) *Model {
 	for i := range p.Models {

@@ -736,6 +736,12 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	if model != "" {
 		args = append(args, "-m", openCodeModelID(prov.Name, model))
 	}
+	// Reasoning depth rides opencode's --variant flag (per-model key set, e.g.
+	// low/high/max). Same Session.EffortOverride field as claude's --effort;
+	// the UI only offers keys the model metadata lists.
+	if sess.EffortOverride != "" {
+		args = append(args, "--variant", sess.EffortOverride)
+	}
 	if sess.ClaudeSessionID != "" {
 		args = append(args, "-s", sess.ClaudeSessionID)
 	} else if sess.Name != "" {
