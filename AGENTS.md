@@ -139,6 +139,8 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
 
 ## 约定
 
+- **并行开发用 worktree**：多需求/bug 并行时每条开一个 worktree，别在 master 上堆未提交改动互相打架。`git worktree add ../cc-webui-<topic> -b <topic-branch>`；每个 worktree 的 `data/`、构建产物 `cc-webui` 都 gitignore、各自隔离、互不污染。`config.yaml` 也 gitignore——新 worktree 要么 `cp config.example.yaml config.yaml` 重新填 token，要么软链主 worktree 的 config——**只为共享 token + clis/providers/models 静态配置**（这些本来就想各 worktree 一致）；软链后 `listen` 也随之共享成 8321，**端口别改 config（会动 master），靠启动时 `CC_WEBUI_LISTEN` env 覆盖**（见下条）。`data_dir: "./data"` 经 `filepath.Abs` 按**进程 CWD**解析（非 config 文件位置），各 worktree 自带独立 `<worktree>/data`，不会写穿 master。完事回主 worktree 合 master，再 `git worktree remove ../cc-webui-<topic>`。
+- **实测别杀活进程**：跑 harness / 手测时**不要 kill 正在运行的 cc-webui**（用户在 screen 里 dogfood 的活实例，默认 `0.0.0.0:8321`）。改完 `go build` 出新二进制，用**别的端口 + 独立 data_dir** 起测试进程：`CC_WEBUI_DATA_DIR=./data-test CC_WEBUI_LISTEN=127.0.0.1:8322 ./cc-webui`——8321 留给活实例，127.0.0.1 不外暴测试实例。`go test ./...` 只跑单测、不起服务、不冲突。
 - **注释语言**：Go 后端以英文 doc 注释为主；`server/files.go` 与用户可见错误/文案是中文（如 `"文件回滚失败："`、`"文件已回滚"`）；前端 JS 注释与全部 UI 字符串为中文。文档（README/rewind-rd/TODO）全中文。**改代码时匹配周围注释的语言。**
 - **命名**：标准 Go——PascalCase 导出 / camelCase 包内；文件名小写单词（`store.go`、`files.go`）；包名同目录名。前端用 `$()` 作 `querySelector` 简写、`state`/`traj` 全局对象。
 - **错误处理**：`fmt.Errorf("%w")` 包装；后台非致命错误 `log.Printf`；仅 `main.go` 启动失败用 `log.Fatalf`；HTTP handler 用 `writeErr(w, code, msg)` 返回 `{"error":...}`。
