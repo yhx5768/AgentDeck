@@ -232,6 +232,73 @@ func writeRegistry(t *testing.T, root string, pid int, sessionID, name string) {
 	}
 }
 
+func TestMoveSessionRelocatesTranscript(t *testing.T) {
+	root := t.TempDir()
+	cwdFrom := filepath.Join(root, "old-proj")
+	cwdTo := filepath.Join(root, "new-proj")
+	sid := "s1"
+	fromDir := HistoryDir(cwdFrom)
+	if err := os.MkdirAll(filepath.Join(fromDir, sid, "subagents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(HistoryPath(cwdFrom, sid), []byte(realUserLine("u1", "hi")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fromDir, sid, "subagents", "agent-a.jsonl"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := MoveSession(cwdFrom, cwdTo, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !moved {
+		t.Fatal("expected moved=true")
+	}
+	if !pathExists(HistoryPath(cwdTo, sid)) {
+		t.Fatal("main jsonl not relocated to destination")
+	}
+	if !pathIsDir(filepath.Join(HistoryDir(cwdTo), sid, "subagents")) {
+		t.Fatal("subagents dir not relocated to destination")
+	}
+	if pathExists(HistoryPath(cwdFrom, sid)) || pathIsDir(filepath.Join(fromDir, sid)) {
+		t.Fatal("source transcript still present after move")
+	}
+	// The relocated transcript is addressable via the new cwd.
+	if events, err := Convert(cwdTo, sid); err != nil || len(events) == 0 {
+		t.Fatalf("Convert(new cwd) = %d events, err=%v; want >0", len(events), err)
+	}
+
+	// No-op when the source has nothing on disk.
+	if moved, err := MoveSession(cwdFrom, cwdTo, "missing"); err != nil || moved {
+		t.Fatalf("expected no-op for missing session, moved=%v err=%v", moved, err)
+	}
+}
+
+func TestMoveSessionRefusesExistingDestination(t *testing.T) {
+	root := t.TempDir()
+	cwdFrom := filepath.Join(root, "old-proj")
+	cwdTo := filepath.Join(root, "new-proj")
+	if err := os.MkdirAll(HistoryDir(cwdFrom), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(HistoryDir(cwdTo), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(HistoryPath(cwdFrom, "s1"), []byte("z\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(HistoryPath(cwdTo, "s1"), []byte("existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MoveSession(cwdFrom, cwdTo, "s1"); err == nil {
+		t.Fatal("expected error when destination already holds the session")
+	}
+	if raw, _ := os.ReadFile(HistoryPath(cwdFrom, "s1")); string(raw) != "z\n" {
+		t.Fatal("source jsonl modified despite destination conflict")
+	}
+}
+
 func TestReadRegistryForSessionFindsLauncherChild(t *testing.T) {
 	// Launcher-style CLI (ducc): the real claude is a child process, so the
 	// registry file carries the child pid, not the pid the host spawned.

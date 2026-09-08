@@ -522,6 +522,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		SortOrder      *int    `json:"sort_order"`
 		Resident       *bool   `json:"resident"`
 		PeerName       *string `json:"peer_name"`
+		Cwd            *string `json:"cwd"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
@@ -581,29 +582,78 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "opencode 引擎不支持常驻/peer 消息")
 		return
 	}
+	isOpenCode := cli != nil && cli.IsOpenCode()
+	// Changing the workspace path. Resolve + validate up front (pure, no side
+	// effects) so a rejected patch never moves files or stops the resident;
+	// the actual relocation happens after every other check passes.
+	effCwd := sess.Cwd
+	if body.Cwd != nil {
+		resolved, err := runner.ResolveCwd(*body.Cwd)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		effCwd = resolved
+	}
+	cwdChanged := effCwd != sess.Cwd
+	// A live turn writes its transcript under the old cwd; migrating the files
+	// underneath a running process can fork the log (the CLI may recreate the
+	// old path on its next append). Refuse like rewind does.
+	if cwdChanged && s.mgr.Busy(sess.ID) {
+		writeErr(w, http.StatusConflict, "会话正在运行，请先停止或等本轮结束再修改工作区")
+		return
+	}
 	// Peer-name changes write the claude transcript (custom-title). Validate
-	// and apply BEFORE storing so a transcript failure doesn't leave metadata
-	// the CLI never saw. A session without a claude id just stores the value;
-	// it's applied at the first resident spawn.
+	// up front; the transcript write happens below, at the final cwd. A
+	// session without a claude id just stores the value; it's applied at the
+	// first resident spawn.
+	peerName := ""
 	if body.PeerName != nil {
 		cleaned := runner.CleanPeerName(*body.PeerName)
 		if strings.TrimSpace(*body.PeerName) != "" && cleaned == "" {
 			writeErr(w, http.StatusBadRequest, "地址名无效：不能以 / 开头")
 			return
 		}
-		if sess.ClaudeSessionID != "" {
-			name := cleaned
-			if name == "" {
-				name = runner.CleanPeerName(sess.Name)
-			}
-			if name != "" {
-				if err := claudehist.RenameSession(sess.Cwd, sess.ClaudeSessionID, name); err != nil {
-					writeErr(w, http.StatusBadGateway, "写入会话地址名失败："+err.Error())
-					return
-				}
+		peerName = cleaned
+	}
+	// A live resident is bound to the old transcript; stop it before moving
+	// the files underneath it (it is respawned under the new cwd in the
+	// side-effects section below).
+	if cwdChanged && !isOpenCode && sess.Resident {
+		s.mgr.TeardownResident(sess.ID)
+	}
+	// Workspace migration: relocate the session's on-disk claude transcript
+	// (main jsonl + subagents dir) to the new project's slug so --resume and
+	// history replay keep working from the migrated directory. opencode's
+	// conversation lives in its own store keyed by session id — nothing to
+	// move. A missing source transcript (e.g. imported from another machine)
+	// is fine: the change still applies, the session just replays its stored
+	// events until new turns write a fresh transcript.
+	if cwdChanged && !isOpenCode && sess.ClaudeSessionID != "" {
+		moved, err := claudehist.MoveSession(sess.Cwd, effCwd, sess.ClaudeSessionID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "迁移会话历史文件失败："+err.Error())
+			return
+		}
+		if moved {
+			log.Printf("session %s: workspace %s -> %s (transcript relocated)", sess.ID, sess.Cwd, effCwd)
+		}
+	}
+	// Peer-name rename writes to the transcript at its final location.
+	if body.PeerName != nil && sess.ClaudeSessionID != "" {
+		name := peerName
+		if name == "" {
+			name = runner.CleanPeerName(sess.Name)
+		}
+		if name != "" {
+			if err := claudehist.RenameSession(effCwd, sess.ClaudeSessionID, name); err != nil {
+				writeErr(w, http.StatusBadGateway, "写入会话地址名失败："+err.Error())
+				return
 			}
 		}
-		if err := s.st.Upsert(sess, func(cur *store.Session) { cur.PeerName = cleaned }); err != nil {
+	}
+	if body.PeerName != nil {
+		if err := s.st.Upsert(sess, func(cur *store.Session) { cur.PeerName = peerName }); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -645,6 +695,9 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		if body.SortOrder != nil {
 			cur.SortOrder = *body.SortOrder
 		}
+		if body.Cwd != nil {
+			cur.Cwd = effCwd
+		}
 		cur.UpdatedAt = time.Now()
 	})
 	if err != nil {
@@ -669,6 +722,14 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		// already registered the new name.
 		if err := s.mgr.ApplyPeerName(cur); err != nil {
 			log.Printf("apply peer name for %s: %v", sess.ID, err)
+		}
+	}
+	// A workspace change stopped the resident above (if it was live) — bring
+	// it back under the new cwd unless the same request explicitly turned it
+	// off.
+	if cwdChanged && cur.Resident && body.Resident == nil {
+		if err := s.mgr.EnsureResident(sess.ID); err != nil {
+			log.Printf("restart resident after workspace change %s: %v", sess.ID, err)
 		}
 	}
 	writeJSON(w, http.StatusOK, s.view(s.st.Get(sess.ID)))

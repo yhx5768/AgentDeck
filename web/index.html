@@ -96,7 +96,7 @@
           <button id="btn-drawer" class="icon-btn drawer-toggle" title="打开会话列表"><i data-lucide="menu"></i></button>
           <input id="session-name" class="name-input" spellcheck="false">
           <span id="status-badge" class="status-badge"></span>
-          <span class="cwd" id="session-cwd" title=""></span>
+          <input id="session-cwd" class="cwd cwd-input" title="工作区目录（可编辑，项目迁移后改这里）" spellcheck="false" autocomplete="off">
           <div class="header-actions">
             <button id="btn-resident" class="icon-btn resident-icon-btn" title="常驻：保持进程在线，可被其他会话发消息"><i data-lucide="bot"></i></button>
             <button id="btn-resume" class="icon-btn" title="复制终端恢复该会话的命令"><i data-lucide="terminal"></i></button>
@@ -278,7 +278,7 @@
           </select>
         </label>
       </div>
-      <div class="sheet-cwd" id="sheet-cwd"></div>
+      <input class="sheet-cwd" id="sheet-cwd" title="工作区目录（可编辑）" spellcheck="false" autocomplete="off">
       <div class="sheet-actions">
         <button id="sheet-resume" class="ghost-btn"><i data-lucide="terminal"></i> 复制 resume 命令</button>
         <button id="sheet-archive" class="ghost-btn"><i data-lucide="archive"></i> 归档</button>
@@ -321,6 +321,14 @@
   </label>
   <div class="rp-status" id="resident-status"></div>
   <div class="rp-hint">开启后进程保持在线并注册地址名，其他 Claude 会话可用 SendMessage 发消息过来；修改地址名会自动重启常驻进程。</div>
+</div>
+
+<!-- 工作区整组迁移 popover：改项目路径 + 一键迁移该工作区下全部会话 -->
+<div id="ws-migrate-pop" class="popover-panel hidden">
+  <div class="wm-head">迁移工作区 <span id="ws-migrate-count" class="wm-count"></span></div>
+  <input id="ws-migrate-input" spellcheck="false" autocomplete="off" placeholder="/path/to/new/project">
+  <div id="ws-migrate-status" class="wm-status"></div>
+  <button id="ws-migrate-submit" class="primary-btn">迁移这组全部会话</button>
 </div>
 
 <!-- rename dialog -->

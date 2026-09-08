@@ -648,12 +648,12 @@ function renderSessionList() {
 
     const header = document.createElement('div');
     header.className = 'group-header';
-    header.innerHTML = `<span class="chev"><i data-lucide="chevron-down"></i></span><i data-lucide="folder" class="dir-icon"></i><span class="dir"></span><span class="count">${sessions.length}</span><button class="group-add-btn icon-btn" title="在此工作区新建会话"><i data-lucide="plus"></i></button>`;
+    header.innerHTML = `<span class="chev"><i data-lucide="chevron-down"></i></span><i data-lucide="folder" class="dir-icon"></i><span class="dir"></span><span class="count">${sessions.length}</span><button class="group-migrate-btn icon-btn" title="迁移/修改工作区路径"><i data-lucide="settings"></i></button><button class="group-add-btn icon-btn" title="在此工作区新建会话"><i data-lucide="plus"></i></button>`;
     header.querySelector('.dir').textContent = shortenPath(cwd);
     header.title = cwd;
     renderIcons(header);
     header.onclick = (e) => {
-      if (e.target.closest('.group-add-btn')) return;
+      if (e.target.closest('.group-add-btn') || e.target.closest('.group-migrate-btn')) return;
       if (collapsedGroups.has(cwd)) {
         collapsedGroups.delete(cwd);
         group.classList.remove('collapsed');
@@ -667,6 +667,11 @@ function renderSessionList() {
     header.querySelector('.group-add-btn').onclick = (e) => {
       e.stopPropagation();
       openNewSessionView(cwd);
+    };
+    // "settings" button: migrate every session of this workspace to a new path
+    header.querySelector('.group-migrate-btn').onclick = (e) => {
+      e.stopPropagation();
+      openWsMigratePop(sessions, e.currentTarget);
     };
     group.appendChild(header);
 
@@ -761,6 +766,88 @@ async function handleSessionAction(action, s) {
   if (action === 'fork')   return forkSession(s);
   if (action === 'archive') return toggleArchive(s);
   if (action === 'delete') return deleteSession(s);
+}
+
+// ---------- 工作区整组迁移 ----------
+// 侧栏分组头部的 ⚙ 按钮：把该工作区（cwd）下全部会话一次性迁移到新路径。
+// 逐会话 PATCH，服务端负责各自的 claude transcript 迁移 / 常驻重启；运行中的
+// 会话会被 409 拒绝并汇总在状态行里，其余照常完成。
+let wsMigrateSessions = [];
+
+function openWsMigratePop(sessions, anchor) {
+  wsMigrateSessions = sessions;
+  const from = (sessions[0] && sessions[0].cwd) || '';
+  const input = $('#ws-migrate-input');
+  input.value = from;
+  $('#ws-migrate-count').textContent = `（${sessions.length} 个会话）`;
+  const status = $('#ws-migrate-status');
+  status.textContent = '';
+  status.classList.remove('err');
+  $('#ws-migrate-submit').disabled = false;
+  const pop = $('#ws-migrate-pop');
+  pop.classList.remove('hidden');
+  const rect = anchor.getBoundingClientRect();
+  const pw = 320, ph = 210;
+  let x = rect.right + 4;
+  let y = rect.top - 4;
+  if (x + pw > window.innerWidth - 8) x = rect.right - pw;
+  x = Math.max(8, Math.min(x, window.innerWidth - pw - 8));
+  if (y + ph > window.innerHeight - 8) y = Math.max(8, rect.top - ph - 6);
+  pop.style.left = x + 'px';
+  pop.style.top = y + 'px';
+  input.focus();
+  input.select();
+}
+
+function closeWsMigratePop() {
+  $('#ws-migrate-pop').classList.add('hidden');
+  wsMigrateSessions = [];
+}
+
+// pointerdown 关闭（同 resident-pop）；落在面板/按钮上的跳过
+document.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('#ws-migrate-pop') || e.target.closest('.group-migrate-btn')) return;
+  closeWsMigratePop();
+});
+
+$('#ws-migrate-input').onkeydown = (e) => {
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); submitWsMigrate(); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeWsMigratePop(); }
+};
+
+$('#ws-migrate-submit').onclick = submitWsMigrate;
+
+async function submitWsMigrate() {
+  const to = $('#ws-migrate-input').value.trim();
+  const sessions = wsMigrateSessions;
+  if (!to || !sessions.length) return;
+  const status = $('#ws-migrate-status');
+  const btn = $('#ws-migrate-submit');
+  status.classList.remove('err');
+  status.textContent = `正在迁移 ${sessions.length} 个会话…`;
+  btn.disabled = true;
+  const ok = []; // {id,name}
+  const fail = [];
+  for (const s of sessions) {
+    try {
+      await api(`/api/sessions/${s.id}`, { method: 'PATCH', body: JSON.stringify({ cwd: to }) });
+      ok.push({ id: s.id, name: s.name || s.id.slice(0, 8) });
+    } catch (err) {
+      fail.push(`${s.name || s.id.slice(0, 8)}：${err.message}`);
+    }
+  }
+  btn.disabled = false;
+  if (fail.length) {
+    status.textContent = `成功 ${ok.length}，失败 ${fail.length}：` + fail.join('；');
+    status.classList.add('err');
+  } else {
+    status.textContent = `已迁移 ${ok.length} 个会话`;
+  }
+  loadSessions();
+  // 当前打开的会话若被迁移，重连刷新（服务端从新 cwd 回放）
+  if (state.current && ok.some((x) => x.id === state.current.id)) {
+    openSession(state.current.id);
+  }
 }
 
 // toggle archived flag based on current state (looked up fresh)
@@ -1084,8 +1171,8 @@ async function openSession(id) {
   syncTaskPanel(); // 清空上一会话的任务面板（回放 flush 后用新会话的事件重建）
   $('#error-banner').classList.add('hidden');
   $('#session-name').value = s.name;
-  $('#session-cwd').textContent = s.cwd;
-  $('#session-cwd').title = s.cwd;
+  $('#session-cwd').value = s.cwd || '';
+  $('#session-cwd').title = s.cwd || '';
   $('#session-perm').value = s.permission_mode || '';
   const engine = s.engine || 'claude';
   fillCLISelect($('#session-cli'), s.cli, engine);
@@ -3464,6 +3551,34 @@ $('#session-name').addEventListener('input', (e) => {
   }, 600);
 });
 
+// 工作区（cwd）编辑：项目目录迁移/改名后把会话指到新路径。服务端会顺带迁移
+// claude transcript（--resume / 回放跟随新 slug），失败时回滚输入框显示。
+let cwdTimer = null;
+$('#session-cwd').addEventListener('input', (e) => {
+  clearTimeout(cwdTimer);
+  const cwd = e.target.value.trim();
+  cwdTimer = setTimeout(async () => {
+    if (!state.current || cwd === state.current.cwd) return;
+    try {
+      const updated = await api(`/api/sessions/${state.current.id}`, {
+        method: 'PATCH', body: JSON.stringify({ cwd }),
+      });
+      state.current = updated;
+      $('#session-cwd').value = updated.cwd || '';
+      $('#session-cwd').title = updated.cwd || '';
+      patchSheetIfOpen(updated);
+      applyWorkspaceGate(updated.cwd);
+      loadSessions();
+      // 迁移后重连：服务端从新 cwd 的 transcript 回放，补出此前因旧路径失效
+      // 而缺失的历史消息。
+      openSession(state.current.id);
+    } catch (err) {
+      alert('修改工作区失败：' + err.message);
+      $('#session-cwd').value = (state.current && state.current.cwd) || '';
+    }
+  }, 600);
+});
+
 $('#session-cli').addEventListener('change', async (e) => {
   if (!state.current) return;
   const updated = await api(`/api/sessions/${state.current.id}`, {
@@ -4465,7 +4580,7 @@ function syncSheetFromCurrent() {
   $('#sheet-effort').value = state.current.effort_override || '';
   $('#sheet-perm').value = state.current.permission_mode || '';
   const cwd = state.current.cwd || '';
-  $('#sheet-cwd').textContent = cwd;
+  $('#sheet-cwd').value = cwd;
   $('#sheet-cwd').title = cwd;
   renderIcons();
 }
@@ -4516,6 +4631,11 @@ syncSheetSelect($('#sheet-provider'), $('#session-provider'));
 syncSheetSelect($('#sheet-model'), $('#session-model'));
 syncSheetSelect($('#sheet-effort'), $('#session-effort'));
 syncSheetSelect($('#sheet-perm'), $('#session-perm'));
+// 工作区输入框同样从 sheet 同步到主输入框再派发（主处理器在 input 事件上）
+$('#sheet-cwd').oninput = () => {
+  $('#session-cwd').value = $('#sheet-cwd').value;
+  $('#session-cwd').dispatchEvent(new Event('input'));
+};
 
 $('#sheet-resume').onclick = () => { closeSheet(); $('#btn-resume').click(); };
 $('#sheet-delete').onclick = () => { closeSheet(); $('#btn-delete').click(); };
@@ -4538,6 +4658,8 @@ function patchSheetIfOpen(s) {
   fillModelSelect($('#sheet-model'), s.provider, s.model_override);
   $('#sheet-effort').value = s.effort_override || '';
   $('#sheet-perm').value = s.permission_mode || '';
+  $('#sheet-cwd').value = s.cwd || '';
+  $('#sheet-cwd').title = s.cwd || '';
 }
 
 // When the user picks a session in the list while the drawer is open,

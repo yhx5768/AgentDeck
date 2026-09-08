@@ -387,6 +387,69 @@ func RenameSession(cwd, sessionID, title string) error {
 	return err
 }
 
+// MoveSession relocates a session's on-disk claude transcript (main jsonl
+// plus the per-session dir holding subagent transcripts) from one project
+// slug to another — used when the workspace directory is migrated/renamed so
+// the conversation can be --resume'd and replayed from the new path. Returns
+// moved=true when anything was relocated. It is a no-op (false, nil) when the
+// source has nothing on disk (e.g. a session whose transcript lives on
+// another machine) or the slugs are identical, and fails without touching
+// anything when the destination already holds the same session.
+func MoveSession(cwdFrom, cwdTo, sessionID string) (bool, error) {
+	if sessionID == "" || cwdFrom == cwdTo {
+		return false, nil
+	}
+	srcDir := HistoryDir(cwdFrom)
+	dstDir := HistoryDir(cwdTo)
+	if srcDir == dstDir {
+		return false, nil
+	}
+	srcMain := filepath.Join(srcDir, sessionID+".jsonl")
+	dstMain := filepath.Join(dstDir, sessionID+".jsonl")
+	srcSession := filepath.Join(srcDir, sessionID)
+	dstSession := filepath.Join(dstDir, sessionID)
+
+	if fi, err := os.Stat(dstMain); err == nil && !fi.IsDir() {
+		return false, fmt.Errorf("目标 transcript 已存在：%s", dstMain)
+	} else if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	haveMain := pathExists(srcMain)
+	haveDir := pathIsDir(srcSession)
+	if !haveMain && !haveDir {
+		return false, nil // nothing on disk to move
+	}
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return false, err
+	}
+	// Move the per-session dir (subagents etc.) first, then the main jsonl —
+	// the jsonl rename is the commit point; on failure the dir move rolls back.
+	if haveDir {
+		if err := os.Rename(srcSession, dstSession); err != nil {
+			return false, fmt.Errorf("迁移子代理 transcript：%w", err)
+		}
+	}
+	if haveMain {
+		if err := os.Rename(srcMain, dstMain); err != nil {
+			if haveDir {
+				_ = os.Rename(dstSession, srcSession)
+			}
+			return false, fmt.Errorf("迁移主 transcript：%w", err)
+		}
+	}
+	return true, nil
+}
+
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func pathIsDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
 // RegistryEntry is one live-session record from ~/.claude/sessions/<pid>.json.
 // The CLI writes it at process start (and refreshes status); Name is the
 // peer-messaging address other sessions use in SendMessage.

@@ -569,6 +569,34 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   padding-top: var(--sp-3);
 }
 
+/* 工作区整组迁移面板：与 popover-panel 同壳，标题 + 路径输入 + 状态 + 按钮 */
+#ws-migrate-pop { width: 320px; }
+.wm-head {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  font-size: var(--fs-base); font-weight: 600;
+}
+.wm-count { color: var(--dim); font-weight: 400; font-size: var(--fs-sm); }
+#ws-migrate-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+  color: var(--fg);
+}
+#ws-migrate-input:focus { outline: none; border-color: var(--accent); }
+.wm-status {
+  font-size: var(--fs-sm);
+  color: var(--dim);
+  line-height: var(--lh-normal);
+  max-height: 120px;
+  overflow-y: auto;
+}
+.wm-status.err { color: var(--red); }
+#ws-migrate-submit { justify-content: center; }
+
 /* 常驻开启状态的 header 按钮：机器人图标 + 绿色高亮（与面板内开关颜色一致） */
 .icon-btn.active { color: var(--accent); background: var(--accent-dim); }
 .icon-btn.active:hover { color: var(--accent); background: var(--accent-dim); }
@@ -914,6 +942,19 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+#chat-header .cwd.cwd-input {
+  flex: none;
+  max-width: 42vw;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+}
+#chat-header .cwd.cwd-input:hover, #chat-header .cwd.cwd-input:focus {
+  border-color: var(--border);
+  background: var(--bg);
+}
+#chat-header .cwd.cwd-input:focus { outline: none; }
 .header-actions {
   display: flex; align-items: center; gap: var(--sp-1);
   margin-left: auto; flex: none;
@@ -2243,12 +2284,14 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   }
   .sheet-cwd {
     margin-top: var(--sp-3);
+    width: 100%;
+    padding: 10px 12px;
+    font-size: var(--fs-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--bg2);
+    color: var(--fg);
     font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    color: var(--dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .sheet-actions {
     display: grid;
@@ -2369,21 +2412,17 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   display: flex; align-items: center; justify-content: center;
 }
 
-/* workspace group header + button */
-.group-header .group-add-btn {
-  opacity: 0;
-  pointer-events: none;
+/* workspace group header + buttons（+/⚙ 均常驻显示） */
+.group-header .group-add-btn,
+.group-header .group-migrate-btn {
   padding: var(--sp-1);
   border-radius: var(--r-sm);
   color: var(--dim);
-  transition: all var(--t-fast);
+  transition: background var(--t-fast);
   background: none; border: none; cursor: pointer;
 }
-.group-header:hover .group-add-btn {
-  opacity: 1;
-  pointer-events: auto;
-}
-.group-header .group-add-btn:hover {
+.group-header .group-add-btn:hover,
+.group-header .group-migrate-btn:hover {
   background: var(--bg2); color: var(--accent);
 }
 
