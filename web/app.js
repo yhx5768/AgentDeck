@@ -3967,6 +3967,8 @@ $('#new-provider').addEventListener('change', (e) => {
   refreshNewEffort();
 });
 
+$('#new-model').addEventListener('change', refreshNewEffort);
+
 $('#new-submit').onclick = async () => {
   const body = {
     name: $('#new-name').value.trim(),
@@ -4221,6 +4223,9 @@ async function openNewSessionView(cwd) {
   providerSel.onchange = () => {
     renderModelOptions(modelSel, providerSel.value);
     refreshNsEffort(); // provider/模型变了 → variants 键集合可能变
+  };
+  modelSel.onchange = () => {
+    refreshNsEffort(); // 模型变了 → variants 键集合可能变
   };
 }
 
