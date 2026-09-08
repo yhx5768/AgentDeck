@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"cc-webui/internal/statsagg"
 )
 
 // writeStatsHist 在 root/<slug>/<sid>.jsonl 写入原始行（root 为聚合根目录
@@ -42,7 +44,7 @@ func TestStatsCacheIncremental(t *testing.T) {
 
 	c := NewStatsCache()
 	// 首次刷新（非 fresh）：缓存为空，等同于全扫。
-	s1 := c.Refresh(root, false)
+	s1 := statsagg.Recompute(c.Refresh(root, false))
 	if !reflect.DeepEqual(s1, AggregateStats(root)) {
 		t.Fatal("首次刷新应等于全量扫描结果")
 	}
@@ -53,7 +55,7 @@ func TestStatsCacheIncremental(t *testing.T) {
 	// 给 A 追加一条消息（mtime+size 变化），增量刷新应只重扫 A。
 	writeStatsHist(t, root, "p1", "aaa", append(linesA,
 		`{"type":"user","uuid":"u3","timestamp":"2026-08-30T10:05:00+08:00","message":{"role":"user","content":"more"}}`))
-	s2 := c.Refresh(root, false)
+	s2 := statsagg.Recompute(c.Refresh(root, false))
 	s2fresh := AggregateStats(root)
 	if !reflect.DeepEqual(s2, s2fresh) {
 		t.Fatalf("增量刷新 != 全量刷新：got %+v, want %+v", s2, s2fresh)
@@ -66,7 +68,7 @@ func TestStatsCacheIncremental(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, "p2", "bbb.jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	s3 := c.Refresh(root, false)
+	s3 := statsagg.Recompute(c.Refresh(root, false))
 	if !reflect.DeepEqual(s3, AggregateStats(root)) {
 		t.Fatal("删除文件后增量刷新 != 全量刷新")
 	}
@@ -75,7 +77,7 @@ func TestStatsCacheIncremental(t *testing.T) {
 	}
 
 	// fresh=true 强制清空缓存全扫，仍一致。
-	if got := c.Refresh(root, true); !reflect.DeepEqual(got, s3) {
+	if got := statsagg.Recompute(c.Refresh(root, true)); !reflect.DeepEqual(got, s3) {
 		t.Fatal("fresh 强制全扫结果与增量不一致")
 	}
 }
@@ -183,21 +185,21 @@ func TestCalculateStreaks(t *testing.T) {
 	// 以真实今日为锚（calculateStreaks 内部用 time.Now()，硬编码日期会随日历漂移）
 	today := time.Now().Format("2006-01-02")
 	// 合法 key 由 helpers 计算（避免测试里手写日期偏移出错）
-	yesterday := addDateKey(today, -1)
-	day3 := addDateKey(today, -3)
+	yesterday := statsagg.AddDateKey(today, -1)
+	day3 := statsagg.AddDateKey(today, -3)
 
 	// today, yesterday, day3 → 当前连续 2，最长 2
-	got := calculateStreaks([]string{day3, yesterday, today})
+	got := statsagg.CalculateStreaks([]string{day3, yesterday, today})
 	if got.Current != 2 || got.Longest != 2 {
 		t.Fatalf("streaks = %+v, want {2,2}", got)
 	}
 	// 只有 day3（今天/昨天无活动）→ 当前 0
-	got = calculateStreaks([]string{day3})
+	got = statsagg.CalculateStreaks([]string{day3})
 	if got.Current != 0 || got.Longest != 1 {
 		t.Fatalf("streaks = %+v, want {0,1}", got)
 	}
 	// 连续三天 → {3,3}
-	got = calculateStreaks([]string{addDateKey(today, -2), yesterday, today})
+	got = statsagg.CalculateStreaks([]string{statsagg.AddDateKey(today, -2), yesterday, today})
 	if got.Current != 3 || got.Longest != 3 {
 		t.Fatalf("streaks = %+v, want {3,3}", got)
 	}

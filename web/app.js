@@ -3890,7 +3890,7 @@ async function loadStats(fresh) {
     body.classList.remove('hidden');
     renderStats(lastStats);
   } else {
-    loading.textContent = '统计中…';
+    loading.textContent = '统计中…（首次扫描较慢）';
     loading.classList.remove('hidden');
     body.classList.add('hidden');
   }
@@ -3914,6 +3914,12 @@ async function loadStats(fresh) {
 }
 
 function renderStats(stats) {
+  // 统计口径说明：按引擎拆出各自贡献的会话数（两引擎合并统计）
+  const engines = stats.engines || {};
+  const scopeParts = [];
+  if (engines.claude) scopeParts.push(`Claude Code ${fmtInt(engines.claude)} 个（~/.claude/projects）`);
+  if (engines.opencode) scopeParts.push(`opencode ${fmtInt(engines.opencode)} 个`);
+  $('#stats-scope').textContent = scopeParts.join(' + ') || (stats.total_sessions ? '本机全部会话' : '无');
   const daily = stats.daily_activity || [];
   const totalTokens = (stats.daily_model_tokens || []).reduce(
     (s, d) => s + Object.values(d.tokens_by_model).reduce((a, b) => a + b, 0), 0);
@@ -3929,8 +3935,11 @@ function renderStats(stats) {
     tile(peakHour, '峰值时段'),
     tile(stats.favorite_model || '—', '常用模型'),
   ].join('');
-  renderHeatmap(stats);
-  $('#heat-detail').textContent = `工具调用共 ${fmtInt((daily).reduce((s, d) => s + d.tool_call_count, 0))} 次`;
+  // renderHeatmap 返回"近 30 天"那段尾部；这里一次性拼好热力图脚注
+  // （旧写法先由 renderHeatmap 写入、再被这里整体覆盖，近 30 天信息永远丢失）
+  const toolCalls = fmtInt(daily.reduce((s, d) => s + d.tool_call_count, 0));
+  const heatTail = renderHeatmap(stats);
+  $('#heat-detail').textContent = `工具调用共 ${toolCalls} 次 · ${heatTail}`;
 }
 
 function renderHeatmap(stats) {
@@ -3986,12 +3995,9 @@ function renderHeatmap(stats) {
   }
   $('#heat-months').innerHTML = labels.join('');
   const l30 = dates.slice(-30).filter((d) => act.has(dayKey(d)) || tok.has(dayKey(d)));
-  const heatDetail = $('#heat-detail');
-  const base = heatDetail ? heatDetail.textContent : '';
   $('#heat-legend').innerHTML = `少 ${[0, 1, 2, 3, 4].map((i) => `<span class="heat-cell lv${i}"></span>`).join('')} 多`;
-  if (heatDetail) {
-    heatDetail.textContent = base ? base + ` · 近 30 天：${fmtInt(l30.length)} 天活跃，${fmtTokens(l30.reduce((s, d) => s + (tok.get(dayKey(d)) || 0), 0))} tokens` : '';
-  }
+  // 返回"近 30 天"尾部，由 renderStats 一次性写入 #heat-detail（避免读写顺序丢信息）
+  return `近 30 天：${fmtInt(l30.length)} 天活跃，${fmtTokens(l30.reduce((s, d) => s + (tok.get(dayKey(d)) || 0), 0))} tokens`;
 }
 
 // ---------- 热力图 tooltip：hover 跟随，点击固定（再点同一天取消） ----------

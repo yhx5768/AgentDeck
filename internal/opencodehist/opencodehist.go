@@ -71,6 +71,26 @@ type SessionMessage struct {
 	ID    string
 	TS    time.Time
 	Parts []map[string]any
+
+	// Assistant steps carry their own usage; empty for user messages.
+	Tokens MessageTokens
+	// Model the step ran on; opencode scopes models by providerID.
+	ModelProviderID string
+	ModelID         string
+}
+
+// MessageTokens is one assistant step's usage as reported by `opencode export`.
+type MessageTokens struct {
+	Input      int64
+	Output     int64
+	Reasoning  int64
+	CacheRead  int64
+	CacheWrite int64
+}
+
+// Total returns the step's full token volume.
+func (t MessageTokens) Total() int64 {
+	return t.Input + t.Output + t.Reasoning + t.CacheRead + t.CacheWrite
 }
 
 // execTimeout bounds every opencode CLI invocation. Exports of very long
@@ -156,6 +176,49 @@ func List(cliPath, dir string) ([]SessionInfo, error) {
 	return out, nil
 }
 
+// ListAll returns every top-level opencode session across all projects in one
+// call, newest first. `session list` is project-bucket scoped (see List) and
+// opencode exposes no way to enumerate buckets, so anything outside the cwd's
+// bucket is invisible to it. This reads that same store through `opencode db`,
+// the CLI's own SQL surface, with a fixed SELECT — no user input ever reaches
+// the query string. That is why the "never touch the sqlite store" rule is
+// narrowed rather than dropped: read-only enumeration is the only surface that
+// goes through here, and callers must fall back to List when this fails,
+// because the table/column names are opencode-internal and can change.
+//
+// `parent_id IS NULL` matches `session list`, which hides subagent (sub-task)
+// sessions; their messages are not in their parent's export, so listing them
+// would count subagent runs as top-level sessions.
+func ListAll(cliPath string) ([]SessionInfo, error) {
+	const query = `SELECT id, title, directory, time_created, time_updated ` +
+		`FROM session WHERE parent_id IS NULL ORDER BY time_updated DESC`
+	raw, err := runCLI(cliPath, "db", query, "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Directory string `json:"directory"`
+		Created   int64  `json:"time_created"`
+		Updated   int64  `json:"time_updated"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("parse opencode db rows: %w", err)
+	}
+	out := make([]SessionInfo, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, SessionInfo{
+			SessionID: r.ID,
+			Title:     r.Title,
+			Cwd:       r.Directory,
+			CreatedAt: msTime(r.Created),
+			UpdatedAt: msTime(r.Updated),
+		})
+	}
+	return out, nil
+}
+
 // FetchSession exports one session (`opencode export <id>`, stdout is pure
 // JSON). The CLI writes a short stderr banner line; stdout is authoritative.
 func FetchSession(cliPath, sessionID string) (*Session, error) {
@@ -201,6 +264,22 @@ func parseExport(raw []byte) (*Session, error) {
 				Time struct {
 					Created int64 `json:"created"`
 				} `json:"time"`
+				// 会话级 model 用 "id"，消息级用 "modelID"（同一份 export 里两种键混用）。
+				// assistant 步不带 model 字段，统计侧回退到会话级模型。
+				Model *struct {
+					ID         string `json:"id"`
+					ModelID    string `json:"modelID"`
+					ProviderID string `json:"providerID"`
+				} `json:"model"`
+				Tokens *struct {
+					Input     int64 `json:"input"`
+					Output    int64 `json:"output"`
+					Reasoning int64 `json:"reasoning"`
+					Cache     struct {
+						Read  int64 `json:"read"`
+						Write int64 `json:"write"`
+					} `json:"cache"`
+				} `json:"tokens"`
 			} `json:"info"`
 			Parts []map[string]any `json:"parts"`
 		} `json:"messages"`
@@ -223,12 +302,29 @@ func parseExport(raw []byte) (*Session, error) {
 		s.ModelID = doc.Info.Model.ID
 	}
 	for _, m := range doc.Messages {
-		s.Messages = append(s.Messages, SessionMessage{
+		msg := SessionMessage{
 			Role:  m.Info.Role,
 			ID:    m.Info.ID,
 			TS:    msTime(m.Info.Time.Created),
 			Parts: m.Parts,
-		})
+		}
+		if m.Info.Model != nil {
+			msg.ModelProviderID = m.Info.Model.ProviderID
+			msg.ModelID = m.Info.Model.ModelID
+			if msg.ModelID == "" {
+				msg.ModelID = m.Info.Model.ID
+			}
+		}
+		if t := m.Info.Tokens; t != nil {
+			msg.Tokens = MessageTokens{
+				Input:      t.Input,
+				Output:     t.Output,
+				Reasoning:  t.Reasoning,
+				CacheRead:  t.Cache.Read,
+				CacheWrite: t.Cache.Write,
+			}
+		}
+		s.Messages = append(s.Messages, msg)
 	}
 	return s, nil
 }

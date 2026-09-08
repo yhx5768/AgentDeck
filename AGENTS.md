@@ -17,7 +17,7 @@ cc-webui：单文件 Go 二进制 + `go:embed` 内嵌 vanilla JS 前端，把 Cl
 ```bash
 go build -o cc-webui .                 # 构建（前端已内嵌）
 GOOS=linux GOARCH=amd64 go build -o cc-webui .   # 交叉编译
-go test ./...                          # 仅 internal/claudehist 有测试
+go test ./...                          # 单测：claudehist/opencodehist/server/runner/config
 go vet ./...                           # 干净
 
 ./cc-webui                             # 用 ./config.yaml
@@ -93,15 +93,29 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 `config.CLI` 与 `config.Provider` 各带 `kind: claude|opencode`（空自动归一化为 claude）。会话绑定单一引擎（**不跨引擎切换**）：`session.engine` = 其 cli 的 kind，create/patch/import 都校验 cli 与 provider kind 一致，不一致 400 `engine mismatch`。前端每处 cli/provider 下拉都按 kind 过滤（`fillCLISelect(sel, value, kind)` 等 helpers，见 `web/app.js`）。
 
 - **claude 引擎**（原架构）：transcript 在 `~/.claude/projects/`，`-p --output-format stream-json`，`--settings` 注入 env，checkpoint/rewind、resident/peer、fork 均可用。会话 `ClaudeSessionID` = claude session id。
-- **opencode 引擎**（`internal/opencodehist`，有测试）：数据在 opencode 自己的 sqlite store——**绝不直读**，只走 CLI 官方面：`session list --format json`（列表）、`export <sid>`（单会话全量 JSON）、`run --format json -s <sid> [-m provider/model] [--auto]`（实况）。`Session.ClaudeSessionID` 字段复用来存 opencode 的 `ses_...`。
+- **opencode 引擎**（`internal/opencodehist`，有测试）：数据在 opencode 自己的 sqlite store——**主面绝不直读**，只走 CLI 官方面：`session list --format json`（列表）、`export <sid>`（单会话全量 JSON）、`run --format json -s <sid> [-m provider/model] [--auto]`（实况）。唯一例外是**使用统计的枚举**走一条固定 `SELECT` 经 `opencode db`（只读，见 section 9）——列表/回放/实况/导入这些面不得碰 db。`Session.ClaudeSessionID` 字段复用来存 opencode 的 `ses_...`。
 - **canonical 事件形状**：两条路径（claude `Convert` / opencode `AdaptPart`+`ToEvents`）产出同形事件——assistant text 每 part 一条 `{type:"assistant",message:{role,id,content:[{type:"text",id:partId,...}]}}`（frontend trajectory 按 message.id 合并、fingerprint 靠 text block 的 part id 区分），tool 是 `tool_use` assistant 块 + 完成/报错时的 `tool_result` user 块（`ToolTx` 按 callID 去重 running→completed 双发）。reasoning/patch/step-* 一律跳过——`run --format json` 实况不吐 reasoning，回放带 reasoning 会两态不一致。
 - **opencode 实况不回显用户 prompt**：cc-webui 自己落 stored user echo；但 opencode export 的用户文本带一层**回显双引号**（`"prompt"`），replay 前必须 `stripEchoQuotes` 剥掉，否则与 stored echo 文本不一致，`mergeStoredAndClaude` 的 count 去重失效、刷新后用户气泡重复。
-- **`session list` 按项目分桶**：只返回进程 cwd 所属桶（git 根 = 该仓库桶，非 git 目录 = `global` 桶）；`export`/`run -s` 则全量可按 id。API `?cwd=` 选桶（空 = 服务器自身 cwd）；`run` 永远 `cmd.Dir = sess.Cwd` 回到会话原目录，恢复不跨桶。
+- **`session list` 按项目分桶**：只返回进程 cwd 所属桶（git 根 = 该仓库桶，非 git 目录 = `global` 桶）；`export`/`run -s` 则全量可按 id。API `?cwd=` 选桶（空 = 服务器自身 cwd）；`run` 永远 `cmd.Dir = sess.Cwd` 回到会话原目录，恢复不跨桶。只有**使用统计**的枚举绕过了这个限制（`opencodehist.ListAll`，见 section 9），会话列表/导入这些用户可见的面仍按桶。
 - **opencode 禁用的协议面**（服务端 400 + 前端隐藏控件）：resident/peer messaging、fork、rewind/checkpoint、内嵌图片 base64（服务端 400）；`--auto` 由 permission_mode 非空且非 default 决定。
 - **推理深度 = `--variant`（不是 effort）**：opencode 侧每个模型的 variants 键集合由模型 metadata 决定且差异巨大（`opencode models <provider> --verbose`：gpt-5.6-luna 有 none/low/medium/high/xhigh/max，kimi-k3 只有 max，minimax-m3 是 none/thinking，还有模型完全不带）。`opencodehist.ModelVariants` 解析该输出（`parseModelsOutput` 纯函数有单测），server `/api/opencode-model-variants?cli=&provider=` 按 cli+provider 缓存 10 分钟；effort 校验按 engine 分流（`effortOKFor`：claude 固定 low..max 集合，opencode 只限形状）。前端四处 effort 下拉（session/sheet/ns/new）由 `refreshSessionEffort`/`refreshNsEffort`/`refreshNewEffort` 按当前模型 variants 键动态重建——`EFFORT_STATIC` 页面加载即快照 claude 静态全集（首个会话是 opencode 也不会污染），无 variants 的模型隐藏下拉。`Session.EffortOverride` 对 opencode 会话经 runner 追加 `--variant`。
 - **图片/文件 = `-f` 官方附件**：前端把图片（主 composer 与 ns 视图都一样）降级为文件上传，runner 对每个 `msg.Files` 追加 `-f <path>`——视觉模型直接可见图片，文本模型可工具读取。**消息位置参数必须在 `-f` 之前**（`-f` 是数组 flag，`-f <path> <msg>` 会把消息吞进文件数组）。opencode 的 stored echo 只存 `msg.Text`（不能是 turnText 的 mention 版）：export 回显 = 原 prompt 原文（带引号），文件内容不进 echo 文本，文本一致去重才成立。
 - **export 的 user 消息在带附件时会多出三个 part**：工具前导文本（`Called the Read tool with the following input: ...`）、`<path>/<type>/<content>` 文件展开文本、`type:"file"` part——`userPromptText` 过滤后只剩 prompt echo，否则回放气泡会带文件转储且 echo 失配重复。
 - **run 参数**：`-m <providerID>/<modelID>`（opencode provider 名必须等于其 providerID 才能组模型串；模型名含 `/` 原样透传）；新会话无 sid 时 `--title` 传 `sess.Name`，第一行 stdout 事件就带 sessionID，捕获后回填。
+
+### 9. 使用统计（两引擎合并）
+
+`GET /api/stats[?fresh=1]` 出 8 个 tile + GitHub 式热力图，**claude 与 opencode 会话合并成一份统计**，按 `engines` map 拆出各自贡献的会话数（前端 `#stats-scope` 显示 `Claude Code N 个 + opencode M 个`）。
+
+- **管线**：两引擎各自把会话聚成 `statsagg.FileAgg`（自包含的每会话聚合，字段导出）→ `statsagg.Recompute` 纯算术合并。**计数规则由两个引擎各自实现并保持一致**（user prompt 与 assistant 步各计一条消息，工具 part 按 callID 去重计调用，usage 每步计一次），口径变了要两侧同步。
+- **`statsagg` 是叶子包**（只依赖 `config`），被 `claudehist` 与 `opencodehist` 同时依赖——**别**为了共享代码让 `opencodehist` 反向依赖 `claudehist`。`FavoriteModel`/最长会话并列时按字典序/更小的 fileID 决定，`Recompute` 遍历 `Sorted(fas)`，保证结果确定。
+- **claude 侧**：mtime+size 指纹缓存（`claudehist.StatsCache`），只有变动的 transcript 重扫。
+- **opencode 侧**（`opencodehist.StatsCache`）：只能经 CLI 取数——先枚举全部会话（见下条），再只对 `updated` 前进过的会话 `export`（~1s/会话，长会话几 MB），**8 路并发**；`fresh=1` 或配置的 opencode cli 集变化（`sig`）时整缓存作废重导。导出失败的会话**保留旧聚合**（不当作删除，下次刷新重试）；**一次枚举都没成功**（db 查询与全部桶列表都失败，CLI 挂了）则整体保留上次缓存，避免一次环境问题把统计清零——注意这与「db 查询成功但返回空」不同，后者按真实结果清缓存。
+- **枚举 = 一条只读 `opencode db` SELECT（唯一触碰 sqlite 的地方）**：`session list` 只回当前 cwd 所属桶、opencode 又没有列全部桶的 CLI 面，所以枚举走 `opencodehist.ListAll`：`opencode db "SELECT id, title, directory, time_created, time_updated FROM session WHERE parent_id IS NULL ORDER BY time_updated DESC" --format json`（~1s，一次拿全所有项目，本机 30 行）。SQL 是包内常量、无用户输入参与拼接；实测 `opencode.db` / `-wal` / `-shm` 三个文件在查询前后 md5、inode、size、mtime_ns 完全一致（库是 WAL 模式，查询期间还有活的 `opencode run`），**只读不写**——这是把 section 8「绝不直读」收窄为「只允许统计枚举只读」的依据，但 `opencode db` 本身接受任意 SQL、没有 `--read-only` 开关，只读是纪律而非强制。`WHERE parent_id IS NULL` 对齐 `session list`（它隐藏 subagent 子会话；子会话的消息不在父会话的 export 里，列出来会把子代理任务当成顶层会话）。这条查询成功后**不再碰桶枚举**，所以 server 派生的桶目录候选只是兜底路径。
+- **兜底 = 按桶枚举**：表名/列名是 opencode 内部实现，可能变。db 查询失败时退回 `session list` 按桶扫——桶集合从 cc-webui 已知的 cwd 推导（服务器 cwd + 所有托管会话的 cwd，归一到 git 根，顺带保留 cwd 本身），跨桶按 session id 去重（id 全局唯一）。这条路覆盖不全：**只在 opencode TUI 里、cc-webui 从未用到的仓库建的会话不进统计**（仍可用导入弹窗按 cwd 拉进列表）。
+- **模型归属**：opencode 的 `export` 里 **assistant 步不带 model 字段**（user 步用 `model.modelID`，会话级 `info.model` 用 `id`——同一份文档两种键混用）。统计按步优先用步上模型、为空回退会话级模型，key 形如 `providerID/modelID`（与 `-m` 模型串同形），缺半边退回另一半边而非 `unknown`。因此 opencode 的 per-model 口径**是会话级模型的近似**，步内换模型分不开。
+- **tokens**：`ModelUsage` 有独立的 `reasoning_tokens`（opencode 单独上报，claude stream-json usage 无此字段），`TotalTokens()` 含它，所以按日与按模型两条汇总口径一致。实测 27 个真实 opencode 会话的分步累加与 opencode 自己的会话级 `info.tokens` 完全相等。
+- **性能**：首次冷扫（本机 571 claude + 30 opencode 会话）约 25s（瓶颈是 8 路并发的 `export`，不是枚举——一条 db SELECT 只要 ~1s），随后命中缓存约 1.1s。`handleStats` 全程持 `server.statsMu`（串起两个缓存，不并发）；HTTP 无读写超时，长冷扫不会被掐断。前端 stale-while-revalidate（`lastStats`），首次提示「统计中…（首次扫描较慢）」。
 
 ## 后端包职责（`internal/`）
 
@@ -110,11 +124,12 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 | `config` | 配置加载、三层 env 合并、热加载 | `CLI.EffectiveEnv`；env 字段 `json:"-"` 不下发前端；空 token 自动生成；`Manager.Get` 读当前配置、`Watch` 轮询重载 |
 | `store` | sessions 元数据 + 事件日志持久化 | `Session`/`Event`；`AppendEvent`/`UpdateEvent`/`ReplaceEvents`/`Upsert`；事件懒加载进内存 |
 | `runner` | 引擎进程管理：队列、流解析、事件广播、停止、rewind、常驻进程 | `runTurn` 按 `cli.IsOpenCode()` 分派 `runClaudeTurn`/`runOpenCodeTurn`（后者的 stdout 逐行喂 `opencodehist.AdaptPart`）；`runResidentTurn` 长驻 stdin 写入；`turnText`（附件路径 mention 拼装——存储事件、stdin 载荷、`captureCheckpoint` 匹配文本三处共用，改格式必须同步）；`captureCheckpoint`（claude 专用）；`RewindFiles`；`LockForRewind`/`UnlockFromRewind`；`EnsureResident`/`TeardownResident`/`RestoreResidents`/`ApplyPeerName`；pub/sub |
-| `server` | HTTP 路由（Go 1.22 method pattern）、鉴权、SSE、文件预览、附件上传 | `handleEvents` 合并双源 + 重编号（replay 侧按 engine 选 `claudehist.Convert(+Subagents)` 或 `opencodehist.FetchSession().ToEvents()`）；`handleRewind`/`handleFork`/resident/图片消息对 opencode 会话 400 guard；`handleImport` 按 cli kind 分支（opencode 分支从 export 对齐 `ModelOverride`）；`/api/opencode-sessions(+preview)`（`?cwd=` 选项目桶）；`handleReadFile`（files.go）；`handleUpload`（落盘 `data/uploads/<sid>/`，消息经 `runner.turnText` 的路径 mention 引用，只接受本会话上传目录内的路径） |
-| `claudehist` | 扫描 `~/.claude/projects`、导入转换、uuid 定位/截断 | `Convert`/`ConvertSubagents`/`LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt`；有测试 |
-| `opencodehist` | opencode 引擎会话读取/转换（只走 CLI，不碰 sqlite） | `List(cli, dir)`（dir 选项目桶）/`FetchSession`/`Session.ToEvents`/`Preview`/`AdaptPart`+`ToolTx`/`stripEchoQuotes`；有测试 |
+| `server` | HTTP 路由（Go 1.22 method pattern）、鉴权、SSE、文件预览、附件上传 | `handleEvents` 合并双源 + 重编号（replay 侧按 engine 选 `claudehist.Convert(+Subagents)` 或 `opencodehist.FetchSession().ToEvents()`）；`handleRewind`/`handleFork`/resident/图片消息对 opencode 会话 400 guard；`handleImport` 按 cli kind 分支（opencode 分支从 export 对齐 `ModelOverride`）；`/api/opencode-sessions(+preview)`（`?cwd=` 选项目桶）；`handleStats`（`statsMu` 串起两引擎缓存，`?fresh=1` 强制全量重扫；`opencodeStatsTargets` 派生 opencode cli 路径 + 桶候选目录，桶目录仅在 db 枚举失败时兜底，见 section 9）；`handleReadFile`（files.go）；`handleUpload`（落盘 `data/uploads/<sid>/`，消息经 `runner.turnText` 的路径 mention 引用，只接受本会话上传目录内的路径） |
+| `claudehist` | 扫描 `~/.claude/projects`、导入转换、uuid 定位/截断、claude 侧统计聚合 | `Convert`/`ConvertSubagents`/`LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt`；`StatsCache.Refresh`（mtime+size 指纹增量）/`AggregateStats`；有测试 |
+| `opencodehist` | opencode 引擎会话读取/转换（只走 CLI 官方面，唯一例外是统计枚举的只读 `opencode db` SELECT）+ opencode 侧统计聚合 | `List(cli, dir)`（dir 选项目桶）/`ListAll`（只读 db 枚举全部项目，统计专用）/`FetchSession`/`Session.ToEvents`/`Preview`/`AdaptPart`+`ToolTx`/`stripEchoQuotes`；`StatsCache.Refresh`（db 枚举优先 + 桶兜底、`updated` 指纹增量 + 8 路并发 export）/`ScanSession`；有测试 |
+| `statsagg` | 引擎无关的统计聚合核心 | `FileAgg`（每会话聚合，字段导出）/`Recompute`（纯算术合并，确定序）/`DailyActivity`/`DailyModelTokens`/`ModelUsage.TotalTokens`/`CalculateStreaks`/`ActiveSessionGapMs`；两引擎共用，别在此加引擎分支 |
 
-依赖方向：`store`(叶) ← `config`(yaml) ← `claudehist`(→store)、`opencodehist`(→store) ← `runner`(→config,store,claudehist,opencodehist) ← `server`(→全部)。
+依赖方向：`store`(叶) ← `config`(yaml) ← `statsagg`(叶) ← `claudehist`(→store,statsagg)、`opencodehist`(→store,statsagg) ← `runner`(→config,store,claudehist,opencodehist) ← `server`(→全部)。
 
 ## 前端结构（`web/`，vanilla JS，无框架无模块系统）
 
@@ -145,7 +160,7 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
 - **命名**：标准 Go——PascalCase 导出 / camelCase 包内；文件名小写单词（`store.go`、`files.go`）；包名同目录名。前端用 `$()` 作 `querySelector` 简写、`state`/`traj` 全局对象。
 - **错误处理**：`fmt.Errorf("%w")` 包装；后台非致命错误 `log.Printf`；仅 `main.go` 启动失败用 `log.Fatalf`；HTTP handler 用 `writeErr(w, code, msg)` 返回 `{"error":...}`。
 - **文件权限**：数据文件 0600、敏感目录 0700、events/data 根 0755。
-- **测试**：只有 `claudehist` 有单测。改 rewind 相关的 `LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt` 务必跑 `go test ./internal/claudehist/`。其它包无测试——加测试是好事但别假装覆盖了。pre-commit 守卫（`scripts/hooks/pre-commit`，一次性激活 `git config core.hooksPath "$(pwd)/scripts/hooks"`）：staged 含 `.go` 自动跑 `go vet ./...`，含 `internal/claudehist/` 时加跑其测试——commit 被挡多半是这俩没过。
+- **测试**：有单测的包 `claudehist`（含 stats）、`opencodehist`（含 stats）、`server`、`runner`、`config`；`statsagg`、`store` 无测试。改 rewind 相关的 `LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt` 务必跑 `go test ./internal/claudehist/`；改统计口径（section 9）务必跑 `go test ./internal/claudehist/ ./internal/opencodehist/`——两侧计数规则要一致。pre-commit 守卫（`scripts/hooks/pre-commit`，一次性激活 `git config core.hooksPath "$(pwd)/scripts/hooks"`）：staged 含 `.go` 自动跑 `go vet ./...`，含 `internal/claudehist/` 时加跑其测试——commit 被挡多半是这俩没过。
 
 ## 安全边界（务必遵守）
 
