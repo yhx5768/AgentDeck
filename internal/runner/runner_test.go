@@ -5,6 +5,53 @@ import (
 	"testing"
 )
 
+// TestBusy pins the semantics the SSE replay repair depends on: Busy is true
+// while a turn is in flight (cancel handle installed — including the rewind
+// sentinel) or while messages are queued for a worker, and false only when
+// the session runtime is truly idle.
+func TestBusy(t *testing.T) {
+	// NewManager stores cm/st but none of the exercised paths touch them.
+	m := NewManager(nil, nil)
+
+	if m.Busy("fresh") {
+		t.Fatal("fresh runtime must report idle")
+	}
+
+	// Live one-shot / resident turn: cancel handle installed by setRunning.
+	m.setRunning("running", func() {})
+	if !m.Busy("running") {
+		t.Fatal("turn in flight (cancel set) must report busy")
+	}
+	m.setIdle("running", "")
+	if m.Busy("running") {
+		t.Fatal("turn ended must report idle")
+	}
+
+	// Rewind holds the session via a cancel sentinel: also busy, so the
+	// replay repair must not close the log while a rewind is in progress.
+	if !m.LockForRewind("rewinding") {
+		t.Fatal("idle session must accept the rewind lock")
+	}
+	if !m.Busy("rewinding") {
+		t.Fatal("rewind lock must report busy")
+	}
+	m.UnlockFromRewind("rewinding")
+	if m.Busy("rewinding") {
+		t.Fatal("rewind unlock must report idle")
+	}
+
+	// Queue backlog / worker draining: covers the window between a queued
+	// message and its turn_start, where cancel is not yet installed.
+	r := m.rt("queued")
+	r.mu.Lock()
+	r.working = true
+	r.queue = append(r.queue, Message{Text: "hi"})
+	r.mu.Unlock()
+	if !m.Busy("queued") {
+		t.Fatal("queued message must report busy")
+	}
+}
+
 func TestParseClaudeCodeError(t *testing.T) {
 	cases := []struct {
 		name       string

@@ -151,6 +151,26 @@ func (m *Manager) GetStatus(sessionID string) Status {
 	return st
 }
 
+// busyLocked reports whether the session has any turn activity: a turn in
+// flight (cancel set — includes resident turns and the rewind sentinel), a
+// worker draining the queue, or queued messages. Callers must hold r.mu.
+// GetStatus only exposes running + queue length; busy additionally covers the
+// brief window where the worker already popped a message but the turn's cancel
+// handle is not installed yet.
+func (r *sessionRuntime) busyLocked() bool {
+	return r.cancel != nil || r.working || len(r.queue) > 0
+}
+
+// Busy reports whether the session has any in-flight or queued turn activity.
+// The SSE handler uses it to tell a genuinely running turn apart from a stale
+// persisted turn_start left behind by a killed backend process.
+func (m *Manager) Busy(sessionID string) bool {
+	r := m.rt(sessionID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.busyLocked()
+}
+
 // LockForRewind atomically marks the session busy (so no turn can start) if it
 // is currently idle. Returns false if a turn is running/queued (caller should
 // 409). The rewind holds this lock so a message sent mid-rewind queues but
@@ -160,7 +180,7 @@ func (m *Manager) LockForRewind(sessionID string) bool {
 	r := m.rt(sessionID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.cancel != nil || r.working || len(r.queue) > 0 {
+	if r.busyLocked() {
 		return false
 	}
 	r.working = true

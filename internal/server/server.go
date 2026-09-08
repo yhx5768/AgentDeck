@@ -869,6 +869,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			merged = append(merged, e)
 		}
 	}
+	// If the log ends mid-turn but no turn is actually in flight — the backend
+	// was killed while a turn was running and restarted, so the persisted
+	// turn_start has no closing turn_end/interrupted/error — close it with a
+	// transient interrupted so the replay converges to the real idle state.
+	// Without this, the frontend replays the dangling turn_start on every
+	// connect and stays stuck on "running": stop is a no-op server-side and
+	// new messages only accumulate in the pending chip. The repair is
+	// per-connection and never persisted; it applies only when the manager
+	// reports no live turn activity (a genuine mid-run reconnect keeps the
+	// dangling turn_start, which is the only signal that the turn is live).
+	if !s.mgr.Busy(id) {
+		merged = closeStaleTurnStart(merged)
+	}
 
 	ch, unsubscribe := s.mgr.Subscribe(id)
 	defer unsubscribe()
@@ -922,6 +935,36 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// closeStaleTurnStart appends a transient interrupted status event when the
+// last status event in the replay is an unclosed turn_start. Status events are
+// only ever persisted by the runner, which pairs every turn_start with a
+// closing turn_end/interrupted/error — except when the backend dies mid-turn,
+// leaving the dangling turn_start in the log forever (replay-side status
+// events only ever come from the stored log; the claude/opencode converters
+// emit user/stream kinds only). The appended event is returned in the slice
+// passed in and sent to this connection alone. No-op when the log is empty or
+// already closed by a later status event.
+func closeStaleTurnStart(events []*store.Event) []*store.Event {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "status" {
+			continue
+		}
+		var d struct {
+			State string `json:"state"`
+		}
+		_ = json.Unmarshal(events[i].Data, &d)
+		if d.State != "turn_start" {
+			return events // last status event already closes the turn
+		}
+		return append(events, &store.Event{
+			Kind: "status",
+			Ts:   time.Now(),
+			Data: json.RawMessage(`{"state":"interrupted"}`),
+		})
+	}
+	return events
 }
 
 // mergeStoredAndClaude returns a single ts-ordered event list combining the
