@@ -457,6 +457,69 @@ func partType(p map[string]any) string {
 	return t
 }
 
+// ---- stdout error lines (live `run --format json` failures) ----
+
+// StdoutError extracts a human-readable message from one parsed
+// `opencode run --format json` stdout line. Fatal live failures are reported
+// on stdout (not stderr) as:
+//
+//	{"type":"error","timestamp":...,"sessionID":"ses_...",
+//	 "error":{"name":"UnknownError","data":{"message":"...","ref":"..."}}}
+//
+// Callers must check every stdout line with this before looking at "part":
+// error lines carry no part, so part-based adaptation silently drops them and
+// the turn degrades to a bare "exit status 1" with empty stderr. ok is false
+// for any non-error line.
+func StdoutError(obj map[string]any) (msg string, ok bool) {
+	if obj == nil || obj["type"] != "error" {
+		return "", false
+	}
+	errVal, hasErr := obj["error"]
+	if !hasErr || errVal == nil {
+		if m, _ := obj["message"].(string); m != "" {
+			return m, true
+		}
+		return "opencode 运行失败（无详细信息）", true
+	}
+	if s, ok := errVal.(string); ok {
+		if strings.TrimSpace(s) == "" {
+			return "opencode 运行失败（无详细信息）", true
+		}
+		return s, true
+	}
+	errMap, ok := errVal.(map[string]any)
+	if !ok {
+		raw, jerr := json.Marshal(errVal)
+		if jerr != nil || len(raw) == 0 {
+			return "opencode 运行失败（无详细信息）", true
+		}
+		return string(raw), true
+	}
+	name, _ := errMap["name"].(string)
+	var message, ref string
+	if data, ok := errMap["data"].(map[string]any); ok {
+		message, _ = data["message"].(string)
+		ref, _ = data["ref"].(string)
+	}
+	if message == "" {
+		message, _ = errMap["message"].(string)
+	}
+	if message == "" {
+		message = name
+	}
+	if message == "" {
+		raw, jerr := json.Marshal(errMap)
+		if jerr != nil || len(raw) == 0 {
+			return "opencode 运行失败（无详细信息）", true
+		}
+		return string(raw), true
+	}
+	if ref != "" {
+		message += "（ref " + ref + "）"
+	}
+	return message, true
+}
+
 // ---- canonical part adaptation (shared by replay and live stream) ----
 
 // outEvent is one cc-webui event derived from a single part.

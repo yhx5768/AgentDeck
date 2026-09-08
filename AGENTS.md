@@ -102,6 +102,7 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **图片/文件 = `-f` 官方附件**：前端把图片（主 composer 与 ns 视图都一样）降级为文件上传，runner 对每个 `msg.Files` 追加 `-f <path>`——视觉模型直接可见图片，文本模型可工具读取。**消息位置参数必须在 `-f` 之前**（`-f` 是数组 flag，`-f <path> <msg>` 会把消息吞进文件数组）。opencode 的 stored echo 只存 `msg.Text`（不能是 turnText 的 mention 版）：export 回显 = 原 prompt 原文（带引号），文件内容不进 echo 文本，文本一致去重才成立。
 - **export 的 user 消息在带附件时会多出三个 part**：工具前导文本（`Called the Read tool with the following input: ...`）、`<path>/<type>/<content>` 文件展开文本、`type:"file"` part——`userPromptText` 过滤后只剩 prompt echo，否则回放气泡会带文件转储且 echo 失配重复。
 - **run 参数**：`-m <providerID>/<modelID>`（opencode provider 名必须等于其 providerID 才能组模型串；模型名含 `/` 原样透传）；新会话无 sid 时 `--title` 传 `sess.Name`，第一行 stdout 事件就带 sessionID，捕获后回填。
+- **stdout error 行透出**：`run --format json` 的致命失败走 stdout `{"type":"error",...}`（stderr 为空、exit 1），无 part 的行必须先过 `opencodehist.StdoutError` 判定再按 part 适配，命中则记入 status error + 后端日志——否则失败只剩秃 `exit status 1`，前后端都无日志（2026-09-08 实例：provider 侧拒绝，run 在 event connected 后静默退出）。
 
 ### 9. 使用统计（两引擎合并）
 

@@ -806,8 +806,12 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	}
 
 	// Adapt stdout JSON events one by one. Every line carries the session id
-	// (unlike claude's init event), so capture it on first sight.
+	// (unlike claude's init event), so capture it on first sight. Fatal
+	// failures arrive on stdout as {"type":"error",...} with empty stderr —
+	// they carry no "part", so record them here; otherwise the turn degrades
+	// to a bare "exit status 1" with no diagnostics anywhere.
 	tx := opencodehist.NewToolTx()
+	var stdoutErr string
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	for sc.Scan() {
@@ -817,6 +821,12 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 		}
 		var obj map[string]any
 		if err := json.Unmarshal(line, &obj); err != nil {
+			continue
+		}
+		if emsg, ok := opencodehist.StdoutError(obj); ok {
+			if stdoutErr == "" {
+				stdoutErr = emsg
+			}
 			continue
 		}
 		if sid, _ := obj["sessionID"].(string); sid != "" && sid != sess.ClaudeSessionID {
@@ -843,9 +853,27 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 		m.setIdle(sessionID, "interrupted")
 	case waitErr != nil:
 		errMsg := strings.TrimSpace(stderr.String())
+		// Prefer the stdout error payload: opencode reports fatal run
+		// failures there with empty stderr (e.g. provider-side rejections
+		// before the loop starts). Keep stderr too when both are present.
+		if stdoutErr != "" {
+			if errMsg == "" {
+				errMsg = stdoutErr
+			} else {
+				errMsg = stdoutErr + "\n" + errMsg
+			}
+		}
 		if errMsg == "" {
 			errMsg = waitErr.Error()
 		}
+		// A bare "Unexpected server error" (stdout, empty stderr) names no
+		// cause. The most common one is a session whose original directory is
+		// gone (deleted/renamed/mistyped at creation): opencode pins the
+		// session to it and dies in system-prompt setup on every resumed turn.
+		// Diagnose that case so the user gets an actionable message instead
+		// of a ref code with nowhere to look.
+		errMsg = m.diagnoseOpenCodeRunError(sess, cli, errMsg)
+		log.Printf("opencode turn failed (session %s, opencode sid %s): %s", sessionID, sess.ClaudeSessionID, errMsg)
 		m.emit(sessionID, "status", map[string]string{"state": "error", "error": errMsg})
 		m.setIdle(sessionID, errMsg)
 	default:
@@ -854,6 +882,34 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	}
 	// No captureCheckpoint here: opencode has no file-rewind surface, and its
 	// step snapshots live in its own store without a CLI rollback command.
+}
+
+// diagnoseOpenCodeRunError enriches a generic opencode run failure with an
+// actionable cause when one can be determined cheaply. Best-effort: any
+// diagnostic failure returns errMsg unchanged, and the happy path never pays
+// for it (only called after a turn already failed).
+func (m *Manager) diagnoseOpenCodeRunError(sess *store.Session, cli *config.CLI, errMsg string) string {
+	if !strings.Contains(errMsg, "Unexpected server error") || sess.ClaudeSessionID == "" {
+		return errMsg
+	}
+	oc, err := opencodehist.FetchSession(cli.Path, sess.ClaudeSessionID)
+	if err != nil || oc == nil || oc.Directory == "" {
+		return errMsg
+	}
+	_, statErr := os.Stat(oc.Directory)
+	return enrichOpenCodeError(errMsg, oc.Directory, statErr != nil)
+}
+
+// enrichOpenCodeError is the pure message half of diagnoseOpenCodeRunError:
+// when the run died with opencode's generic server error and the session's
+// own directory is confirmed missing, append a Chinese diagnosis telling the
+// user the session cannot continue and what to do instead. All other inputs
+// pass through unchanged.
+func enrichOpenCodeError(errMsg, sessionDir string, dirMissing bool) string {
+	if !strings.Contains(errMsg, "Unexpected server error") || sessionDir == "" || !dirMissing {
+		return errMsg
+	}
+	return fmt.Sprintf("%s\n（诊断：该 opencode 会话创建时的目录 %s 已不存在（被删除、改名或创建时填错），此会话无法继续运行，只能查看历史。请用正确的目录新建会话继续。）", errMsg, sessionDir)
 }
 
 // openCodeModelID composes the -m argument for the opencode CLI: models are

@@ -312,3 +312,74 @@ func eventKinds(evs []*store.Event) string {
 	}
 	return out
 }
+
+func TestStdoutError(t *testing.T) {
+	// Real shape captured from a failing `opencode run --format json`
+	// (stderr empty, exit 1 — previously surfaced as bare "exit status 1").
+	mustObj := func(raw string) map[string]any {
+		t.Helper()
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatalf("unmarshal fixture: %v", err)
+		}
+		return m
+	}
+	cases := []struct {
+		name       string
+		obj        map[string]any
+		wantOK     bool
+		wantMsgHas string
+	}{
+		{
+			name: "full error shape with ref",
+			obj: mustObj(`{"type":"error","timestamp":1788854035991,"sessionID":"ses_x",` +
+				`"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_98e3619e"}}}`),
+			wantOK:     true,
+			wantMsgHas: "Unexpected server error",
+		},
+		{
+			name:       "ref appended",
+			obj:        mustObj(`{"type":"error","error":{"name":"UnknownError","data":{"message":"boom","ref":"err_1"}}}`),
+			wantOK:     true,
+			wantMsgHas: "err_1",
+		},
+		{
+			name:       "error as plain string",
+			obj:        mustObj(`{"type":"error","error":"Session not found"}`),
+			wantOK:     true,
+			wantMsgHas: "Session not found",
+		},
+		{
+			name:       "name only falls back to name",
+			obj:        mustObj(`{"type":"error","error":{"name":"RateLimited"}}`),
+			wantOK:     true,
+			wantMsgHas: "RateLimited",
+		},
+		{
+			name:   "step line is not an error",
+			obj:    mustObj(`{"type":"step_start","part":{"type":"step-start"}}`),
+			wantOK: false,
+		},
+		{
+			name:   "text line is not an error",
+			obj:    mustObj(`{"type":"text","part":{"type":"text","text":"hi"}}`),
+			wantOK: false,
+		},
+		{
+			name:   "nil obj",
+			obj:    nil,
+			wantOK: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg, ok := StdoutError(c.obj)
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v (msg %q)", ok, c.wantOK, msg)
+			}
+			if c.wantOK && !strings.Contains(msg, c.wantMsgHas) {
+				t.Fatalf("msg = %q, want it to contain %q", msg, c.wantMsgHas)
+			}
+		})
+	}
+}
