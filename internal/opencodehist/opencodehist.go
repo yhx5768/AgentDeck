@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -91,17 +92,32 @@ func runCLIDir(dir, cliPath string, args ...string) ([]byte, error) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	// Capture stdout to a temp file, not a pipe (bytes.Buffer). opencode's
+	// `export` of a session with tool calls routinely exceeds the 64KiB pipe
+	// buffer, and the CLI exits before flushing the remainder to a pipe — the
+	// truncated JSON then fails to parse, replay silently drops the whole
+	// assistant history (only stored user prompts survive). A regular file has
+	// no such cap and is fully written before exit. (`session list` with many
+	// sessions can grow large too, so the shared helper gets the fix.)
+	tmp, err := os.CreateTemp("", "opencode-*.json")
+	if err != nil {
+		return nil, err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	cmd.Stdout = tmp
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	tmp.Close()
+	if runErr != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
-			msg = err.Error()
+			msg = runErr.Error()
 		}
 		return nil, fmt.Errorf("%s: %s", cliPath, msg)
 	}
-	return stdout.Bytes(), nil
+	return os.ReadFile(tmpName)
 }
 
 // List returns every opencode session (newest first). Filtering by cwd/prefix
