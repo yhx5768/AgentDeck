@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# cc-webui pre-commit guard.
+# Activate once per clone (from repo root): git config core.hooksPath "$(pwd)/scripts/hooks"
+# No-op when no .go files are staged (docs / web / config changes pass through).
+set -euo pipefail
+
+go_files=$(git diff --cached --name-only -- '*.go' || true)
+if [ -z "$go_files" ]; then
+  exit 0
+fi
+
+echo "▶ go vet ./..."
+go vet ./...
+
+# claudehist is the only tested package and holds the rewind-critical
+# LastUserUUID / TruncateBeforeUUID / HasUserPrompt — AGENTS.md mandates
+# running its tests when those change.
+if printf '%s\n' "$go_files" | grep -q '^internal/claudehist/'; then
+  echo "▶ go test ./internal/claudehist/  (rewind-critical)"
+  go test ./internal/claudehist/
+fi

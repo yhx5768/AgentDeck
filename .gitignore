@@ -4,3 +4,6 @@ data/
 *.log
 # local dev harnesses
 web/_*.html
+docs/_*.html
+# 占位截图，填真实图时用 git add -f 或删本行
+docs/screenshots/

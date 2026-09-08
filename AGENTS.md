@@ -145,7 +145,7 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
 - **命名**：标准 Go——PascalCase 导出 / camelCase 包内；文件名小写单词（`store.go`、`files.go`）；包名同目录名。前端用 `$()` 作 `querySelector` 简写、`state`/`traj` 全局对象。
 - **错误处理**：`fmt.Errorf("%w")` 包装；后台非致命错误 `log.Printf`；仅 `main.go` 启动失败用 `log.Fatalf`；HTTP handler 用 `writeErr(w, code, msg)` 返回 `{"error":...}`。
 - **文件权限**：数据文件 0600、敏感目录 0700、events/data 根 0755。
-- **测试**：只有 `claudehist` 有单测。改 rewind 相关的 `LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt` 务必跑 `go test ./internal/claudehist/`。其它包无测试——加测试是好事但别假装覆盖了。
+- **测试**：只有 `claudehist` 有单测。改 rewind 相关的 `LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt` 务必跑 `go test ./internal/claudehist/`。其它包无测试——加测试是好事但别假装覆盖了。pre-commit 守卫（`scripts/hooks/pre-commit`，一次性激活 `git config core.hooksPath "$(pwd)/scripts/hooks"`）：staged 含 `.go` 自动跑 `go vet ./...`，含 `internal/claudehist/` 时加跑其测试——commit 被挡多半是这俩没过。
 
 ## 安全边界（务必遵守）
 
