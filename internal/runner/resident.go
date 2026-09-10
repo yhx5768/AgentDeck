@@ -605,7 +605,7 @@ func (m *Manager) procOnInit(sessionID string, proc *residentProc, obj map[strin
 		proc.sessionID = sid
 		proc.mu.Unlock()
 		if sid != sess.ClaudeSessionID {
-			m.st.Upsert(sess, func(s *store.Session) { s.ClaudeSessionID = sid })
+			m.st.Upsert(sess, store.WithClaudeSID(sid))
 		}
 		if first {
 			close(proc.initSeen)

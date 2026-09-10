@@ -1566,7 +1566,9 @@ func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 	// Clear the id so the next turn starts a fresh claude session (the backed-
 	// up transcript preserves the old one).
 	if !claudehist.HasUserPrompt(sess.Cwd, sess.ClaudeSessionID) {
-		s.st.Upsert(sess, func(s *store.Session) { s.ClaudeSessionID = "" })
+		// Clearing the id archives the old one (WithClaudeSID) so a stale id
+		// left in the now-emptied transcript filename / backups stays searchable.
+		s.st.Upsert(sess, store.WithClaudeSID(""))
 	}
 
 	// 3. Truncate cc-webui's event log before the target user event, then

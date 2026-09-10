@@ -672,7 +672,7 @@ func (m *Manager) runClaudeTurn(sessionID string, msg Message, sess *store.Sessi
 		// Capture the claude session id and slash commands from the init event.
 		if obj["type"] == "system" && obj["subtype"] == "init" {
 			if sid, _ := obj["session_id"].(string); sid != "" && sid != sess.ClaudeSessionID {
-				m.st.Upsert(sess, func(s *store.Session) { s.ClaudeSessionID = sid })
+				m.st.Upsert(sess, store.WithClaudeSID(sid))
 				sess.ClaudeSessionID = sid
 			}
 			if cmds, ok := obj["slash_commands"].([]any); ok && len(cmds) > 0 {
@@ -830,7 +830,7 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 			continue
 		}
 		if sid, _ := obj["sessionID"].(string); sid != "" && sid != sess.ClaudeSessionID {
-			m.st.Upsert(sess, func(s *store.Session) { s.ClaudeSessionID = sid })
+			m.st.Upsert(sess, store.WithClaudeSID(sid))
 			sess.ClaudeSessionID = sid
 		}
 		part, _ := obj["part"].(map[string]any)

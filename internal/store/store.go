@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -22,6 +23,14 @@ type Session struct {
 	PermissionMode  string   `json:"permission_mode,omitempty"`
 	Cwd             string   `json:"cwd"`
 	ClaudeSessionID string   `json:"claude_session_id,omitempty"`
+	// PreviousClaudeSessionIDs holds engine session ids this conversation used
+	// before they were replaced. rewind-to-first clears ClaudeSessionID and the
+	// next turn opens a fresh claude session with a new id; restarts or
+	// continuations can also refresh it. The old id is still on disk (a claude
+	// transcript filename, a data/backups copy, a peer registry entry), so
+	// archiving it keeps the sidebar search able to resolve that stale id back
+	// to this session. See WithClaudeSID.
+	PreviousClaudeSessionIDs []string `json:"previous_claude_session_ids,omitempty"`
 	SlashCommands   []string `json:"slash_commands,omitempty"`
 	// Resident keeps a long-lived streaming-input claude process alive for this
 	// session so other Claude sessions can reach it via SendMessage (peer
@@ -33,6 +42,24 @@ type Session struct {
 	SortOrder int       `json:"sort_order"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// WithClaudeSID returns a Store mutator (for Upsert) that swaps the engine
+// session id to new, archiving the previous id (if any and distinct) into
+// PreviousClaudeSessionIDs so it stays searchable. Use this at every site that
+// overwrites ClaudeSessionID instead of a bare `s.ClaudeSessionID = new`:
+// rewind-to-first clears the id and the next turn opens a fresh claude session
+// with a new id, so without archiving the stale id left in a transcript
+// filename or file lock can no longer resolve to this session. An empty new
+// (the rewind clear) archives the current id; empty->non-empty is a no-op.
+func WithClaudeSID(new string) func(*Session) {
+	return func(s *Session) {
+		old := s.ClaudeSessionID
+		if old != "" && old != new && !slices.Contains(s.PreviousClaudeSessionIDs, old) {
+			s.PreviousClaudeSessionIDs = append(s.PreviousClaudeSessionIDs, old)
+		}
+		s.ClaudeSessionID = new
+	}
 }
 
 // Event is one line in a session's event log.
