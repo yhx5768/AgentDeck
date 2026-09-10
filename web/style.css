@@ -1177,7 +1177,8 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 .task-kv-key { flex: none; width: 4.5em; color: var(--dim); }
 .task-kv-val { min-width: 0; white-space: pre-wrap; word-break: break-word; }
 
-.msg .bubble pre {
+.msg .bubble pre,
+.tool-peer-send .peer-send-msg pre {
   background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
@@ -1188,7 +1189,8 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
 }
-.msg .bubble pre code.hljs { background: transparent; }
+.msg .bubble pre code.hljs,
+.tool-peer-send .peer-send-msg pre code.hljs { background: transparent; }
 /* md() 给每个 pre 包的容器：复制按钮相对它定位，pre 横向滚动时按钮不跟内容走 */
 .code-block { position: relative; }
 .code-copy-btn {
@@ -1212,20 +1214,24 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   .code-block:hover .code-copy-btn,
   .code-copy-btn:focus-visible { opacity: 1; }
 }
-.msg .bubble code {
+.msg .bubble code,
+.tool-peer-send .peer-send-msg code {
   font-family: var(--font-mono);
   font-size: 0.875em;
 }
-.msg .bubble :not(pre) > code {
+.msg .bubble :not(pre) > code,
+.tool-peer-send .peer-send-msg :not(pre) > code {
   background: var(--bg3);
   border-radius: var(--r-sm);
   padding: 1px 5px;
   font-size: 0.9em;
 }
-.msg .bubble p { margin: var(--sp-3) 0; }
+.msg .bubble p,
+.tool-peer-send .peer-send-msg p { margin: var(--sp-3) 0; }
 .msg .bubble p:first-child { margin-top: 0; }
 .msg .bubble p:last-child { margin-bottom: 0; }
-.msg .bubble ul, .msg .bubble ol { margin: var(--sp-3) 0 var(--sp-3) var(--sp-5); }
+.msg .bubble ul, .msg .bubble ol,
+.tool-peer-send .peer-send-msg ul, .tool-peer-send .peer-send-msg ol { margin: var(--sp-3) 0 var(--sp-3) var(--sp-5); }
 .msg .bubble table { border-collapse: collapse; margin: var(--sp-3) 0; }
 .msg .bubble th, .msg .bubble td {
   border: 1px solid var(--border);
@@ -1283,6 +1289,50 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 .subagent-msg { padding: var(--sp-2) 0; }
 .subagent-msg + .subagent-msg { border-top: 1px dashed var(--border); }
 .subagent-count { color: var(--dim); font-weight: 400; margin-left: auto; }
+
+/* ---------- peer 发件卡片（SendMessage 工具）：与入站 msg-peer 气泡同一紫色系，
+   左描边 + 淡紫底，折叠行读出收件人，展开读出正文；投递失败时描边转红 ---------- */
+.tool-peer-send {
+  border-left: 3px solid var(--thinking);
+  background: color-mix(in srgb, var(--thinking) 5%, var(--bg2));
+}
+.tool-peer-send > summary { color: var(--thinking); font-weight: 600; }
+.tool-peer-send > summary:hover { color: var(--fg); }
+.tool-peer-send .tool-name { color: var(--thinking); }
+.tool-peer-send.peer-send-failed { border-left-color: var(--red); }
+.tool-peer-send .peer-send-fail { color: var(--red); font-weight: 600; }
+.peer-send-body { font-family: var(--font-sans); white-space: normal; max-height: 420px; }
+.peer-send-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.peer-send-arrow { color: var(--thinking); font-weight: 600; }
+.peer-send-to {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--thinking);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--thinking) 12%, var(--bg3));
+  word-break: break-all;
+}
+/* 命中本控制台托管会话：地址名变成链接样式，点它跳到对方会话 */
+.peer-send-to-link { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.peer-send-to-link:hover { background: color-mix(in srgb, var(--thinking) 22%, var(--bg3)); }
+.peer-send-msg { color: var(--fg); font-size: var(--fs-md); line-height: var(--lh-normal); }
+.peer-send-msg > :first-child { margin-top: 0; }
+.peer-send-msg > :last-child { margin-bottom: 0; }
+.tool-peer-send .tool-result .tool-body.peer-send-status {
+  color: var(--dim);
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  max-height: 200px;
+}
 
 /* ---------- partial streaming（--include-partial-messages 的增量气泡） ---------- */
 @keyframes stream-blink { 50% { opacity: 0; } }

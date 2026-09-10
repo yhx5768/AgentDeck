@@ -400,7 +400,10 @@ function sessionItemHTML(s, opts = {}) {
 function bindSessionItem(item, s, isArchived = false) {
   item.querySelector('.name-text').textContent = s.name;
   item.querySelector('.profile-tag').textContent = s.provider || s.cli;
-  item.title = `${s.cli} / ${s.provider} · ${s.cwd}`;
+  const tip = `${s.cli} / ${s.provider} · ${s.cwd}`;
+  // 引擎侧 session id（claude transcript / 文件锁 / opencode ses_…）挂在 tooltip 上，
+  // 便于从文件名里的 sid 反查对应会话时核对。
+  item.title = s.claude_session_id ? `${tip} · ${s.claude_session_id}` : tip;
   item.onclick = (e) => {
     if (e.target.closest('.menu-btn')) return; // let menu-btn handle its own
     openSession(s.id);
@@ -578,10 +581,20 @@ function renderSessionList() {
   const el = $('#session-list');
   el.innerHTML = '';
 
-  // search filter
+  // search filter：匹配会话名 + 两类 session id。
+  //   s.id              —— cc-webui 自身 sid（data/events/<sid>.jsonl、data/uploads/<sid>/ 等）
+  //   s.claude_session_id —— 当前引擎 sid（~/.claude/projects/<slug>/<sid>.jsonl、registry、文件锁等）
+  //   s.previous_claude_session_ids —— 历史引擎 sid；rewind 到首条 / 进程重启换过 sid 后，
+  //     旧 sid 仍在磁盘文件名里（transcript / backup / registry），靠它反查到当前会话。
   const q = state.searchQuery.trim().toLowerCase();
   let list = state.sessions;
-  if (q) list = list.filter((s) => (s.name || '').toLowerCase().includes(q));
+  if (q) list = list.filter((s) => {
+    const name = (s.name || '').toLowerCase();
+    const id = (s.id || '').toLowerCase();
+    const csid = (s.claude_session_id || '').toLowerCase();
+    if (name.includes(q) || id.includes(q) || csid.includes(q)) return true;
+    return (s.previous_claude_session_ids || []).some((x) => x.toLowerCase().includes(q));
+  });
 
   // sort
   const residentFirst = (a, b) => (b.resident ? 1 : 0) - (a.resident ? 1 : 0);
@@ -2081,6 +2094,13 @@ function toolSummary(input) {
   if (input.pattern) return input.pattern;
   if (input.url) return input.url;
   if (input.prompt) return String(input.prompt).slice(0, 120);
+  // SendMessage（常驻会话间通信）：收件人 + 正文预览。summary 是模型给的
+  // 5-10 词预览，优先于自己截断正文；轨迹视图也复用这条摘要。
+  if (typeof input.to === 'string' && typeof input.message === 'string') {
+    const preview = (typeof input.summary === 'string' && input.summary.trim())
+      || input.message.trim().replace(/\s+/g, ' ').slice(0, 80);
+    return `⇢ ${input.to} · ${preview}`;
+  }
   // TaskCreate/TaskUpdate：任务详情看输入框上方的任务面板，摘要一行带过
   if (input.taskId != null && input.taskId !== '') return `#${input.taskId}` + (input.status ? ` → ${input.status}` : '');
   if (typeof input.subject === 'string' && input.subject) return input.subject;
@@ -2132,6 +2152,9 @@ function buildToolView(block, details, body) {
     body.appendChild(buildTaskToolView(input || {}));
     return true;
   }
+  if (name === 'sendmessage' && input && typeof input.message === 'string') {
+    return buildPeerSendView(input, details, body);
+  }
   if (name === 'bash' && input && typeof input.command === 'string') {
     details.classList.add('tool-bash');
     body.appendChild(buildBashView(input));
@@ -2156,6 +2179,56 @@ function buildToolView(block, details, body) {
     return true;
   }
   return false;
+}
+
+// SendMessage（常驻会话间通信）：把一次调用渲染成"发件"卡片，与入站 msg-peer
+// 气泡同一紫色系，进出两向在对话流里成对可读。折叠行只留收件人 + 预览
+// （toolSummary 那条），展开是收件人 + 正文 markdown；投递结果由
+// renderToolResult 追加在正文下方，失败时在折叠行补红字标记。
+function buildPeerSendView(input, details, body) {
+  details.classList.add('tool-peer-send');
+  body.classList.add('peer-send-body');
+  const to = String(input.to || '');
+  if (to) {
+    const head = document.createElement('div');
+    head.className = 'peer-send-head';
+    const arrow = document.createElement('span');
+    arrow.className = 'peer-send-arrow';
+    arrow.textContent = '⇢';
+    const chip = document.createElement('span');
+    chip.className = 'peer-send-to';
+    chip.textContent = to;
+    // 收件人是本控制台托管的会话时，点地址名直接跳过去看对方怎么处理
+    const peer = findPeerSession(to);
+    if (peer) {
+      chip.classList.add('peer-send-to-link');
+      chip.title = `打开会话「${peer.name}」`;
+      chip.onclick = () => openSession(peer.id);
+    } else {
+      chip.title = `地址名 ${to}`;
+    }
+    head.append(arrow, chip);
+    body.appendChild(head);
+  }
+  const msg = document.createElement('div');
+  msg.className = 'peer-send-msg';
+  msg.innerHTML = md(input.message || '');
+  body.appendChild(msg);
+  details.open = true;
+  return true;
+}
+
+// 按地址名找本控制台托管的会话：`name [ref]` 的 ref 只在同名多活时消歧，
+// 匹配前剥掉；peer_name 未显式设置时地址名回落为会话名（server 侧
+// CleanPeerName(sess.Name) 兜底）。大小写不敏感——这里只做导航，不参与寻址。
+function findPeerSession(to) {
+  const key = String(to || '').split(/\s*\[/)[0].trim().toLowerCase();
+  if (!key) return null;
+  for (const s of state.sessions || []) {
+    const name = (s.peer_name || s.name || '').trim().toLowerCase();
+    if (name && name === key) return s;
+  }
+  return null;
 }
 
 // TodoWrite：checklist 视图 —— 状态着色（completed 绿勾 / in_progress 蓝点 / pending 空心）
@@ -2384,10 +2457,14 @@ function renderToolResult(block, box, raw) {
     body.className = 'tool-body';
     // bash 的输出沿用终端配色，和命令行连成一整个终端窗口
     if (target.classList.contains('tool-bash')) body.classList.add('term-out');
+    // SendMessage 的返回是投递回执（一行状态），不用等宽代码块样式
+    const isPeerSend = target.classList.contains('tool-peer-send');
+    if (isPeerSend) body.classList.add('peer-send-status');
     body.textContent = text.length > 4000 ? text.slice(0, 4000) + '\n… (截断)' : text;
     if (block.is_error) body.style.color = 'var(--red)';
     r.appendChild(body);
     target.appendChild(r);
+    if (isPeerSend && block.is_error) markPeerSendFailed(target);
     return;
   }
   // Orphan result (e.g. from imported history without the tool_use block).
@@ -2401,6 +2478,18 @@ function renderToolResult(block, box, raw) {
   details.append(summary, body);
   if (raw) box.appendChild(details); // 子代理卡片体：不包消息气泡壳
   else wrapInMsg(details, box);
+}
+
+// 投递失败（对端离线 / 名字不匹配 / 被拒收）：折叠行也要能看出，否则一串紫色
+// 卡片看起来都像已送达。正文里的回执仍照常展示完整错误文案。
+function markPeerSendFailed(details) {
+  details.classList.add('peer-send-failed');
+  const st = details.querySelector('.tool-summary-text');
+  if (!st || st.querySelector('.peer-send-fail')) return;
+  const m = document.createElement('span');
+  m.className = 'peer-send-fail';
+  m.textContent = ' · 投递失败';
+  st.appendChild(m);
 }
 
 // ---------- file viewer（右侧栏预览本地文件） ----------
