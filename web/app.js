@@ -78,7 +78,7 @@ const state = {
   toolBlocks: {},     // tool_use_id -> details element
   subagentCards: {},  // parent_tool_use_id -> 子代理卡片 {summary, body, count, label}
   agentToolMeta: {},  // Agent tool_use_id -> {title, type}（实时侧卡片标题来源）
-  ocVariants: {},     // "cli/provider" -> {model: [--variant 键]} | null（拉取失败）
+  ocVariants: {},     // "cli/provider" -> {ts, data:{model:[--variant 键]}|null}（带 TTL，见 ocVariantsFor）
   nearBottom: true,
   home: '',           // server home dir, for ~ path shortening
   drafts: {},         // sessionId -> {text, attachments}
@@ -1362,18 +1362,26 @@ function applyEffortOptions(sel, kind, keys, wrap) {
   show(true);
 }
 
-// 按 cli+provider 取一次模型 variants（服务端进程内缓存，前端会话内缓存）。
+// 取模型 variants（服务端进程内缓存，前端缓存带 TTL）。缓存不能永久：
+// opencode 侧新模型上线后旧映射里没有对应条目，effort 下拉会凭空消失
+// （选别的模型又正常），而用户不该为此硬刷新。客户端每次真拉都带 fresh=1
+// 绕开服务端同样 10 分钟的缓存（页面加载正好落在服务端旧缓存窗口内时，
+// 不带 fresh 会继续拿到旧映射）；config 热加载改了模型列表则立即作废
+// （见 refreshProfiles）。
+const OC_VARIANTS_TTL = 10 * 60 * 1000;
 async function ocVariantsFor(cliName, providerName) {
   const key = `${cliName}/${providerName}`;
-  if (key in state.ocVariants) return state.ocVariants[key];
+  const ent = state.ocVariants[key];
+  if (ent && Date.now() - ent.ts < OC_VARIANTS_TTL) return ent.data;
   let data = null;
   try {
-    data = await api(`/api/opencode-model-variants?cli=${encodeURIComponent(cliName)}&provider=${encodeURIComponent(providerName)}`);
+    data = await api(`/api/opencode-model-variants?cli=${encodeURIComponent(cliName)}&provider=${encodeURIComponent(providerName)}&fresh=1`);
   } catch (_) {
     // 拉取失败 = 无数据，effort 下拉保持隐藏，不打扰对话
   }
-  state.ocVariants[key] = (data && data.models) || null;
-  return state.ocVariants[key];
+  const models = (data && data.models) || null;
+  state.ocVariants[key] = { ts: Date.now(), data: models };
+  return models;
 }
 
 // 用 config 的 model 名从 variants 映射里取键。映射的键是 opencode CLI 打印的
@@ -1461,6 +1469,7 @@ async function refreshProfiles() {
     state.profilesSig = sig;
     state.clis = clis;
     state.providers = providers;
+    state.ocVariants = {}; // 模型列表变了 → variants 映射可能过期，重建下拉时重拉
     rerenderProfileSelects();
   } catch (_) {
     // 网络抖动忽略：下一轮轮询/广播再试

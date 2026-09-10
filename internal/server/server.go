@@ -1280,6 +1280,8 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 // opencode accepts per model of one provider (`opencode models <provider>
 // --verbose`, memoized). The effort dropdowns query this so an opencode
 // session only ever offers the variant keys its model really supports.
+// ?fresh=1 bypasses the memo, which would otherwise keep a model list from
+// before a new model appeared for up to variantsTTL.
 func (s *Server) handleOpenCodeModelVariants(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
@@ -1295,7 +1297,7 @@ func (s *Server) handleOpenCodeModelVariants(w http.ResponseWriter, r *http.Requ
 	key := cli.Name + "\x00" + prov.Name
 	s.variantsMu.Lock()
 	defer s.variantsMu.Unlock()
-	if e, ok := s.variantsCache[key]; ok && time.Since(e.ts) < variantsTTL {
+	if e, ok := s.variantsCache[key]; ok && time.Since(e.ts) < variantsTTL && q.Get("fresh") != "1" {
 		writeJSON(w, http.StatusOK, map[string]any{"models": e.data})
 		return
 	}
