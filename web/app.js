@@ -148,6 +148,7 @@ function renderIcons(root) {
     'alert-triangle', 'file', 'file-text', 'file-plus', 'terminal-square',
     'rotate-ccw', 'pencil', 'search',
     'more-horizontal', 'archive', 'archive-restore', 'git-fork', 'git-branch',
+    'flag', 'flag-off',
     'settings-2', 'arrow-up', 'settings', 'bar-chart-3',
     'menu', 'more-vertical', 'send-horizontal', 'folder',
     'panel-left-close', 'panel-left-open', 'list-collapse',
