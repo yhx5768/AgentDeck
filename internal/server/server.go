@@ -523,9 +523,29 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		Resident       *bool   `json:"resident"`
 		PeerName       *string `json:"peer_name"`
 		Cwd            *string `json:"cwd"`
+		Unread         *bool   `json:"unread"`
+		Todo           *bool   `json:"todo"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	// Unread/Todo are lightweight display flags toggled by the sidebar (open a
+	// session → clear unread; mark/clear todo). Route a flags-only patch on a
+	// fast path that skips the full validation and — crucially — does not bump
+	// UpdatedAt, so opening a session or toggling a flag never reorders the
+	// list. A patch that also changes real fields falls through to the normal
+	// path below (where the flags fold into the same Upsert).
+	if (body.Unread != nil || body.Todo != nil) &&
+		body.Name == nil && body.CLI == nil && body.Provider == nil &&
+		body.Model == nil && body.Effort == nil && body.PermissionMode == nil &&
+		body.Archived == nil && body.SortOrder == nil && body.Resident == nil &&
+		body.PeerName == nil && body.Cwd == nil {
+		if err := s.st.SetFlags(sess.ID, body.Unread, body.Todo); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, s.view(s.st.Get(sess.ID)))
 		return
 	}
 	if body.CLI != nil && s.cfg().CLIByName(*body.CLI) == nil {
@@ -697,6 +717,12 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.Cwd != nil {
 			cur.Cwd = effCwd
+		}
+		if body.Unread != nil {
+			cur.Unread = *body.Unread
+		}
+		if body.Todo != nil {
+			cur.Todo = *body.Todo
 		}
 		cur.UpdatedAt = time.Now()
 	})

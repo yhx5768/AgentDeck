@@ -19,6 +19,7 @@
   --green: #1a7f37;
   --red: #cf222e;
   --orange: #9a6700;
+  --todo: #db6d28;
   --user-bg: rgba(9, 105, 218, .07);
   --user-border: rgba(9, 105, 218, .3);
   --tag-bg: rgba(9, 105, 218, .1);
@@ -106,6 +107,7 @@
   --green: #3fb950;
   --red: #f85149;
   --orange: #d29922;
+  --todo: #f0883e;
   --user-bg: rgba(88, 166, 255, .1);
   --user-border: rgba(88, 166, 255, .25);
   --tag-bg: rgba(88, 166, 255, .12);
@@ -734,6 +736,7 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 .dot.queued { background: var(--orange); }
 .dot.error { background: var(--red); }
 .dot.unread { background: var(--accent); }
+.dot.todo { background: var(--todo); }
 @keyframes pulse { 50% { opacity: .4; } }
 
 .profile-tag {

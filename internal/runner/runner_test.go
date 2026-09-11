@@ -3,6 +3,8 @@ package runner
 import (
 	"strings"
 	"testing"
+
+	"cc-webui/internal/store"
 )
 
 // TestBusy pins the semantics the SSE replay repair depends on: Busy is true
@@ -49,6 +51,39 @@ func TestBusy(t *testing.T) {
 	r.mu.Unlock()
 	if !m.Busy("queued") {
 		t.Fatal("queued message must report busy")
+	}
+}
+
+// TestSetIdleUnread pins the server-side unread marker: a turn that ended
+// (clean or error) marks the session unread so every client sees a blue dot
+// until one opens it; an interrupt produced no fresh result and must not mark.
+// This is the path the old localStorage blue dot duplicated client-side; moving
+// it server-side is what makes the dot agree across tabs.
+func TestSetIdleUnread(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	const sid = "s1"
+	if err := st.Upsert(&store.Session{ID: sid, Name: "t"}, func(*store.Session) {}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	m := NewManager(nil, st)
+
+	m.setIdle(sid, "")
+	if !st.Get(sid).Unread {
+		t.Fatal("clean turn end must mark unread")
+	}
+	if err := st.SetUnread(sid, false); err != nil {
+		t.Fatalf("clear unread: %v", err)
+	}
+	m.setIdle(sid, "interrupted")
+	if st.Get(sid).Unread {
+		t.Fatal("interrupt must not mark unread")
+	}
+	m.setIdle(sid, "boom")
+	if !st.Get(sid).Unread {
+		t.Fatal("error turn end must mark unread")
 	}
 }
 

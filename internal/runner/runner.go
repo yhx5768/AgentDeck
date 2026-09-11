@@ -331,6 +331,17 @@ func (m *Manager) setIdle(sessionID string, lastErr string) {
 	r.lastErr = lastErr
 	r.notifyStatus()
 	r.mu.Unlock()
+	// A turn that ended (clean or error) produced output the user hasn't seen
+	// yet — mark it unread so the sidebar shows a blue dot on every client
+	// until one of them opens it. An interrupt produced no fresh result, so
+	// skip it (mirrors the client's err === 'interrupted' guard). The runner
+	// is the single writer for the set; clients only ever clear it. st is nil
+	// only in tests that exercise Busy semantics with a store-less manager.
+	if m.st != nil && lastErr != "interrupted" {
+		if err := m.st.SetUnread(sessionID, true); err != nil {
+			log.Printf("set unread for %s: %v", sessionID, err)
+		}
+	}
 }
 
 // Enqueue queues a user message and starts the worker if needed.

@@ -212,22 +212,32 @@ function saveNotifyPrefs(p) {
   localStorage.setItem(NOTIFY_KEY, JSON.stringify(p));
 }
 
-// ---------- 未读完成标记（会话蓝点 + 工作区栏计数） ----------
-// 跑完但还没点开过的会话集合，localStorage 持久化（和通知开关一样按浏览器走）。
-// 正开着该会话且页面可见时不标（结果就在眼前）；点开会话即清除，蓝点恢复灰色。
-const UNREAD_KEY = 'cc-webui-unread-done';
-const unreadDone = new Set(JSON.parse(localStorage.getItem(UNREAD_KEY) || '[]'));
-function saveUnreadDone() {
-  try { localStorage.setItem(UNREAD_KEY, JSON.stringify([...unreadDone])); } catch {}
-}
-function markUnreadDone(id) {
-  if (unreadDone.has(id)) return;
-  unreadDone.add(id);
-  saveUnreadDone();
-}
-function clearUnreadDone(id) {
-  if (!unreadDone.delete(id)) return;
-  saveUnreadDone();
+// ---------- 未读 / TODO 徽标（会话状态点 + 工作区栏计数） ----------
+// 未读（蓝点）：会话本轮跑完但还没点开过；服务端在 turn_end / 出错时置位，
+// 客户端点开即清除。TODO（橙黄点）：用户从三点菜单人工标注的「过会儿回来问
+// 跑完了么」，发送下一条消息时自动清除。两者都存服务端（db.json），多端一致
+// ——旧的 localStorage 蓝点只标在看到任务跑完的那一端，别的端读过了仍蓝点。
+function patchSessionFlag(id, flags) {
+  // 乐观更新本地缓存并立刻重渲染，再异步落库；失败则重拉整表兜底。这样点开
+  // 会话 / 标待办时蓝橙点即时消失，不必等 PATCH 回包。
+  const apply = (list) => {
+    if (!list) return;
+    for (const s of list) {
+      if (s.id !== id) continue;
+      if ('unread' in flags) s.unread = flags.unread;
+      if ('todo' in flags) s.todo = flags.todo;
+    }
+  };
+  apply(state.sessions);
+  apply(state.archived);
+  if (state.current && state.current.id === id) {
+    if ('unread' in flags) state.current.unread = flags.unread;
+    if ('todo' in flags) state.current.todo = flags.todo;
+  }
+  renderSessionList();
+  renderWsActivity();
+  api(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(flags) })
+    .catch(() => loadSessions());
 }
 
 // sessionId -> 活跃（running 或 queued>0）；每轮轮询把快照存 localStorage，下次打开
@@ -255,7 +265,12 @@ function diffRunningSessions(list) {
     const err = st.last_error || '';
     if (err === 'interrupted') continue;
     const watching = state.current && state.current.id === s.id && document.visibilityState === 'visible';
-    if (!watching) markUnreadDone(s.id);
+    if (watching) {
+      // 服务端在 turn_end 已置 unread；此刻用户正盯着该会话，结果就在眼前，
+      // 清掉它——既避免眼前闪一下蓝点，也让其他端看到「已读」。非观看端不动：
+      // 服务端已置位，下方渲染自然是蓝点。
+      if (s.unread) patchSessionFlag(s.id, { unread: false });
+    }
     if (!boot) notifyTurnDone(s, err);
   }
 }
@@ -345,7 +360,8 @@ function statusDot(s) {
   if (s.status.running) return 'dot running';
   if (s.status.queued > 0) return 'dot queued';
   if (s.status.last_error && s.status.last_error !== 'interrupted') return 'dot error';
-  if (unreadDone.has(s.id)) return 'dot unread'; // 跑完未查看 → 蓝色，点开恢复灰
+  if (s.todo) return 'dot todo';      // 人工标注：过会儿回来问跑完了么 → 橙黄
+  if (s.unread) return 'dot unread';  // 跑完未查看 → 蓝，点开恢复灰
   return 'dot';
 }
 
@@ -420,20 +436,16 @@ function bindSessionItem(item, s, isArchived = false) {
 function renderWsActivity() {
   const el = $('#ws-activity');
   if (!el) return;
-  let running = 0, unread = 0;
-  const known = new Set(state.archived.map((s) => s.id));
+  let running = 0, unread = 0, todo = 0;
   for (const s of state.sessions) {
-    known.add(s.id);
     const st = s.status || {};
     if (st.running || st.queued > 0) running++;
-    if (unreadDone.has(s.id)) unread++;
+    if (s.unread) unread++;
+    if (s.todo) todo++;
   }
-  // 清理已彻底删除的会话残留的未读标记
-  let pruned = false;
-  for (const id of unreadDone) if (!known.has(id)) { unreadDone.delete(id); pruned = true; }
-  if (pruned) saveUnreadDone();
+  // 已删除的会话不再出现在 state.sessions，徽标随之自然消失，无需本地清理。
   el.innerHTML = '';
-  if (!running && !unread) { el.classList.add('hidden'); return; }
+  if (!running && !unread && !todo) { el.classList.add('hidden'); return; }
   el.classList.remove('hidden');
   if (running) {
     const b = document.createElement('span');
@@ -451,6 +463,15 @@ function renderWsActivity() {
     b.title = `${unread} 个任务已完成，点击查看`;
     b.innerHTML = `<span class="dot unread"></span>${unread}`;
     bindWsBadge(b, 'unread');
+    el.appendChild(b);
+  }
+  if (todo) {
+    const b = document.createElement('span');
+    b.className = 'ws-badge';
+    b.dataset.kind = 'todo';
+    b.title = `${todo} 个会话待回看，点击查看`;
+    b.innerHTML = `<span class="dot todo"></span>${todo}`;
+    bindWsBadge(b, 'todo');
     el.appendChild(b);
   }
   // 轮询重建徽章时 popover 若还开着，续刷内容——旧徽章被替换后鼠标
@@ -519,19 +540,21 @@ function renderWsPop() {
   const pop = $('#ws-pop');
   pop.innerHTML = '';
   if (!wsPopKind) return;
-  const byId = new Map(state.sessions.map((s) => [s.id, s]));
-  for (const s of state.archived) byId.set(s.id, s);
   const byNewest = (a, b) => new Date(b.updated_at) - new Date(a.updated_at);
   let list;
   if (wsPopKind === 'running') {
     list = state.sessions.filter((s) => s.status && (s.status.running || s.status.queued > 0));
+  } else if (wsPopKind === 'todo') {
+    list = state.sessions.filter((s) => s.todo);
   } else {
-    list = [...unreadDone].map((id) => byId.get(id)).filter(Boolean);
+    list = state.sessions.filter((s) => s.unread);
   }
   list.sort(byNewest);
+  const titleText = wsPopKind === 'running' ? '运行中'
+    : wsPopKind === 'todo' ? '待回看' : '已完成';
   const title = document.createElement('div');
   title.className = 'ws-pop-title';
-  title.textContent = (wsPopKind === 'running' ? '运行中' : '已完成') + `（${list.length}）`;
+  title.textContent = titleText + `（${list.length}）`;
   pop.appendChild(title);
   if (!list.length) {
     const empty = document.createElement('div');
@@ -543,10 +566,11 @@ function renderWsPop() {
   for (const s of list) {
     const item = document.createElement('button');
     item.className = 'ws-pop-item';
-    const dot = document.createElement('span');
-    dot.className = 'dot ' + (wsPopKind === 'running'
+    const dotKind = wsPopKind === 'running'
       ? (s.status.running ? 'running' : 'queued')
-      : 'unread');
+      : wsPopKind === 'todo' ? 'todo' : 'unread';
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + dotKind;
     const name = document.createElement('span');
     name.className = 'name-text';
     name.textContent = s.name || '未命名会话';
@@ -554,6 +578,8 @@ function renderWsPop() {
     meta.className = 'meta';
     if (wsPopKind === 'running') {
       meta.textContent = s.status.running ? shortenPath(s.cwd || '') : '排队中';
+    } else if (wsPopKind === 'todo') {
+      meta.textContent = `标注于 ${timeAgo(s.updated_at)}`;
     } else {
       meta.textContent = `完成于 ${timeAgo(s.updated_at)}`;
     }
@@ -737,9 +763,13 @@ function openSessionMenu(s, anchor, isArchived) {
   archiveBtn.innerHTML = isArchived
     ? '<i data-lucide="archive-restore"></i>取消归档'
     : '<i data-lucide="archive"></i>归档';
+  const todoBtn = menu.querySelector('[data-action="todo"]');
+  todoBtn.innerHTML = s.todo
+    ? '<i data-lucide="flag-off"></i>取消待办'
+    : '<i data-lucide="flag"></i>标记待办';
   menu.classList.remove('hidden');
   const rect = anchor.getBoundingClientRect();
-  const mw = 180, mh = 160;
+  const mw = 180, mh = 200;
   let x = rect.right + 4;
   let y = rect.top - 4;
   // 右侧放不下则右对齐锚点右缘，再钳回视口内（手机抽屉场景）
@@ -778,6 +808,7 @@ async function handleSessionAction(action, s) {
   if (action === 'rename') return openRenameDialog(s);
   if (action === 'fork')   return forkSession(s);
   if (action === 'archive') return toggleArchive(s);
+  if (action === 'todo')   return patchSessionFlag(s.id, { todo: !s.todo });
   if (action === 'delete') return deleteSession(s);
 }
 
@@ -1204,7 +1235,7 @@ async function openSession(id) {
   applyWorkspaceGate(s.cwd);
   applyAttachGate();
   renderAttachedThumbs();
-  clearUnreadDone(s.id); // 点开即视为已查看：蓝点恢复灰色
+  if (s.unread) patchSessionFlag(s.id, { unread: false }); // 点开即视为已查看：蓝点恢复灰
   renderSessionList();
   renderWsActivity();
   connectEvents(id);
@@ -3265,6 +3296,10 @@ async function sendMessage() {
   if (state.current) { draft().text = ''; draft().attachments = []; }
   renderAttachedThumbs();
   $('#error-banner').classList.add('hidden');
+
+  // 用户人工追问 = 这次回来过了：清掉 TODO 橙黄点（若标过）。落库在服务端，
+  // 多端同步；乐观先清，不必等 PATCH 回包才消点。
+  if (state.current.todo) patchSessionFlag(state.current.id, { todo: false });
 
   // While a turn is streaming, don't POST immediately — the backend would
   // queue it, but the optimistic bubble lands mid-stream and the on-screen

@@ -14,15 +14,15 @@ import (
 
 // Session is the metadata of one managed chat session.
 type Session struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	CLI             string   `json:"cli"`
-	Provider        string   `json:"provider"`
-	ModelOverride   string   `json:"model_override,omitempty"`
-	EffortOverride  string   `json:"effort_override,omitempty"`
-	PermissionMode  string   `json:"permission_mode,omitempty"`
-	Cwd             string   `json:"cwd"`
-	ClaudeSessionID string   `json:"claude_session_id,omitempty"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	CLI             string `json:"cli"`
+	Provider        string `json:"provider"`
+	ModelOverride   string `json:"model_override,omitempty"`
+	EffortOverride  string `json:"effort_override,omitempty"`
+	PermissionMode  string `json:"permission_mode,omitempty"`
+	Cwd             string `json:"cwd"`
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 	// PreviousClaudeSessionIDs holds engine session ids this conversation used
 	// before they were replaced. rewind-to-first clears ClaudeSessionID and the
 	// next turn opens a fresh claude session with a new id; restarts or
@@ -31,14 +31,26 @@ type Session struct {
 	// archiving it keeps the sidebar search able to resolve that stale id back
 	// to this session. See WithClaudeSID.
 	PreviousClaudeSessionIDs []string `json:"previous_claude_session_ids,omitempty"`
-	SlashCommands   []string `json:"slash_commands,omitempty"`
+	SlashCommands            []string `json:"slash_commands,omitempty"`
 	// Resident keeps a long-lived streaming-input claude process alive for this
 	// session so other Claude sessions can reach it via SendMessage (peer
 	// messaging). PeerName is the addressable name written into the claude
 	// transcript as a custom-title; empty means "derive from Name".
-	Resident  bool      `json:"resident,omitempty"`
-	PeerName  string    `json:"peer_name,omitempty"`
-	Archived  bool      `json:"archived"`
+	Resident bool   `json:"resident,omitempty"`
+	PeerName string `json:"peer_name,omitempty"`
+	Archived bool   `json:"archived"`
+	// Unread marks a session whose latest turn just finished (active→idle) but
+	// no client has opened it since. Set server-side by the runner on
+	// turn_end/error (not on interrupt) and cleared by a PATCH when a client
+	// opens it. Server-side so every client agrees: the old localStorage blue
+	// dot only marked the tab that saw the turn end, leaving the dot blue on
+	// every other client even after one had read it.
+	Unread bool `json:"unread"`
+	// Todo is a manual "come back later" marker the user sets from the session
+	// menu (orange dot) for sessions that run background work they want to
+	// revisit. Cleared automatically when the user sends a follow-up message,
+	// signalling the revisit happened.
+	Todo      bool      `json:"todo"`
 	SortOrder int       `json:"sort_order"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -173,6 +185,44 @@ func (s *Store) Upsert(sess *Session, mutate func(*Session)) error {
 		mutate(cur)
 	}
 	return s.saveLocked()
+}
+
+// setFlag mutates a single existing session under lock and rewrites db.json.
+// It is a no-op when the session no longer exists: unread/todo are UI state
+// toggled by the sidebar or set at turn end, never something that should
+// resurrect a just-deleted session. Unlike Upsert it does not touch
+// UpdatedAt — a flag toggle must not reorder the session list (opening a
+// session or marking a todo shouldn't bump it to the top).
+func (s *Store) setFlag(id string, mutate func(*Session)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.sessions[id]
+	if !ok {
+		return nil
+	}
+	mutate(cur)
+	return s.saveLocked()
+}
+
+// SetUnread sets the unread flag on an existing session. Used by the runner
+// when a turn ends so the session shows a blue dot on every client until one
+// of them opens it.
+func (s *Store) SetUnread(id string, v bool) error {
+	return s.setFlag(id, func(cur *Session) { cur.Unread = v })
+}
+
+// SetFlags writes the unread and/or todo flags together in one pass. Used by
+// the PATCH fast path so a flags-only update is one db.json write. Either
+// pointer may be nil to leave that flag untouched.
+func (s *Store) SetFlags(id string, unread, todo *bool) error {
+	return s.setFlag(id, func(cur *Session) {
+		if unread != nil {
+			cur.Unread = *unread
+		}
+		if todo != nil {
+			cur.Todo = *todo
+		}
+	})
 }
 
 func (s *Store) Delete(id string) error {
