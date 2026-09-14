@@ -1004,6 +1004,7 @@ $('#btn-search-toggle').onclick = () => {
   }
 };
 $('#btn-search-close').onclick = () => $('#btn-search-toggle').click();
+// Esc 关闭搜索栏的分支挂在文末全局 keydown 的层级链上（最上层，见文件底部）
 $('#search-input').addEventListener('input', (e) => {
   state.searchQuery = e.target.value;
   renderSessionList();
@@ -4756,7 +4757,9 @@ document.addEventListener('pointerdown', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (!$('#file-viewer').classList.contains('hidden')) closeFileViewer();
+    // 层级链：最上层先关，一次 Esc 只退一层
+    if (state.showSearch) $('#btn-search-toggle').click();
+    else if (!$('#file-viewer').classList.contains('hidden')) closeFileViewer();
     else if (document.body.classList.contains('sheet-open')) closeSheet();
     else if (document.body.classList.contains('drawer-open')) closeDrawer();
   }
