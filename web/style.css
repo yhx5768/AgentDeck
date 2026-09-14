@@ -514,6 +514,13 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 .popover-menu button.danger:hover { background: var(--danger-bg); }
 .popover-menu button svg { width: 14px; height: 14px; }
 .popover-menu button i:first-child { display: inline-block; min-width: 14px; }
+/* 菜单内分组分隔线：负边距抵消 padding，让线顶到容器两侧边框 */
+.popover-menu .menu-divider {
+  flex: none;
+  height: 1px;
+  background: var(--border);
+  margin: var(--sp-1) calc(-1 * var(--sp-1));
+}
 
 /* 常驻面板：与 popover-menu 同壳，但内容是表单行而非按钮列表 */
 .popover-panel {

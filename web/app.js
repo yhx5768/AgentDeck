@@ -769,8 +769,12 @@ function openSessionMenu(s, anchor, isArchived) {
     ? '<i data-lucide="flag-off"></i>取消待办'
     : '<i data-lucide="flag"></i>标记待办';
   menu.classList.remove('hidden');
+  renderIcons(menu);
   const rect = anchor.getBoundingClientRect();
-  const mw = 180, mh = 200;
+  // 实测宽高而非写死：菜单行数随功能增长会变，写死的估值会过期（曾按 5 行估 200，
+  // 实际 5 按钮 + 1 分隔线只有 164）。renderIcons 先跑，因为待办按钮每次开菜单都会被
+  // 换成新的 <i data-lucide>，实测要在图标替换成 svg 之后才准。
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
   let x = rect.right + 4;
   let y = rect.top - 4;
   // 右侧放不下则右对齐锚点右缘，再钳回视口内（手机抽屉场景）
@@ -780,7 +784,6 @@ function openSessionMenu(s, anchor, isArchived) {
   if (y < 8) y = 8;
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
-  renderIcons(menu);
 }
 
 function closeSessionMenu() {
