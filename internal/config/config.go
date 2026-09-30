@@ -79,6 +79,16 @@ func (p *Provider) DefaultModelName() string {
 }
 
 // EffectiveEnv merges cli.env → provider.env → model.env (later wins).
+//
+// The model itself is NOT injected here, however empty the result: a model name
+// only reaches the endpoint through vars the config declares. Filling in
+// ANTHROPIC_MODEL from the session's model looks tidy but breaks the launcher
+// CLIs — ducc canonicalizes the --model flag into its own settings ("Claude
+// Sonnet 5" -> "Claude Sonnet 5[1m]", plus that model's context window and
+// auth), and our settings file is merged last, so an env-pinned name would win
+// with the raw, uncanonicalized string (verified: env-pinned model with no
+// --model stalls, --model works). Providers whose endpoint serves one model
+// declare these vars per model in config.yaml; that is the supported way.
 func (c *CLI) EffectiveEnv(p *Provider, modelName string) map[string]string {
 	merged := map[string]string{}
 	for k, v := range c.Env {

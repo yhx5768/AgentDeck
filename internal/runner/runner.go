@@ -445,32 +445,100 @@ func sanitizeName(name string) string {
 
 // SettingsPath returns the materialized --settings file path for a
 // (cli, provider, model) triple. dataDir is absolute (guaranteed at config load).
-func SettingsPath(dataDir, cliName, providerName, modelName string) string {
-	return filepath.Join(dataDir, "settings", sanitizeName(cliName+"__"+providerName+"__"+modelName)+".json")
+//
+// effort (the session's --effort override, "" = inherit) is part of the file
+// name because the file carries CLAUDE_CODE_EFFORT_LEVEL: a resident session
+// holds its settings file for its whole lifetime, so two sessions on the same
+// model with different efforts must not overwrite each other's copy.
+func SettingsPath(dataDir, cliName, providerName, modelName, effort string) string {
+	name := cliName + "__" + providerName + "__" + modelName
+	if effort != "" {
+		name += "__effort-" + effort
+	}
+	return filepath.Join(dataDir, "settings", sanitizeName(name)+".json")
 }
 
 // settingsFile materializes env into a claude --settings JSON file under
 // <data_dir>/settings/. Rewritten on every turn so config edits only need a
 // process restart (not a session rebuild).
 //
-// crossSessionInbound:"accept" is included unconditionally: cc-webui is a
-// single-user console where inbound peer messages come from the user's own
-// other sessions, and "hold" would park them forever (there is no interactive
-// approver in headless mode). Repo/managed settings can still tighten it.
-func (m *Manager) settingsFile(cliName, providerName, modelName string, env map[string]string) (string, error) {
+// effort, when non-empty, is written as CLAUDE_CODE_EFFORT_LEVEL — see
+// applyEffortEnv for why the --effort flag alone is not enough.
+//
+// crossSessionInbound:"accept" rides along in every file we do write: cc-webui
+// is a single-user console where inbound peer messages come from the user's
+// own other sessions, and "hold" would park them forever (there is no
+// interactive approver in headless mode). Repo/managed settings can still
+// tighten it. Providers with no config env get no file at all, so their
+// sessions carry no pin and inbound peer messages follow the CLI default.
+func (m *Manager) settingsFile(cliName, providerName, modelName, effort string, env map[string]string) (string, error) {
 	dir := filepath.Join(m.cfg().DataDir, "settings")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	raw, err := json.Marshal(map[string]any{"env": env, "crossSessionInbound": "accept"})
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	applyEffortEnv(out, effort)
+	raw, err := json.Marshal(map[string]any{"env": out, "crossSessionInbound": "accept"})
 	if err != nil {
 		return "", err
 	}
-	path := SettingsPath(m.cfg().DataDir, cliName, providerName, modelName)
+	path := SettingsPath(m.cfg().DataDir, cliName, providerName, modelName, effort)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// EnsureSettingsFile materializes the --settings file for a
+// (cli, provider, model, effort) tuple and returns its path, for callers that
+// only *display* the path (the resume command in the UI). The CLI hard-fails
+// on a missing settings file ("Settings file not found"), and effort-scoped
+// files only exist once a session with that level has run a turn — so a
+// command copied right after picking an effort would point at nothing.
+//
+// No env means no file — the same rule the spawn paths follow (see
+// runClaudeTurn): a --settings path is only worth handing out when the env it
+// carries is the reason the CLI cannot work without it. A pinned effort alone
+// does not qualify — the command passes --effort instead of pointing a
+// terminal at this checkout's data dir.
+//
+// Falls back to the computed path when the write fails.
+func (m *Manager) EnsureSettingsFile(cliName, providerName, modelName, effort string, env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	if p, err := m.settingsFile(cliName, providerName, modelName, effort, env); err == nil {
+		return p
+	} else {
+		log.Printf("settings file for %s/%s/%s: %v", cliName, providerName, modelName, err)
+	}
+	return SettingsPath(m.cfg().DataDir, cliName, providerName, modelName, effort)
+}
+
+// applyEffortEnv mirrors the session's --effort level into
+// CLAUDE_CODE_EFFORT_LEVEL: the spawn's process env, plus — for providers that
+// carry config env — the --settings file the caller materializes.
+//
+// The env var **beats** the --effort flag inside the CLI, and a level from the
+// user's global ~/.claude/settings.json beats the process env. So a session
+// pinned to high could still ask gateways for whatever the global file said —
+// e.g. "max", which SenseNova's endpoint rejects ("field ReasoningEffort
+// invalid, should be one of: low, medium, high, xhigh, none") — and the
+// dropdown looked broken. Only a --settings file of our own outranks the
+// global one, which is why env-carrying providers get the level written there;
+// env-less providers (ducc-models) fall back to the process env, where a
+// global level still wins over the session's.
+//
+// Verified on CLI 2.1.226 by intercepting the request body: `--effort high`
+// with a global max still sent output_config.effort=max; adding
+// CLAUDE_CODE_EFFORT_LEVEL=high to the --settings file sent high.
+func applyEffortEnv(env map[string]string, effort string) {
+	if effort != "" {
+		env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
+	}
 }
 
 // buildEnvMap builds the process environment for a claude spawn: the parent
@@ -597,13 +665,20 @@ func (m *Manager) runClaudeTurn(sessionID string, msg Message, sess *store.Sessi
 		args = append(args, "--effort", sess.EffortOverride)
 	}
 	env := cli.EffectiveEnv(prov, model)
+	// Only config env earns a --settings file (endpoint/token the CLI would not
+	// otherwise have). An env-less provider such as ducc-models gets its
+	// endpoint and per-model setup from the launcher itself and its level from
+	// --effort plus the process env (applyEffortEnv), so there is nothing worth
+	// pinning the spawn to <data_dir>/settings/.
+	needsSettings := len(env) > 0
+	applyEffortEnv(env, sess.EffortOverride)
 	if sess.ClaudeSessionID != "" {
 		args = append(args, "--resume", sess.ClaudeSessionID)
 	}
 	args = append(args, cli.Args...)
 
-	if len(env) > 0 && !hasArg(args, "--settings") {
-		if p, err := m.settingsFile(cli.Name, prov.Name, model, env); err == nil {
+	if needsSettings && !hasArg(args, "--settings") {
+		if p, err := m.settingsFile(cli.Name, prov.Name, model, sess.EffortOverride, env); err == nil {
 			args = append(args, "--settings", p)
 		} else {
 			log.Printf("settings file for %s/%s/%s: %v", cli.Name, prov.Name, model, err)
@@ -1065,7 +1140,9 @@ func (m *Manager) RewindFiles(sess *store.Session, checkpoint string) (string, e
 	}
 	args = append(args, cli.Args...)
 	if len(env) > 0 && !hasArg(args, "--settings") {
-		if p, err := m.settingsFile(cli.Name, prov.Name, model, env); err == nil {
+		// No model call in this path (--rewind-files restores and exits), so
+		// the session effort is irrelevant — use the plain settings file.
+		if p, err := m.settingsFile(cli.Name, prov.Name, model, "", env); err == nil {
 			args = append(args, "--settings", p)
 		} else {
 			log.Printf("settings file for rewind %s/%s/%s: %v", cli.Name, prov.Name, model, err)

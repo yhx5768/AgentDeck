@@ -89,10 +89,16 @@ providers:
 
   - name: "sensenova"                # 商汤日日新（SenseNova），见 https://platform.sensenova.cn/docs
     env:
-      # Anthropic Messages 兼容端点。API Key 在 https://platform.sensenova.cn/console/keys 申请（sk- 开头）。
+      # Anthropic Messages 兼容端点。BASE_URL 只写到主机根、不带 /v1/messages——
+      # Claude Code 会自己追加 /v1/messages：实测 token.sensenova.cn/messages 是 404，
+      # 写成 .../v1 会变成 /v1/v1/messages 也 404，只有 /v1/messages 返回 200。
+      # API Key 在 https://platform.sensenova.cn/console/keys 申请（sk- 开头）。
       # 付费模型（SenseChat-5 等）走 api.sensenova.cn/compatible-mode/v2，仅 OpenAI
       # 兼容格式，无法直连本 provider。
-      ANTHROPIC_BASE_URL: "https://token.sensenova.cn/v1/messages"
+      # 本组模型的权威清单自查（全量 9 个、均免费；注意目录里的模型不一定在当前
+      # token 套餐内，请求会 403 permission_error）：
+      #   curl -H "Authorization: Bearer <key>" https://token.sensenova.cn/v1/models
+      ANTHROPIC_BASE_URL: "https://token.sensenova.cn"
       ANTHROPIC_AUTH_TOKEN: "sk-..."      # 替换为你的 SenseNova API Key
       API_TIMEOUT_MS: "3000000"
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
@@ -144,5 +150,47 @@ providers:
           CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1000000"
           CLAUDE_CODE_EFFORT_LEVEL: "max"
           CLAUDE_CODE_HARBOR_KITE: "1"
+      - name: "deepseek-v4-flash"
+        input: [text]               # 纯文本；1M 上下文；2026-09-17 实测对话可用
+        env:
+          ANTHROPIC_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_SMALL_FAST_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash"
+          CLAUDE_CODE_SUBAGENT_MODEL: "deepseek-v4-flash"
+          ANTHROPIC_REASONING_MODEL: "deepseek-v4-flash"
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "800000"
+      - name: "deepseek-flash"
+        input: [text]               # 纯文本；1M 上下文；2026-09-17 实测对话可用。
+                                    # 目录 input_modalities 只声明 text——视觉是单独
+                                    # 命名的变体（如 -vision-exp 后缀），故不标 image；
+                                    # 视觉探针当时被套餐 TPM 429 挡住，未验成
+        env:
+          ANTHROPIC_MODEL: "deepseek-flash"
+          ANTHROPIC_SMALL_FAST_MODEL: "deepseek-flash"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-flash"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-flash"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-flash"
+          CLAUDE_CODE_SUBAGENT_MODEL: "deepseek-flash"
+          ANTHROPIC_REASONING_MODEL: "deepseek-flash"
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "800000"
+      - name: "kimi-k3"
+        input: [text]               # 纯文本；1M 上下文
+        env:
+          ANTHROPIC_MODEL: "kimi-k3"
+          ANTHROPIC_SMALL_FAST_MODEL: "kimi-k3"
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "kimi-k3"
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "kimi-k3"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "kimi-k3"
+          CLAUDE_CODE_SUBAGENT_MODEL: "kimi-k3"
+          ANTHROPIC_REASONING_MODEL: "kimi-k3"
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "800000"
+      # deepseek-v4.1-flash：2026-09-17 在 /v1/models 目录里（1M 上下文、免费），
+      # 但实测请求稳定返回 403 permission_error "model is not available in the
+      # current token plan"——目录有 ≠ 当前套餐能用。换套餐后取消注释，env 块同
+      # 上面任一条 deepseek-*，把模型名替换即可
+      # - name: "deepseek-v4.1-flash"
+      #   input: [text]
       # sensenova-u1-fast / sensenova-u1.5-lite：信息图生成专用（输出为 image，
       # 不走 chat completions），无法用于对话，不列入。

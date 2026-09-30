@@ -368,8 +368,13 @@ func shellQuote(s string) string {
 }
 
 // resumeCommand builds the shell command that resumes this session from a
-// terminal. claude engine: cli --resume <sid> with the effective env via
-// --settings. opencode engine: opencode -s <sid> (its own store/auth).
+// terminal. claude engine: cli --resume <sid> --model <m> --effort <level>,
+// plus --settings only when the config carries env the terminal would not
+// otherwise have (endpoint/token) — a provider with no env at all, ducc-models,
+// gets its endpoint and per-model setup from the CLI itself, so pointing the
+// command at our materialized file would only add a path into this checkout's
+// data dir that breaks as soon as the command travels. opencode engine:
+// opencode -s <sid> (its own store/auth).
 func (s *Server) resumeCommand(sess *store.Session) string {
 	if sess.ClaudeSessionID == "" {
 		return ""
@@ -391,13 +396,32 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 	if cliPath == "" {
 		cliPath = "claude"
 	}
+	model := ""
+	if prov != nil {
+		model = prov.EffectiveModel(sess.ModelOverride)
+	}
 	if cli != nil && prov != nil {
-		model := prov.EffectiveModel(sess.ModelOverride)
-		if len(cli.EffectiveEnv(prov, model)) > 0 {
-			settings = runner.SettingsPath(s.cfg().DataDir, cli.Name, prov.Name, model)
+		if env := cli.EffectiveEnv(prov, model); len(env) > 0 {
+			// Session effort is part of the file name (see runner.SettingsPath):
+			// hand out the same file the runner passes to the spawn, materializing
+			// it if this effort level has not run a turn yet — else the copied
+			// command dies on "Settings file not found".
+			settings = s.mgr.EnsureSettingsFile(cli.Name, prov.Name, model, sess.EffortOverride, env)
 		}
 	}
 	cmd := base + shellQuote(cliPath) + " --resume " + sess.ClaudeSessionID
+	if model != "" {
+		// --model, not env: a launcher CLI resolves the flag into its own
+		// settings and canonicalizes the name (ducc turns "Claude Sonnet 5"
+		// into "Claude Sonnet 5[1m]" + that model's context window and auth),
+		// while our settings file is merged last and would instead pin the
+		// raw config name. Providers whose env does name a model get both,
+		// exactly as the spawn does.
+		cmd += " --model " + shellQuote(model)
+	}
+	if sess.EffortOverride != "" {
+		cmd += " --effort " + shellQuote(sess.EffortOverride)
+	}
 	if settings != "" {
 		cmd += " --settings " + shellQuote(settings)
 	}

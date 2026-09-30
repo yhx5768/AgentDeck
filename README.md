@@ -30,7 +30,7 @@ cc-webui 是 Claude Code（以及任何兼容 CLI）的 Web 控制台。它把�
 | 本地文件预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`），右侧面板只读打开并自动跳转到对应行号。 |
 | 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 claude transcript 一并截断，消息文本回填输入框重发。等价 TUI 双击 Esc。Bash 改的文件无法回滚。 |
 | 任务完成通知 | 任务跑完（或出错）时弹系统横幅通知 + 播放提示音，点击通知直达对应会话。侧边栏「设置」里可分别开关，配置存 localStorage 跟着浏览器走，不同终端各自配置。 |
-| TUI 与 Web 自由切换 | 每个会话都有 session id，点「resume」复制命令即可回到 TUI 继续跟进，Web 里做的一切状态都在。 |
+| TUI 与 Web 自由切换 | 每个会话都有 session id，点「resume」复制命令即可回到 TUI 继续跟进，Web 里做的一切状态都在。复制的命令带 `--model`/`--effort`，端点鉴权在 config env 里的 provider（kimi / sensenova 等）再多带一个物化好的 `--settings`；无 env 的 provider（如 `ducc-models`）只带前两个，模型由 CLI 自己解析，命令不依赖本机 data 目录、可拷走。 |
 | 移动优先 PWA | 抽屉导航、底部操作面板、响应式布局、深浅主题切换。 |
 | 安全网关 | 单一 `gateway_token` 鉴权；文件预览严格限制在会话工作区内。 |
 
@@ -130,7 +130,7 @@ providers:
 Claude Code 的 `~/.claude/settings.json` 里的 `env` 段会覆盖进程继承的环境变量，因此只往进程注入 `ANTHROPIC_BASE_URL` 等并不生效。cc-webui 的处理方式：
 
 1. 合并当前会话的生效 env（cli → provider → model，后者覆盖前者）。
-2. 将合并结果物化为 `data/settings/<cli>__<provider>__<model>.json`（权限 0600），以 `--settings <绝对路径>` 传给 claude——命令行 settings 优先级最高，可以压过 `settings.json`。
+2. 合并结果非空时，物化为 `data/settings/<cli>__<provider>__<model>.json`（权限 0600），以 `--settings <绝对路径>` 传给 claude——命令行 settings 优先级最高，可以压过 `settings.json`。env 为空的 provider（如 `ducc-models`）端点由 CLI 自己解析，不物化也不传这个文件。
 3. 同时把生效 env 注入进程环境变量，供其他 CLI 兼容层使用。
 
 ---

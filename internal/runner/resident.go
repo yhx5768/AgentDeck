@@ -298,12 +298,16 @@ func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residen
 		args = append(args, "--effort", sess.EffortOverride)
 	}
 	env := cli.EffectiveEnv(prov, model)
+	// Same rule as runClaudeTurn: the file is for config env only, an env-less
+	// provider takes its level from --effort and the process env.
+	needsSettings := len(env) > 0
+	applyEffortEnv(env, sess.EffortOverride)
 	if sess.ClaudeSessionID != "" {
 		args = append(args, "--resume", sess.ClaudeSessionID)
 	}
 	args = append(args, cli.Args...)
-	if len(env) > 0 && !hasArg(args, "--settings") {
-		if p, err := m.settingsFile(cli.Name, prov.Name, model, env); err == nil {
+	if needsSettings && !hasArg(args, "--settings") {
+		if p, err := m.settingsFile(cli.Name, prov.Name, model, sess.EffortOverride, env); err == nil {
 			args = append(args, "--settings", p)
 		} else {
 			log.Printf("settings file for %s/%s/%s: %v", cli.Name, prov.Name, model, err)
