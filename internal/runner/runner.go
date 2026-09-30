@@ -501,7 +501,7 @@ func (m *Manager) settingsFile(cliName, providerName, modelName, effort string, 
 // command copied right after picking an effort would point at nothing.
 //
 // No env means no file — the same rule the spawn paths follow (see
-// runClaudeTurn): a --settings path is only worth handing out when the env it
+// runStreamJSONTurn): a --settings path is only worth handing out when the env it
 // carries is the reason the CLI cannot work without it. A pinned effort alone
 // does not qualify — the command passes --effort instead of pointing a
 // terminal at this checkout's data dir.
@@ -604,9 +604,11 @@ func ResolveCwd(dir string) (string, error) {
 	return dir, nil
 }
 
-// runTurn dispatches one user message to the session's engine: claude-kind
-// CLIs spawn a one-shot `claude -p` process (runClaudeTurn), opencode-kind
-// CLIs spawn `opencode run --format json` (runOpenCodeTurn).
+// runTurn dispatches one user message to the session's engine: claude- and
+// qoder-kind CLIs spawn a one-shot `-p --output-format stream-json` process
+// (runStreamJSONTurn, one argv dialect each), opencode-kind CLIs spawn
+// `opencode run --format json` (runOpenCodeTurn), mcode-kind CLIs spawn
+// `mcode exec` (runMcodeTurn).
 func (m *Manager) runTurn(sessionID string, msg Message) {
 	sess := m.st.Get(sessionID)
 	if sess == nil {
@@ -638,17 +640,95 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 		m.runMcodeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
 		return
 	}
-	m.runClaudeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
+	// claude-kind and qoder-kind CLIs share one spawn path: Qoder CLI CN is a
+	// Claude Code fork, so only the argv spelling differs.
+	m.runStreamJSONTurn(sessionID, msg, sess, cli, prov, resolvedCwd, dialectFor(cli))
 }
 
-// runClaudeTurn spawns one claude process for a single user message. If the
-// message contains images, claude is invoked with --input-format
-// stream-json and the message is encoded as a single JSON user message
-// on stdin; otherwise the text is piped via stdin as before.
-func (m *Manager) runClaudeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
+// streamJSONDialect captures the argv-level differences between the CLIs that
+// all speak the same `-p --output-format stream-json` protocol and write the
+// same transcript layout. Everything else about the turn — stdin payload, event
+// passthrough, session-id capture, error surfacing — is shared.
+type streamJSONDialect struct {
+	// verbose appends --verbose. Claude Code requires it alongside
+	// stream-json; Qoder CLI CN has no such flag and exits 1 on it
+	// ("error: unknown option '--verbose'").
+	verbose bool
+	// effortFlag names the reasoning-level flag. Same levels, different
+	// spelling: claude takes --effort, qoder --reasoning-effort (and rejects
+	// --effort outright).
+	effortFlag string
+	// permissionMode normalizes the mode spelling for this CLI.
+	permissionMode func(string) string
+	// effortEnv mirrors the level into the process env, which the CLI prefers
+	// over the flag. Only claude's CLAUDE_CODE_EFFORT_LEVEL is known to do
+	// that, so qoder leaves it off.
+	effortEnv bool
+	// checkpoint captures a file checkpoint after the turn, which is what
+	// makes a message rewindable. claude restores those files itself
+	// (`--rewind-files`); qoder exposes no such flag, so its sessions are not
+	// rewindable and no checkpoint is captured.
+	checkpoint bool
+}
+
+// claudeDialect is Claude Code's argv spelling.
+var claudeDialect = streamJSONDialect{
+	verbose:        true,
+	effortFlag:     "--effort",
+	permissionMode: func(s string) string { return s },
+	effortEnv:      true,
+	checkpoint:     true,
+}
+
+// qoderDialect is Qoder CLI CN's argv spelling (verified against 1.1.65:
+// --verbose and --effort are both rejected, --permission-mode takes
+// snake_case, and --reasoning-effort accepts auto/none/low/medium/high/
+// xhigh/max/ultracode).
+var qoderDialect = streamJSONDialect{
+	verbose:        false,
+	effortFlag:     "--reasoning-effort",
+	permissionMode: snakeCasePermissionMode,
+	effortEnv:      false,
+	checkpoint:     false,
+}
+
+func dialectFor(cli *config.CLI) streamJSONDialect {
+	if cli.IsQoder() {
+		return qoderDialect
+	}
+	return claudeDialect
+}
+
+// snakeCasePermissionMode converts claude's camelCase permission modes to the
+// snake_case spelling Qoder CLI CN expects (bypassPermissions ->
+// bypass_permissions). Values that are already snake_case, or that the CLI
+// rejects anyway, pass through untouched.
+func snakeCasePermissionMode(mode string) string {
+	var b strings.Builder
+	for i, r := range mode {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r - 'A' + 'a')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// runStreamJSONTurn spawns one process for a single user message. If the
+// message contains images, the CLI is invoked with --input-format stream-json
+// and the message is encoded as a single JSON user message on stdin;
+// otherwise the text is piped via stdin as before.
+func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string, d streamJSONDialect) {
 	text := turnText(msg)
 	multimodal := len(msg.Images) > 0
-	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
+	args := []string{"-p", "--output-format", "stream-json"}
+	if d.verbose {
+		args = append(args, "--verbose")
+	}
 	if multimodal {
 		args = append(args, "--input-format", "stream-json")
 	}
@@ -660,14 +740,14 @@ func (m *Manager) runClaudeTurn(sessionID string, msg Message, sess *store.Sessi
 		permMode = cli.PermissionMode
 	}
 	if permMode != "" {
-		args = append(args, "--permission-mode", permMode)
+		args = append(args, "--permission-mode", d.permissionMode(permMode))
 	}
 	model := prov.EffectiveModel(sess.ModelOverride)
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	if sess.EffortOverride != "" {
-		args = append(args, "--effort", sess.EffortOverride)
+		args = append(args, d.effortFlag, sess.EffortOverride)
 	}
 	env := cli.EffectiveEnv(prov, model)
 	// Only config env earns a --settings file (endpoint/token the CLI would not
@@ -676,7 +756,9 @@ func (m *Manager) runClaudeTurn(sessionID string, msg Message, sess *store.Sessi
 	// --effort plus the process env (applyEffortEnv), so there is nothing worth
 	// pinning the spawn to <data_dir>/settings/.
 	needsSettings := len(env) > 0
-	applyEffortEnv(env, sess.EffortOverride)
+	if d.effortEnv {
+		applyEffortEnv(env, sess.EffortOverride)
+	}
 	if sess.ClaudeSessionID != "" {
 		args = append(args, "--resume", sess.ClaudeSessionID)
 	}
@@ -813,7 +895,10 @@ func (m *Manager) runClaudeTurn(sessionID string, msg Message, sess *store.Sessi
 		m.setIdle(sessionID, "")
 		// Attach the file-checkpoint uuid to this turn's user event so the UI
 		// can offer a rewind. Best-effort: silent on failure (no button).
-		m.captureCheckpoint(sessionID, msg, sess)
+		// Only dialects whose CLI can restore those files get one.
+		if d.checkpoint {
+			m.captureCheckpoint(sessionID, msg, sess)
+		}
 	}
 }
 

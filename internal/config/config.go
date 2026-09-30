@@ -16,11 +16,14 @@ import (
 // stdout + ~/.claude jsonl transcript); kind "opencode" is the opencode
 // engine (run --format json stdout + `opencode export` transcript); kind
 // "mcode" is MiniMax Code (exec --output-format stream-json stdout +
-// ~/.minimax messages.jsonl transcript).
+// ~/.minimax messages.jsonl transcript); kind "qoder" is Qoder CLI CN, a
+// Claude Code fork that speaks the same stream-json protocol and writes the
+// same transcript layout under ~/.qoder-cn.
 const (
 	KindClaude   = "claude"
 	KindOpenCode = "opencode"
 	KindMcode    = "mcode"
+	KindQoder    = "qoder"
 )
 
 // CLI describes one chat CLI binary.
@@ -57,6 +60,10 @@ type Provider struct {
 	Models []Model           `yaml:"models" json:"-"`
 }
 
+// IsClaude reports whether this cli speaks the Claude Code protocol — the
+// default kind, and the only one carrying the rewind/resident protocol surface.
+func (c *CLI) IsClaude() bool { return c.Kind == KindClaude }
+
 // IsOpenCode reports whether this cli speaks the opencode protocol.
 func (c *CLI) IsOpenCode() bool { return c.Kind == KindOpenCode }
 
@@ -68,6 +75,12 @@ func (c *CLI) IsMcode() bool { return c.Kind == KindMcode }
 
 // IsMcode mirrors CLI.IsMcode for providers.
 func (p *Provider) IsMcode() bool { return p.Kind == KindMcode }
+
+// IsQoder reports whether this cli speaks the Qoder CLI CN protocol.
+func (c *CLI) IsQoder() bool { return c.Kind == KindQoder }
+
+// IsQoder mirrors CLI.IsQoder for providers.
+func (p *Provider) IsQoder() bool { return p.Kind == KindQoder }
 
 // ModelByName returns the model with the given name, or nil.
 func (p *Provider) ModelByName(name string) *Model {

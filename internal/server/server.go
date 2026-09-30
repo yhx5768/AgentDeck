@@ -45,16 +45,38 @@ func validEffort(s string) bool {
 	return false
 }
 
+// validQoderEffort reports whether s is an accepted --reasoning-effort level.
+// The CLI is the authority and rejects anything else at spawn time with
+// "Invalid reasoning effort: <s>. Valid values are: auto, none, low, medium,
+// high, xhigh, max, ultracode" (verified on 1.1.65) — this set is that list,
+// and /api/qoder-models serves it to the UI so both sides agree.
+func validQoderEffort(s string) bool {
+	for _, v := range qoderEfforts {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// qoderEfforts is the reasoning-level set Qoder CLI CN accepts. It is a fixed
+// list on the CLI's side (not per-model metadata like opencode's --variant
+// keys), so it lives here as a constant and is served to the frontend by
+// /api/qoder-models.
+var qoderEfforts = []string{"auto", "none", "low", "medium", "high", "xhigh", "max", "ultracode"}
+
 // effortOKFor validates a session effort/推理 override per engine kind.
 // Claude sessions take the fixed --effort level set above; opencode sessions
 // take a --variant key, whose values are provider- and model-specific (e.g.
 // low/high/max, none/thinking, or nothing at all) — only the shape is checked
-// here, the UI offers the actual keys from the model metadata.
+// here, the UI offers the actual keys from the model metadata. Qoder takes its
+// own fixed --reasoning-effort set (qoderEfforts).
 func effortOKFor(kind, s string) bool {
 	if s == "" {
 		return true // empty = default / clear the override
 	}
-	if kind == config.KindOpenCode {
+	switch kind {
+	case config.KindOpenCode:
 		if s == "" || len(s) > 32 {
 			return false
 		}
@@ -64,6 +86,8 @@ func effortOKFor(kind, s string) bool {
 			}
 		}
 		return true
+	case config.KindQoder:
+		return validQoderEffort(s)
 	}
 	return validEffort(s)
 }
@@ -129,6 +153,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/mcode-models", s.auth(s.handleMcodeModels))
 	s.mux.Handle("GET /api/mcode-sessions", s.auth(s.handleMcodeSessions))
 	s.mux.Handle("GET /api/mcode-sessions/preview", s.auth(s.handleMcodeSessionPreview))
+	s.mux.Handle("GET /api/qoder-models", s.auth(s.handleQoderModels))
+	s.mux.Handle("GET /api/qoder-sessions", s.auth(s.handleQoderSessions))
+	s.mux.Handle("GET /api/qoder-sessions/preview", s.auth(s.handleQoderSessionPreview))
 	s.mux.Handle("POST /api/sessions/import", s.auth(s.handleImport))
 	s.mux.Handle("GET /api/stats", s.auth(s.handleStats))
 	s.mux.Handle("GET /api/notes", s.auth(s.handleGetNotes))
@@ -348,7 +375,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 type sessionView struct {
 	*store.Session
-	Engine        string        `json:"engine"` // "claude" | "opencode" (cli kind)
+	Engine        string        `json:"engine"` // cli kind: claude | opencode | mcode | qoder
 	Status        runner.Status `json:"status"`
 	ResumeCommand string        `json:"resume_command,omitempty"`
 }
@@ -364,6 +391,16 @@ func (s *Server) engineOf(sess *store.Session) string {
 		return cli.Kind
 	}
 	return config.KindClaude
+}
+
+// cliProfile picks the on-disk transcript layout for a cli: the CLIs sharing
+// Claude Code's format differ only in home directory (claudehist.Profile). A
+// nil cli falls back to Claude Code, matching engineOf.
+func cliProfile(cli *config.CLI) claudehist.Profile {
+	if cli != nil && cli.IsQoder() {
+		return claudehist.QoderProfile
+	}
+	return claudehist.ClaudeProfile
 }
 
 // firstProviderOfKind returns the first configured provider of the engine
@@ -388,7 +425,9 @@ func shellQuote(s string) string {
 // gets its endpoint and per-model setup from the CLI itself, so pointing the
 // command at our materialized file would only add a path into this checkout's
 // data dir that breaks as soon as the command travels. opencode engine:
-// opencode -s <sid> (its own store/auth).
+// opencode -s <sid> (its own store/auth). qoder engine: same shape as claude
+// but spelled with qoder's own flags (--reasoning-effort, and no --verbose,
+// which the CLI rejects).
 func (s *Server) resumeCommand(sess *store.Session) string {
 	if sess.ClaudeSessionID == "" {
 		return ""
@@ -399,7 +438,9 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 		cliPath = cli.Path
 	}
 	base := "cd " + shellQuote(sess.Cwd) + " && "
-	switch s.engineOf(sess) {
+	engine := s.engineOf(sess)
+	effortFlag := "--effort"
+	switch engine {
 	case config.KindOpenCode:
 		if cliPath == "" {
 			cliPath = "opencode"
@@ -414,11 +455,16 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 			cliPath = "mcode"
 		}
 		return base + shellQuote(cliPath) + " --session " + sess.ClaudeSessionID
+	case config.KindQoder:
+		effortFlag = "--reasoning-effort"
 	}
 	prov := s.cfg().ProviderByName(sess.Provider)
 	var settings string
 	if cliPath == "" {
 		cliPath = "claude"
+		if engine == config.KindQoder {
+			cliPath = "qoderclicn"
+		}
 	}
 	model := ""
 	if prov != nil {
@@ -444,7 +490,7 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 		cmd += " --model " + shellQuote(model)
 	}
 	if sess.EffortOverride != "" {
-		cmd += " --effort " + shellQuote(sess.EffortOverride)
+		cmd += " " + effortFlag + " " + shellQuote(sess.EffortOverride)
 	}
 	if settings != "" {
 		cmd += " --settings " + shellQuote(settings)
@@ -667,19 +713,17 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// Resident/peer messaging is a Claude Code protocol feature; opencode and
-	// mcode sessions must not enable it (the cli kind that applies after this
-	// patch decides).
-	if (body.Resident != nil || body.PeerName != nil) && cli != nil && (cli.IsOpenCode() || cli.IsMcode()) {
+	// Resident/peer messaging is a Claude Code protocol feature; no other engine
+	// may enable it (the cli kind that applies after this patch decides).
+	if (body.Resident != nil || body.PeerName != nil) && cli != nil && !cli.IsClaude() {
 		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻/peer 消息")
 		return
 	}
-	isOpenCode := cli != nil && cli.IsOpenCode()
-	// Only the claude engine keeps its transcript inside the workspace
-	// (~/.claude/projects/<slug>/), so only it has files to relocate when
-	// the workspace changes. opencode and mcode both key their own store by
-	// session id, and their run is pinned to the session's cwd at spawn.
-	transcriptInWorkspace := !isOpenCode && (cli == nil || !cli.IsMcode())
+	// Only the engines that keep a plain transcript file inside the workspace
+	// (~/.claude/projects/<slug>/, ~/.qoder-cn/projects/<slug>/) have files to
+	// relocate when the workspace changes. opencode and mcode both key their own
+	// store by session id, and their run is pinned to the session's cwd at spawn.
+	transcriptInWorkspace := cli == nil || cli.IsClaude() || cli.IsQoder()
 	// Changing the workspace path. Resolve + validate up front (pure, no side
 	// effects) so a rejected patch never moves files or stops the resident;
 	// the actual relocation happens after every other check passes.
@@ -727,7 +771,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	// is fine: the change still applies, the session just replays its stored
 	// events until new turns write a fresh transcript.
 	if cwdChanged && transcriptInWorkspace && sess.ClaudeSessionID != "" {
-		moved, err := claudehist.MoveSession(sess.Cwd, effCwd, sess.ClaudeSessionID)
+		moved, err := claudehist.MoveSessionIn(cliProfile(cli), sess.Cwd, effCwd, sess.ClaudeSessionID)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "迁移会话历史文件失败："+err.Error())
 			return
@@ -743,7 +787,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			name = runner.CleanPeerName(sess.Name)
 		}
 		if name != "" {
-			if err := claudehist.RenameSession(effCwd, sess.ClaudeSessionID, name); err != nil {
+			if err := claudehist.RenameSessionIn(cliProfile(cli), effCwd, sess.ClaudeSessionID, name); err != nil {
 				writeErr(w, http.StatusBadGateway, "写入会话地址名失败："+err.Error())
 				return
 			}
@@ -1010,10 +1054,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	var merged []*store.Event
 	if sess.ClaudeSessionID != "" {
-		// Replay source depends on the engine: claude sessions are parsed from
-		// ~/.claude jsonl on disk, opencode sessions are exported via the CLI
-		// and mcode sessions are parsed from their own messages.jsonl (both
-		// keep their transcript inside the CLI's own store).
+		// Replay source depends on the engine: claude and qoder sessions are
+		// parsed from the CLI's own jsonl on disk (same format, different home
+		// directory — see claudehist.Profile), opencode sessions are exported
+		// via the CLI and mcode sessions are parsed from their own
+		// messages.jsonl (both keep their transcript inside the CLI's own
+		// store).
 		var extEvents []*store.Event
 		switch s.engineOf(sess) {
 		case config.KindOpenCode:
@@ -1031,10 +1077,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				log.Printf("mcode replay %s: %v", sess.ClaudeSessionID, err)
 			}
 		default:
-			extEvents, _ = claudehist.Convert(sess.Cwd, sess.ClaudeSessionID)
+			// claude and qoder share the transcript reader, differing only in
+			// which home directory it reads.
+			prof := claudehist.ClaudeProfile
+			if s.engineOf(sess) == config.KindQoder {
+				prof = claudehist.QoderProfile
+			}
+			extEvents, _ = claudehist.ConvertIn(prof, sess.Cwd, sess.ClaudeSessionID)
 			// 子代理 transcript 单独解析（subagents/agent-*.jsonl），补齐回放侧
 			// 与实时流（parent_tool_use_id 透传）同形的子代理消息事件。
-			if subEvents, err := claudehist.ConvertSubagents(sess.Cwd, sess.ClaudeSessionID); err == nil {
+			if subEvents, err := claudehist.ConvertSubagentsIn(prof, sess.Cwd, sess.ClaudeSessionID); err == nil {
 				extEvents = append(extEvents, subEvents...)
 			}
 		}
@@ -1392,18 +1444,23 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	// Validate that the source file exists; the SSE handler will read it
 	// live on demand, so we don't need to copy/convert it into our store.
-	if _, err := os.Stat(claudehist.HistoryPath(body.Cwd, body.ClaudeSessionID)); err != nil {
+	// claude and qoder share the reader, differing only in home directory.
+	prof := claudehist.ClaudeProfile
+	if cli.IsQoder() {
+		prof = claudehist.QoderProfile
+	}
+	if _, err := os.Stat(claudehist.HistoryPathIn(prof, body.Cwd, body.ClaudeSessionID)); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			writeErr(w, http.StatusNotFound, "claude session history not found")
+			writeErr(w, http.StatusNotFound, cli.Kind+" session history not found")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	events, err := claudehist.Convert(body.Cwd, body.ClaudeSessionID)
+	events, err := claudehist.ConvertIn(prof, body.Cwd, body.ClaudeSessionID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			writeErr(w, http.StatusNotFound, "claude session history not found")
+			writeErr(w, http.StatusNotFound, cli.Kind+" session history not found")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -1569,12 +1626,13 @@ func (s *Server) handleMcodeModels(w http.ResponseWriter, r *http.Request) {
 // modelKnown reports whether a model id is selectable on this provider.
 //
 // claude and opencode providers declare their models in config.yaml, so
-// membership in that list is the whole answer. mcode is different: its usable
-// set is resolved at run time by the CLI and is deliberately NOT written into
-// config (it would go stale on the next `mcode provider add` or CLI update), so
-// a config-declared list is normally empty and membership would reject every
-// real model. Those models are checked against mcode's own catalog instead;
-// when that catalog cannot be read (mcode not installed, config missing) the
+// membership in that list is the whole answer. mcode and qoder are different:
+// their usable set is resolved at run time by the CLI (mcode from its own
+// catalog, qoder from `qoderclicn --list-models`) and is deliberately NOT
+// written into config — it would go stale on the next CLI update or account
+// change — so a config-declared list is normally empty and membership would
+// reject every real model. Those models are checked against the CLI's own list
+// instead; when that list cannot be read (CLI not installed, not logged in) the
 // check is skipped rather than blocking a session — a bad model name surfaces
 // immediately as the CLI's own error on the first turn, which is a better
 // failure than refusing to create the session at all.
@@ -1582,18 +1640,34 @@ func (s *Server) modelKnown(cli *config.CLI, prov *config.Provider, model string
 	if prov.ModelByName(model) != nil {
 		return true
 	}
-	if cli == nil || prov == nil || !cli.IsMcode() {
+	if cli == nil || prov == nil {
 		return false
 	}
-	bare := mcodehist.BareModelID(model)
-	cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(model, prov.Name))
-	if err != nil {
-		log.Printf("mcode model catalog unavailable, skipping model check for %q: %v", model, err)
-		return true
+	switch {
+	case cli.IsMcode():
+		bare := mcodehist.BareModelID(model)
+		cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(model, prov.Name))
+		if err != nil {
+			log.Printf("mcode model catalog unavailable, skipping model check for %q: %v", model, err)
+			return true
+		}
+		// An unknown bare id is rejected: the catalog was readable, so this is a
+		// genuine "this model does not exist" rather than "we cannot tell".
+		return cat.Find(bare) != nil
+	case cli.IsQoder():
+		models, err := qoderModels(cli.Path, false)
+		if err != nil {
+			log.Printf("qoder model list unavailable, skipping model check for %q: %v", model, err)
+			return true
+		}
+		for _, m := range models {
+			if m.Name == model {
+				return true
+			}
+		}
+		return false
 	}
-	// An unknown bare id is rejected: the catalog was readable, so this is a
-	// genuine "this model does not exist" rather than "we cannot tell".
-	return cat.Find(bare) != nil
+	return false
 }
 
 // mcodeProviderIDFromModel recovers the mcode provider id from a model name
@@ -1673,10 +1747,17 @@ func (s *Server) handleMcodeSessionPreview(w http.ResponseWriter, r *http.Reques
 // This mirrors what `claude --resume <id> --fork-session` does, but without
 // having to run a model turn.
 func forkClaudeHistory(cwd, oldID string) (string, error) {
-	srcPath := claudehist.HistoryPath(cwd, oldID)
+	return forkHistoryIn(claudehist.ClaudeProfile, cwd, oldID)
+}
+
+// forkHistoryIn duplicates a session transcript under a fresh id, rewriting
+// every occurrence of the old id so the fork resumes independently. The home
+// directory is the only thing that varies between the CLIs sharing this format.
+func forkHistoryIn(p claudehist.Profile, cwd, oldID string) (string, error) {
+	srcPath := claudehist.HistoryPathIn(p, cwd, oldID)
 	raw, err := os.ReadFile(srcPath)
 	if err != nil {
-		return "", fmt.Errorf("read claude history: %w", err)
+		return "", fmt.Errorf("read %s history: %w", p.Engine, err)
 	}
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -1686,16 +1767,17 @@ func forkClaudeHistory(cwd, oldID string) (string, error) {
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
 	newID := fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 	forked := bytes.ReplaceAll(raw, []byte(oldID), []byte(newID))
-	if err := os.WriteFile(claudehist.HistoryPath(cwd, newID), forked, 0o600); err != nil {
+	if err := os.WriteFile(claudehist.HistoryPathIn(p, cwd, newID), forked, 0o600); err != nil {
 		return "", fmt.Errorf("write forked history: %w", err)
 	}
 	return newID, nil
 }
 
 // handleFork creates a new session as a real branch of the source: the
-// on-disk claude transcript is duplicated under a new ClaudeSessionID (the
-// equivalent of `claude --resume <id> --fork-session`), so the fork and the
-// source diverge from this point on and resume independently.
+// on-disk transcript is duplicated under a new ClaudeSessionID (the equivalent
+// of `claude --resume <id> --fork-session`), so the fork and the source diverge
+// from this point on and resume independently. Supported by the engines whose
+// transcript is a plain file we can copy (claude, qoder).
 func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	src := s.st.Get(id)
@@ -1703,8 +1785,14 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return
 	}
-	if s.engineOf(src) == config.KindOpenCode {
-		writeErr(w, http.StatusBadRequest, "opencode 引擎暂不支持 fork")
+	engine := s.engineOf(src)
+	prof := claudehist.ClaudeProfile
+	switch engine {
+	case config.KindQoder:
+		prof = claudehist.QoderProfile
+	case config.KindClaude:
+	default:
+		writeErr(w, http.StatusBadRequest, engine+" 引擎暂不支持 fork")
 		return
 	}
 	if src.ClaudeSessionID == "" {
@@ -1719,7 +1807,7 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = src.Name + " (fork)"
 	}
-	forkedID, err := forkClaudeHistory(src.Cwd, src.ClaudeSessionID)
+	forkedID, err := forkHistoryIn(prof, src.Cwd, src.ClaudeSessionID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1752,6 +1840,10 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 // cc-webui's event log are truncated before that message. The rolled-back
 // message text is returned as a draft to refill the composer. Requires no
 // running/queued turn and a checkpoint uuid on the target user event.
+//
+// claude-only: --rewind-files (the file half) exists on no other engine, and
+// only the claude dialect captures a checkpoint uuid in the first place, so
+// every other engine is refused up front rather than failing mid-operation.
 func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess := s.st.Get(id)
@@ -1759,8 +1851,8 @@ func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return
 	}
-	if s.engineOf(sess) == config.KindOpenCode {
-		writeErr(w, http.StatusBadRequest, "opencode 引擎不支持 rewind（checkpoint 仅 claude 会话产生）")
+	if eng := s.engineOf(sess); eng != config.KindClaude {
+		writeErr(w, http.StatusBadRequest, eng+" 引擎不支持 rewind（文件回滚仅 claude 会话具备）")
 		return
 	}
 	var body struct {

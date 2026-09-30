@@ -18,14 +18,20 @@ default_cwd: "~"
 #                 kind: opencode = opencode 引擎（run --format json 协议）
 #                 kind: mcode = MiniMax Code 引擎（exec --output-format
 #                 stream-json 协议，事件形状与前两者都不同，见 AGENTS.md §8）
+#                 kind: qoder = Qoder CLI CN 引擎（Claude Code 的 fork，协议同
+#                 claude，只是没有 --verbose、档位 flag 叫 --reasoning-effort、
+#                 permission_mode 用下划线拼写，transcript 在 ~/.qoder-cn）
 #   providers[] - 一个模型后端（kind: claude 的共享 env 是 BASE_URL/TOKEN；
 #                 kind: opencode 的 provider 名必须等于 opencode CLI 的
 #                 providerID，凭据走 opencode 自己的 auth.json，env 不生效；
-#                 kind: mcode 的凭据走 mcode 自己的登录态，env 同样不生效）
+#                 kind: mcode 的凭据走 mcode 自己的登录态，env 同样不生效；
+#                 kind: qoder 的凭据走 `qoderclicn login` 的登录态，env 不生效）
 #   providers[].models[] - 该后端可选的模型（每个模型可带自己的 env）。
-#                 kind: mcode 的这一层可以留空：mcode 的可用模型是动态的，
-#                 前端下拉由服务端读它自己的运行时配置（~/.minimax/config.yaml）
-#                 经 /api/mcode-models 提供，写死在这里只会过期。
+#                 kind: mcode / qoder 的这一层可以留空：可用模型是动态的，
+#                 前端下拉由服务端读 CLI 自己那份清单（mcode 读
+#                 ~/.minimax/config.yaml 经 /api/mcode-models；qoder 跑
+#                 `qoderclicn --list-models` 经 /api/qoder-models），
+#                 写死在这里只会过期。
 # 生效 env：cli.env → provider.env → model.env（后者覆盖前者）
 # 会话的引擎 = 其 cli 的 kind；创建/修改/导入时 cli 与 provider 的 kind 必须一致。
 clis:
@@ -58,6 +64,14 @@ clis:
                                    # 需要交互式批准，headless 下无人应答）
     path: "mcode"                 # `mcode login` 过的凭据，无需额外 env
     permission_mode: "bypassPermissions"
+    args: []
+    env: {}
+
+  - name: "qoder"
+    kind: "qoder"                 # Qoder CLI CN（Claude Code 的 fork）
+    path: "qoderclicn"            # 官方安装脚本装到 ~/.local/bin/qoderclicn
+                                   # 凭据走 `qoderclicn login` 的登录态，无需 env
+    permission_mode: "bypassPermissions"   # 内部转成 --permission-mode bypass_permissions
     args: []
     env: {}
 
@@ -111,6 +125,18 @@ providers:
   - name: "mcode-minimax"
     kind: "mcode"
     env: {}                       # 凭据来自 `mcode login`，config 的 env 不参与
+    models: []
+
+  # qoder 引擎示例：provider 名只需在 cc-webui 内唯一。凭据来自 `qoderclicn
+  # login`，config 的 env 不参与。models 留空即可——前端下拉由服务端跑
+  # `qoderclicn --list-models` 动态读取（连同推理档位一起），写死不会随账号
+  # 套餐或 CLI 升级而更新。
+  # 注意：可用模型是分档的。实测 Qwen3.8-Flash 免费（响应里 billable:false），
+  # 而 Qwen3.8-Max 走积分计费，额度用尽会直接报 "Your personal Credits have
+  # been exhausted"。想要一个不花钱的会话，就把模型选成 Flash。
+  - name: "qoder-cn"
+    kind: "qoder"
+    env: {}
     models: []
 
   - name: "sensenova"                # 商汤日日新（SenseNova），见 https://platform.sensenova.cn/docs

@@ -185,9 +185,10 @@ func (m *Manager) EnsureResident(sessionID string) error {
 		return fmt.Errorf("session is not resident-enabled")
 	}
 	// Resident/peer messaging is a Claude Code protocol feature (stream-json
-	// input + registry); opencode has no equivalent.
-	if cli := m.cfg().CLIByName(sess.CLI); cli != nil && cli.IsOpenCode() {
-		return fmt.Errorf("opencode 引擎不支持常驻/peer 消息")
+	// input + a live-session registry naming each process); no other engine has
+	// an equivalent. Kept in sync with the server-side 400 in handlePatchSession.
+	if cli := m.cfg().CLIByName(sess.CLI); cli != nil && !cli.IsClaude() {
+		return fmt.Errorf("%s 引擎不支持常驻/peer 消息", cli.Kind)
 	}
 	_, err := m.ensureProc(sessionID, sess)
 	return err
@@ -298,7 +299,7 @@ func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residen
 		args = append(args, "--effort", sess.EffortOverride)
 	}
 	env := cli.EffectiveEnv(prov, model)
-	// Same rule as runClaudeTurn: the file is for config env only, an env-less
+	// Same rule as runStreamJSONTurn: the file is for config env only, an env-less
 	// provider takes its level from --effort and the process env.
 	needsSettings := len(env) > 0
 	applyEffortEnv(env, sess.EffortOverride)

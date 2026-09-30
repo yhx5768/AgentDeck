@@ -22,13 +22,13 @@ cc-webui 是 Claude Code（以及任何兼容 CLI）的 Web 控制台。它把�
 |---|---|
 | 单二进制部署 | `go build` 生成一个可执行文件，前端资源已用 `go:embed` 打包，无需 Node 构建。 |
 | 多 CLI / Provider / Model | 配置文件定义多个 Claude 兼容 CLI 与 API 后端；会话内一键热切换 CLI、Provider、Model、权限模式。 |
-| 导入已有会话 | 扫描 `~/.claude/projects`，把本地历史会话一键接进 Web UI 继续聊。 |
+| 导入已有会话 | 扫描各引擎自己的历史目录（`~/.claude/projects`、`~/.qoder-cn/projects`、opencode / mcode 的会话库），把本地历史会话一键接进 Web UI 继续聊。 |
+| 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 claude transcript 一并截断，消息文本回填输入框重发。等价 TUI 双击 Esc。Bash 改的文件无法回滚。仅 claude 引擎有（文件回滚依赖 CLI 的 `--rewind-files`），其余引擎入口隐藏。 |
 | 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。CLI 开启 `partial_messages` 后支持打字机式逐 token 增量渲染（`--include-partial-messages`）。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块。 |
 | 轨迹视图 | 会话内「轨迹」tab 把同一份事件流投影成按轮(turn)分组的台账：折叠/展开轮次、按角色（用户/助手/工具）筛选、关键词搜索，点开单条记录看 summary / preview / raw 三档详情。对话流之外的另一种审阅视角。 |
-| 使用统计 | 统计本机全部会话（Claude Code、opencode、mcode 三个引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/连续天数/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。opencode 走它的 CLI 官方面（`session list` 只看得见当前目录所属的项目桶，故枚举全部项目额外走一条只读 `opencode db` 查询，实测只读不写，失败自动退回按桶列举）；mcode 读它自己的 `messages.jsonl` transcript（mcode 没有 `session list`/`export` 这类 CLI 面）。增量缓存——首次全量扫描较慢，之后秒回。 |
+| 使用统计 | 统计本机全部会话（Claude Code、opencode、mcode、qoder 四个引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/连续天数/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。opencode 走它的 CLI 官方面（`session list` 只看得见当前目录所属的项目桶，故枚举全部项目额外走一条只读 `opencode db` 查询，实测只读不写，失败自动退回按桶列举）；mcode 读它自己的 `messages.jsonl` transcript（mcode 没有 `session list`/`export` 这类 CLI 面）；qoder 与 Claude Code 同构，读 `~/.qoder-cn/projects` 的 jsonl。增量缓存——首次全量扫描较慢，之后秒回。注意 qoder 的 `usage` 不上报 token 数（计费走 `credits`），所以对 qoder 会话而言消息数/工具数/活跃天数都准，token 类指标对它无意义。 |
 | 本地文件预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`），右侧面板只读打开并自动跳转到对应行号。 |
-| 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 claude transcript 一并截断，消息文本回填输入框重发。等价 TUI 双击 Esc。Bash 改的文件无法回滚。 |
 | 任务完成通知 | 任务跑完（或出错）时弹系统横幅通知 + 播放提示音，点击通知直达对应会话。侧边栏「设置」里可分别开关，配置存 localStorage 跟着浏览器走，不同终端各自配置。 |
 | TUI 与 Web 自由切换 | 每个会话都有 session id，点「resume」复制命令即可回到 TUI 继续跟进，Web 里做的一切状态都在。复制的命令带 `--model`/`--effort`，端点鉴权在 config env 里的 provider（kimi / sensenova 等）再多带一个物化好的 `--settings`；无 env 的 provider（如 `ducc-models`）只带前两个，模型由 CLI 自己解析，命令不依赖本机 data 目录、可拷走。 |
 | 移动优先 PWA | 抽屉导航、底部操作面板、响应式布局、深浅主题切换。 |
@@ -119,15 +119,16 @@ providers:
 
 ## 工作原理（简要）
 
-cc-webui 有三个引擎，由 `config.yaml` 里 cli/provider 的 `kind` 决定（`claude` 缺省，另有 `opencode` 与 `mcode`）。会话绑定单一引擎，创建时 cli 与 provider 的 kind 必须一致。
+cc-webui 有四个引擎，由 `config.yaml` 里 cli/provider 的 `kind` 决定（`claude` 缺省，另有 `opencode`、`mcode` 与 `qoder`）。会话绑定单一引擎，创建时 cli 与 provider 的 kind 必须一致。
 
 | 引擎 | 一条消息启动的命令 | 会话 id | 历史回放来源 |
 |---|---|---|---|
 | `claude` | `claude -p --output-format stream-json --verbose [--resume <sid>] [--model <m>]` | uuid | `~/.claude/projects/**/<sid>.jsonl` |
 | `opencode` | `opencode run --format json -s <sid> [-m provider/model]` | `ses_…` | `opencode export <sid>` |
 | `mcode` | `mcode exec --output-format stream-json [--session <mvs_…>] [--model <p/m>] [--effort <l>]` | `mvs_…` | `~/.minimax/v2/sessions/**/messages.jsonl` |
+| `qoder` | `qoderclicn -p --output-format stream-json [--resume <sid>] [--model <m>] [--reasoning-effort <l>]` | uuid | `~/.qoder-cn/projects/**/<sid>.jsonl` |
 
-三个引擎的内部事件格式互不相同，但都经各自的适配层转成同一套 canonical 事件再渲染，所以工具卡片、轨迹视图、回放/实时一致性在前端是共用一套逻辑的。
+四个引擎的内部事件格式不完全相同，但都经各自的适配层转成同一套 canonical 事件再渲染，所以工具卡片、轨迹视图、回放/实时一致性在前端是共用一套逻辑的。`qoder`（Qoder CLI CN）是 Claude Code 的 fork，事件格式与 transcript 布局都与 `claude` 同构，只是没有 `--verbose`、档位 flag 叫 `--reasoning-effort`，历史放在 `~/.qoder-cn` 下——因此它不需要单独的适配层。
 
 - claude 引擎：每条用户消息会启动一个 `claude -p --output-format stream-json --verbose` 进程，prompt 走 stdin 注入。
 - 首轮从 `system/init` 事件捕获 `session_id`，后续轮次用 `--resume` 续接，因此**切换 CLI / Provider / Model / 权限模式不会丢失上下文**。
@@ -184,7 +185,9 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 | POST | `/api/sessions/{id}/rewind` | 回滚到某条用户消息 `{checkpoint}`（文件+对话） |
 | GET | `/api/sessions/{id}/events` | SSE：历史回放 + 实时事件 |
 | GET | `/api/claude-sessions?cwd=` | 扫描本机 `~/.claude/projects` |
-| POST | `/api/sessions/import` | 导入已有 claude session |
+| GET | `/api/qoder-sessions?cwd=` | 扫描本机 `~/.qoder-cn/projects` |
+| GET | `/api/qoder-models?cli=&provider=` | qoder 可用模型 + 推理档位（`qoderclicn --list-models`，10 分钟缓存） |
+| POST | `/api/sessions/import` | 导入已有 session（按 cli 的 kind 决定读哪个引擎的历史） |
 | GET | `/api/files?path=` | 读取本地文件（限会话工作区内） |
 
 ---
@@ -195,9 +198,9 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 main.go                  # 入口 + go:embed
 internal/config/         # 配置加载
 internal/store/          # 会话元数据 + 事件日志持久化
-internal/runner/         # claude 进程管理：队列、流解析、事件广播、停止
+internal/runner/         # CLI 进程管理：队列、流解析、事件广播、停止
 internal/server/         # HTTP 路由、鉴权、SSE
-internal/claudehist/     # ~/.claude/projects 扫描与导入转换
+internal/claudehist/     # ~/.claude 与 ~/.qoder-cn 的 projects 扫描、导入转换、统计
 internal/opencodehist/   # opencode 引擎适配：事件转换、export 回放、模型变体、统计
 internal/mcodehist/      # mcode 引擎适配：stream-json 事件转换、transcript 回放、模型目录、统计
 web/                     # 免构建前端（vanilla JS + vendor 的 marked/DOMPurify/highlight.js）

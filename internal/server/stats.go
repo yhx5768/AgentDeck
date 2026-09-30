@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"cc-webui/internal/claudehist"
+	"cc-webui/internal/config"
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/runner"
@@ -22,12 +23,16 @@ var (
 	claudeStatsCache   = claudehist.NewStatsCache()
 	opencodeStatsCache = opencodehist.NewStatsCache()
 	mcodeStatsCache    = mcodehist.NewStatsCache()
+	// qoder reads the same transcript format as claude, from its own home
+	// directory, and reports under its own engine kind.
+	qoderStatsCache = claudehist.NewStatsCacheFor(config.KindQoder)
 )
 
-// handleStats 返回全部会话（claude、opencode、mcode 三引擎）的使用统计。两侧
-// claude/opencode 各自增量聚合后合并成一份 Stats：claude 侧只重扫 mtime/size
-// 变了的 jsonl，opencode 侧只重导出 `updated` 前进的会话，mcode 侧只重解析
-// 指纹变了的 messages.jsonl。?fresh=1 清空两侧缓存强制全量重扫。
+// handleStats 返回全部会话（claude、opencode、mcode、qoder 四引擎）的使用统计。
+// 各引擎各自增量聚合后合并成一份 Stats：claude/qoder 侧只重扫 mtime/size 变了
+// 的 jsonl（同一个 reader，两个 home 目录、两个 engine kind），opencode 侧只重
+// 导出 `updated` 前进的会话，mcode 侧只重解析指纹变了的 messages.jsonl。
+// ?fresh=1 清空缓存强制全量重扫。
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	fresh := r.URL.Query().Get("fresh") == "1"
 	statsMu.Lock()
@@ -42,9 +47,40 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if s.hasMcodeCLI() {
 		fas = append(fas, mcodeStatsCache.Refresh(fresh)...)
 	}
+	// qoder 的 home dir 是 per-installation（~/.qoder-cn），所以和 mcode 一样
+	// 按「有没有配 qoder cli」决定是否扫；模型名另有一层修正，见 qoderModelHints。
+	if s.hasQoderCLI() {
+		fas = append(fas, qoderStatsCache.RefreshWithModels(
+			claudehist.HistoryDirIn(claudehist.QoderProfile, ""), s.qoderModelHints(), fresh)...)
+	}
 	stats := statsagg.Recompute(fas)
 	statsMu.Unlock()
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// qoderModelHints 返回 session id -> 模型名，用来盖掉 qoder transcript 里记的
+// 内部 key（"qfmodel"，CLI 归一化后的值，磁盘上从头到尾没有显示名）。cc-webui
+// 知道每个托管会话是以哪个模型起的（spawn 的 --model 就来自这里），所以按模型
+// 分桶时用真名。没被 cc-webui 托管、也没显式选过模型的会话无从得知，退回
+// transcript 自己的值。
+func (s *Server) qoderModelHints() map[string]string {
+	cfg := s.cfg()
+	hints := map[string]string{}
+	for _, sess := range s.st.List() {
+		if sess.ClaudeSessionID == "" || s.engineOf(sess) != config.KindQoder {
+			continue
+		}
+		model := sess.ModelOverride
+		if model == "" {
+			if p := cfg.ProviderByName(sess.Provider); p != nil {
+				model = p.DefaultModelName()
+			}
+		}
+		if model != "" {
+			hints[sess.ClaudeSessionID] = model
+		}
+	}
+	return hints
 }
 
 // hasMcodeCLI reports whether any configured cli uses the mcode engine.
@@ -52,6 +88,17 @@ func (s *Server) hasMcodeCLI() bool {
 	cfg := s.cfg()
 	for i := range cfg.CLIs {
 		if cfg.CLIs[i].IsMcode() {
+			return true
+		}
+	}
+	return false
+}
+
+// hasQoderCLI reports whether any configured cli uses the qoder engine.
+func (s *Server) hasQoderCLI() bool {
+	cfg := s.cfg()
+	for i := range cfg.CLIs {
+		if cfg.CLIs[i].IsQoder() {
 			return true
 		}
 	}

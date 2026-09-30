@@ -27,7 +27,12 @@ func truncatePreview(s string) string {
 // 口径与 Convert 一致：跳过 sidechain/meta、tool_result 回显（无文本的 user
 // 行）和系统注入的 xml/中断文本；assistant 的消息 id 相同的内容块行折叠为一条。
 func Preview(cwd, sessionID string, maxMessages int) []PreviewMessage {
-	return previewFile(HistoryPath(cwd, sessionID), maxMessages)
+	return PreviewIn(ClaudeProfile, cwd, sessionID, maxMessages)
+}
+
+// PreviewIn is Preview for an arbitrary profile.
+func PreviewIn(p Profile, cwd, sessionID string, maxMessages int) []PreviewMessage {
+	return previewFile(HistoryPathIn(p, cwd, sessionID), maxMessages)
 }
 
 // previewFile 是 Preview 的路径直通形式，便于注入测试 fixture。

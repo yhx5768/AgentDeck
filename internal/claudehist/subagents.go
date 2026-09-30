@@ -53,7 +53,17 @@ func readSubagentMeta(path string) subagentMeta {
 // missing or empty subagent dir yields a nil slice and os.ErrNotExist-style
 // error from ReadDir.
 func ConvertSubagents(cwd, sessionID string) ([]*store.Event, error) {
-	dir := filepath.Join(HistoryDir(cwd), sessionID, "subagents")
+	return ConvertSubagentsIn(ClaudeProfile, cwd, sessionID)
+}
+
+// ConvertSubagentsIn is ConvertSubagents for an arbitrary profile. Qoder CLI CN
+// writes the same convention — <slug>/<sid>/subagents/agent-<agentId>.jsonl
+// with a sibling agent-<agentId>.meta.json carrying agentType/toolUseId/
+// description — so the same conversion applies; only the file name embeds the
+// agent type ("agent-general-purpose-<hash>.jsonl"), which the agent-*.jsonl
+// prefix filter already tolerates.
+func ConvertSubagentsIn(p Profile, cwd, sessionID string) ([]*store.Event, error) {
+	dir := filepath.Join(HistoryDirIn(p, cwd), sessionID, "subagents")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err

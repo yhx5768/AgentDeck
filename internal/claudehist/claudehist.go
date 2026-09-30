@@ -1,5 +1,12 @@
 // Package claudehist scans and converts Claude Code's own on-disk session
 // history (~/.claude/projects/<slug>/<session-id>.jsonl).
+//
+// Qoder CLI CN is a Claude Code fork: byte-compatible transcripts (same line
+// shapes, same <slug>/<sid>.jsonl plus <sid>/subagents/ layout, same meta.json
+// keys) that differ only in the home directory they live under. A Profile
+// selects which one to read, so one converter serves both engines; the
+// package-level functions below are the Claude Code spelling of the *In
+// variants.
 package claudehist
 
 import (
@@ -15,7 +22,24 @@ import (
 	"sync"
 	"time"
 
+	"cc-webui/internal/config"
 	"cc-webui/internal/store"
+)
+
+// Profile selects which CLI's on-disk layout this package reads: the
+// home-relative directory holding projects/, plus the engine kind recorded in
+// stats aggregates.
+type Profile struct {
+	Home   string // ".claude" | ".qoder-cn"
+	Engine string // config.KindClaude | config.KindQoder
+}
+
+var (
+	// ClaudeProfile reads Claude Code's own history.
+	ClaudeProfile = Profile{Home: ".claude", Engine: config.KindClaude}
+	// QoderProfile reads Qoder CLI CN's history — a Claude Code fork with the
+	// same layout under a different home directory.
+	QoderProfile = Profile{Home: ".qoder-cn", Engine: config.KindQoder}
 )
 
 // SessionInfo summarizes one on-disk claude session.
@@ -37,22 +61,34 @@ func slugify(path string) string {
 	}, path)
 }
 
-func projectsDir() string {
+func projectsDirIn(p Profile) string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "projects")
+	return filepath.Join(home, p.Home, "projects")
+}
+
+// projectsDir is Claude Code's projects root.
+func projectsDir() string { return projectsDirIn(ClaudeProfile) }
+
+// HistoryDirIn returns the history directory for a cwd ("" -> the projects
+// root) under profile p.
+func HistoryDirIn(p Profile, cwd string) string {
+	if cwd == "" {
+		return projectsDirIn(p)
+	}
+	return filepath.Join(projectsDirIn(p), slugify(cwd))
 }
 
 // HistoryDir returns the history directory for a cwd ("" -> the projects root).
-func HistoryDir(cwd string) string {
-	if cwd == "" {
-		return projectsDir()
-	}
-	return filepath.Join(projectsDir(), slugify(cwd))
+func HistoryDir(cwd string) string { return HistoryDirIn(ClaudeProfile, cwd) }
+
+// HistoryPathIn returns the full path to a specific session's jsonl.
+func HistoryPathIn(p Profile, cwd, sessionID string) string {
+	return filepath.Join(HistoryDirIn(p, cwd), sessionID+".jsonl")
 }
 
 // HistoryPath returns the full path to a specific claude session's jsonl.
 func HistoryPath(cwd, sessionID string) string {
-	return filepath.Join(HistoryDir(cwd), sessionID+".jsonl")
+	return HistoryPathIn(ClaudeProfile, cwd, sessionID)
 }
 
 type histLine struct {
@@ -104,7 +140,12 @@ func isRealUserPrompt(l histLine) (string, bool) {
 // found"); the caller should clear the claude session id so the next turn
 // starts fresh instead.
 func HasUserPrompt(cwd, sessionID string) bool {
-	for _, l := range scanFile(HistoryPath(cwd, sessionID)) {
+	return HasUserPromptIn(ClaudeProfile, cwd, sessionID)
+}
+
+// HasUserPromptIn is HasUserPrompt for an arbitrary profile.
+func HasUserPromptIn(p Profile, cwd, sessionID string) bool {
+	for _, l := range scanFile(HistoryPathIn(p, cwd, sessionID)) {
 		if _, ok := isRealUserPrompt(l); ok {
 			return true
 		}
@@ -118,12 +159,17 @@ func HasUserPrompt(cwd, sessionID string) bool {
 // id. Returns "" if no match (e.g. multimodal/image-only messages, or the
 // prompt wasn't logged).
 func LastUserUUID(cwd, sessionID, matchText string) string {
+	return LastUserUUIDIn(ClaudeProfile, cwd, sessionID, matchText)
+}
+
+// LastUserUUIDIn is LastUserUUID for an arbitrary profile.
+func LastUserUUIDIn(p Profile, cwd, sessionID, matchText string) string {
 	matchText = strings.TrimSpace(matchText)
 	if matchText == "" {
 		return ""
 	}
 	var lastUUID string
-	for _, l := range scanFile(HistoryPath(cwd, sessionID)) {
+	for _, l := range scanFile(HistoryPathIn(p, cwd, sessionID)) {
 		if t, ok := isRealUserPrompt(l); ok && t == matchText {
 			lastUUID = l.UUID
 		}
@@ -140,7 +186,12 @@ func LastUserUUID(cwd, sessionID, matchText string) string {
 // Lines are matched by raw byte index (not via scanFile, which skips
 // unparseable lines) so the kept prefix is an exact byte-for-byte prefix.
 func TruncateBeforeUUID(cwd, sessionID, uuid string) (int, error) {
-	path := HistoryPath(cwd, sessionID)
+	return TruncateBeforeUUIDIn(ClaudeProfile, cwd, sessionID, uuid)
+}
+
+// TruncateBeforeUUIDIn is TruncateBeforeUUID for an arbitrary profile.
+func TruncateBeforeUUIDIn(p Profile, cwd, sessionID, uuid string) (int, error) {
+	path := HistoryPathIn(p, cwd, sessionID)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
@@ -218,17 +269,23 @@ func textOf(raw json.RawMessage) string {
 // List returns on-disk claude sessions for cwd ("" lists every project),
 // most recently modified first.
 func List(cwd string) ([]*SessionInfo, error) {
+	return ListIn(ClaudeProfile, cwd)
+}
+
+// ListIn is List for an arbitrary profile.
+func ListIn(p Profile, cwd string) ([]*SessionInfo, error) {
+	root := projectsDirIn(p)
 	dirs := []string{}
 	if cwd != "" {
-		dirs = append(dirs, HistoryDir(cwd))
+		dirs = append(dirs, HistoryDirIn(p, cwd))
 	} else {
-		entries, err := os.ReadDir(projectsDir())
+		entries, err := os.ReadDir(root)
 		if err != nil {
 			return nil, err
 		}
 		for _, e := range entries {
 			if e.IsDir() {
-				dirs = append(dirs, filepath.Join(projectsDir(), e.Name()))
+				dirs = append(dirs, filepath.Join(root, e.Name()))
 			}
 		}
 	}
@@ -279,7 +336,15 @@ func List(cwd string) ([]*SessionInfo, error) {
 
 // Convert transforms an on-disk claude history file into cc-webui events.
 func Convert(cwd, sessionID string) ([]*store.Event, error) {
-	path := filepath.Join(HistoryDir(cwd), sessionID+".jsonl")
+	return ConvertIn(ClaudeProfile, cwd, sessionID)
+}
+
+// ConvertIn is Convert for an arbitrary profile. Qoder's transcripts carry a
+// few extra bookkeeping line types (runtime-config, active-leaf, last-prompt,
+// workspace-directories) that carry no message content and fall through the
+// type switch untouched, so the same conversion applies verbatim.
+func ConvertIn(p Profile, cwd, sessionID string) ([]*store.Event, error) {
+	path := filepath.Join(HistoryDirIn(p, cwd), sessionID+".jsonl")
 	lines := scanFile(path)
 	if len(lines) == 0 {
 		return nil, os.ErrNotExist
@@ -366,6 +431,13 @@ func Convert(cwd, sessionID string) ([]*store.Event, error) {
 // at process start — callers renaming a live session should restart it for
 // the new address to take effect.
 func RenameSession(cwd, sessionID, title string) error {
+	return RenameSessionIn(ClaudeProfile, cwd, sessionID, title)
+}
+
+// RenameSessionIn is RenameSession for an arbitrary profile. Qoder's transcript
+// honours the same trailing custom-title line, which is also how its TUI names
+// a session.
+func RenameSessionIn(p Profile, cwd, sessionID, title string) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return fmt.Errorf("title must be non-empty")
@@ -378,7 +450,7 @@ func RenameSession(cwd, sessionID, title string) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(HistoryPath(cwd, sessionID), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(HistoryPathIn(p, cwd, sessionID), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -396,11 +468,18 @@ func RenameSession(cwd, sessionID, title string) error {
 // another machine) or the slugs are identical, and fails without touching
 // anything when the destination already holds the same session.
 func MoveSession(cwdFrom, cwdTo, sessionID string) (bool, error) {
+	return MoveSessionIn(ClaudeProfile, cwdFrom, cwdTo, sessionID)
+}
+
+// MoveSessionIn is MoveSession for an arbitrary profile. Qoder stores its
+// transcripts in the same per-slug layout, so relocating a session's workspace
+// moves them the same way and --resume keeps working from the new path.
+func MoveSessionIn(p Profile, cwdFrom, cwdTo, sessionID string) (bool, error) {
 	if sessionID == "" || cwdFrom == cwdTo {
 		return false, nil
 	}
-	srcDir := HistoryDir(cwdFrom)
-	dstDir := HistoryDir(cwdTo)
+	srcDir := HistoryDirIn(p, cwdFrom)
+	dstDir := HistoryDirIn(p, cwdTo)
 	if srcDir == dstDir {
 		return false, nil
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"cc-webui/internal/config"
@@ -20,6 +21,7 @@ func resumeTestServer(t *testing.T, dir string) *Server {
 		CLIs: []config.CLI{
 			{Name: "ducc", Path: "/opt/ducc"},
 			{Name: "claude", Path: "claude"},
+			{Name: "qoder", Kind: config.KindQoder, Path: "/opt/qoderclicn"},
 		},
 		Providers: []config.Provider{
 			// Env-less backend: models are routed by the launcher itself,
@@ -28,6 +30,9 @@ func resumeTestServer(t *testing.T, dir string) *Server {
 			{Name: "sensenova",
 				Env:    map[string]string{"ANTHROPIC_BASE_URL": "https://token.sensenova.cn"},
 				Models: []config.Model{{Name: "sensenova-6.8-flash-lite", Env: map[string]string{"ANTHROPIC_MODEL": "sensenova-6.8-flash-lite"}}}},
+			// qoder's models are dynamic (the CLI owns the list), so the config
+			// declares none and the provider carries no env — login state.
+			{Name: "qoder-cn", Kind: config.KindQoder, Models: []config.Model{}},
 		},
 	}
 	cm := config.NewManager(filepath.Join(dir, "config.yaml"), cfg)
@@ -114,5 +119,83 @@ func TestResumeCommandWithoutEngineSession(t *testing.T) {
 	s := resumeTestServer(t, t.TempDir())
 	if got := s.resumeCommand(&store.Session{ID: "s1", CLI: "ducc", Provider: "ducc-models", Cwd: "/w"}); got != "" {
 		t.Fatalf("resumeCommand = %q, want empty", got)
+	}
+}
+
+// TestResumeCommandQoderUsesItsOwnFlags pins the qoder spelling: the reasoning
+// level travels on --reasoning-effort (qoderclicn rejects --effort outright),
+// and an env-less provider still gets no --settings so the copied command stays
+// portable. Model comes from the session override — the CLI's own dynamic list
+// is not in config, so an empty override must not emit a bare --model.
+func TestResumeCommandQoderUsesItsOwnFlags(t *testing.T) {
+	s := resumeTestServer(t, t.TempDir())
+	sess := &store.Session{
+		ID: "s1", CLI: "qoder", Provider: "qoder-cn",
+		ModelOverride: "Qwen3.8-Flash", EffortOverride: "ultracode",
+		Cwd: "/w", ClaudeSessionID: "sid",
+	}
+	got := s.resumeCommand(sess)
+	want := "cd '/w' && '/opt/qoderclicn' --resume sid --model 'Qwen3.8-Flash' --reasoning-effort 'ultracode'"
+	if got != want {
+		t.Fatalf("resumeCommand =\n  %s\nwant\n  %s", got, want)
+	}
+	if strings.Contains(got, "--effort ") {
+		t.Fatalf("qoder resume command must not use claude's --effort: %s", got)
+	}
+}
+
+// TestResumeCommandQoderDefaultBinary: with no configured cli path the command
+// falls back to the binary name on PATH, not claude's.
+func TestResumeCommandQoderDefaultBinary(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		DataDir: dir,
+		CLIs:    []config.CLI{{Name: "qoder", Kind: config.KindQoder}},
+		Providers: []config.Provider{
+			{Name: "qoder-cn", Kind: config.KindQoder, Models: []config.Model{}},
+		},
+	}
+	cm := config.NewManager(filepath.Join(dir, "config.yaml"), cfg)
+	s := &Server{cm: cm, mgr: runner.NewManager(cm, nil)}
+	got := s.resumeCommand(&store.Session{
+		ID: "s1", CLI: "qoder", Provider: "qoder-cn",
+		ModelOverride: "Qwen3.8-Flash", Cwd: "/w", ClaudeSessionID: "sid",
+	})
+	if want := "cd '/w' && 'qoderclicn' --resume sid --model 'Qwen3.8-Flash'"; got != want {
+		t.Fatalf("resumeCommand =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+// TestEffortOKForQoder pins the per-engine level sets: qoder's --reasoning-effort
+// takes its own fixed list (auto/none/low/medium/high/xhigh/max/ultracode, read
+// off the CLI's own rejection message) and must reject claude-only or bogus
+// levels before a session is created rather than after a spawn.
+func TestEffortOKForQoder(t *testing.T) {
+	for _, ok := range qoderEfforts {
+		if !effortOKFor(config.KindQoder, ok) {
+			t.Errorf("effortOKFor(qoder, %q) = false, want true", ok)
+		}
+	}
+	// "ultra" is not a level; "" means "inherit" and is always fine.
+	for _, bad := range []string{"ultra", "LOW", "low ", "1"} {
+		if effortOKFor(config.KindQoder, bad) {
+			t.Errorf("effortOKFor(qoder, %q) = true, want false", bad)
+		}
+	}
+	if !effortOKFor(config.KindQoder, "") {
+		t.Error("empty effort must be accepted (inherit)")
+	}
+	// The engines must not borrow each other's sets: qoder's extra levels are
+	// not claude's, and claude still rejects them.
+	if validEffort("ultracode") {
+		t.Error("claude must not accept qoder's ultracode level")
+	}
+	if !validEffort("max") {
+		t.Error("claude must still accept max")
+	}
+	// mcode shares the claude set here; its per-model levels are validated
+	// separately against the CLI's own catalog (see handlePatchSession).
+	if effortOKFor(config.KindMcode, "ultracode") {
+		t.Error("mcode must not accept qoder's ultracode level")
 	}
 }

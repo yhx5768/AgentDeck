@@ -45,8 +45,19 @@ func (u *usagelike) total() int64 {
 // scanSession parses one session jsonl into a self-contained FileAgg. The
 // dedup rules (assistant message.id, usage) are per-file, matching the
 // original aggSession semantics.
-func scanSession(path, fileID string) statsagg.FileAgg {
-	fa := statsagg.NewFileAgg(fileID, path, engineKindClaude)
+//
+// engine is the engine kind recorded in Stats.Engines: the same transcript
+// format is read by more than one CLI (see Profile), and each reports under
+// its own kind.
+//
+// modelHint, when non-empty, replaces the model name recorded in the
+// transcript. Qoder CLI CN writes an internal key there ("qfmodel") rather
+// than the model name, so a per-model breakdown would otherwise collapse
+// every qoder session into one meaningless bucket; the caller supplies the
+// model each session was actually launched with. Claude's transcripts carry
+// the real name (and may change it mid-session), so its cache passes "".
+func scanSession(path, fileID, engine, modelHint string) statsagg.FileAgg {
+	fa := statsagg.NewFileAgg(fileID, path, engine)
 	seenMsg := map[string]bool{} // 已计数的 assistant 消息 id（去重内容块行）
 	usageCounted := map[string]bool{}
 	hourRecorded := false
@@ -106,6 +117,9 @@ func scanSession(path, fileID string) statsagg.FileAgg {
 				var u usagelike
 				if json.Unmarshal(l.Message.Usage, &u) == nil {
 					model := l.Message.Model
+					if modelHint != "" {
+						model = modelHint
+					}
 					if model == "" {
 						model = "unknown"
 					}
@@ -164,19 +178,39 @@ func (fp fileFp) same(o fileFp) bool {
 // from the cached per-file aggregates by the caller. Not safe for concurrent
 // use; the server guards it with a mutex.
 type StatsCache struct {
-	files map[string]statsagg.FileAgg // path -> aggregate
-	fps   map[string]fileFp           // path -> fingerprint
+	files  map[string]statsagg.FileAgg // path -> aggregate
+	fps    map[string]fileFp           // path -> fingerprint
+	engine string                      // engine kind recorded in every aggregate
 }
 
-// NewStatsCache returns an empty incremental stats cache.
+// NewStatsCache returns an empty incremental stats cache keyed to the claude
+// engine kind.
 func NewStatsCache() *StatsCache {
-	return &StatsCache{files: map[string]statsagg.FileAgg{}, fps: map[string]fileFp{}}
+	return NewStatsCacheFor(engineKindClaude)
+}
+
+// NewStatsCacheFor returns an empty incremental stats cache that records its
+// aggregates under the given engine kind — one cache per CLI sharing this
+// transcript format (Claude Code, Qoder CLI CN).
+func NewStatsCacheFor(engine string) *StatsCache {
+	return &StatsCache{
+		files:  map[string]statsagg.FileAgg{},
+		fps:    map[string]fileFp{},
+		engine: engine,
+	}
 }
 
 // Refresh returns the cached per-session aggregates. fresh=true discards the
 // per-file cache and rescans everything; otherwise only changed/new files are
 // re-parsed and gone files are dropped.
 func (c *StatsCache) Refresh(root string, fresh bool) []statsagg.FileAgg {
+	return c.RefreshWithModels(root, nil, fresh)
+}
+
+// RefreshWithModels is Refresh plus a session-id -> model-name map that
+// overrides the model recorded in the transcript (see scanSession). Used by
+// the engines whose transcripts do not name the model.
+func (c *StatsCache) RefreshWithModels(root string, models map[string]string, fresh bool) []statsagg.FileAgg {
 	if fresh {
 		c.files = map[string]statsagg.FileAgg{}
 		c.fps = map[string]fileFp{}
@@ -208,11 +242,11 @@ func (c *StatsCache) Refresh(root string, fresh bool) []statsagg.FileAgg {
 				continue
 			}
 			fp := fileFp{modTime: fi.ModTime(), size: fi.Size()}
+			sid := strings.TrimSuffix(f.Name(), ".jsonl")
 			if old, ok := c.fps[path]; ok && old.same(fp) {
 				continue // 指纹未变：复用缓存的逐文件聚合
 			}
-			sid := strings.TrimSuffix(f.Name(), ".jsonl")
-			c.files[path] = scanSession(path, sid)
+			c.files[path] = scanSession(path, sid, c.engine, models[sid])
 			c.fps[path] = fp
 		}
 	}
