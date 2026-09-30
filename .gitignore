@@ -1,6 +1,9 @@
 cc-webui
 config.yaml
 data/
+# 手工联调时临时指定的 data 目录（如 -datadir data-test）
+data-test/
+data-*/
 *.log
 # local dev harnesses
 web/_*.html
