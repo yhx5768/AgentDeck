@@ -23,6 +23,7 @@ import (
 
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/config"
+	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/runner"
 	"cc-webui/internal/store"
@@ -125,6 +126,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/opencode-sessions", s.auth(s.handleOpenCodeSessions))
 	s.mux.Handle("GET /api/opencode-sessions/preview", s.auth(s.handleOpenCodeSessionPreview))
 	s.mux.Handle("GET /api/opencode-model-variants", s.auth(s.handleOpenCodeModelVariants))
+	s.mux.Handle("GET /api/mcode-models", s.auth(s.handleMcodeModels))
+	s.mux.Handle("GET /api/mcode-sessions", s.auth(s.handleMcodeSessions))
+	s.mux.Handle("GET /api/mcode-sessions/preview", s.auth(s.handleMcodeSessionPreview))
 	s.mux.Handle("POST /api/sessions/import", s.auth(s.handleImport))
 	s.mux.Handle("GET /api/stats", s.auth(s.handleStats))
 	s.mux.Handle("GET /api/notes", s.auth(s.handleGetNotes))
@@ -385,11 +389,21 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 		cliPath = cli.Path
 	}
 	base := "cd " + shellQuote(sess.Cwd) + " && "
-	if s.engineOf(sess) == config.KindOpenCode {
+	switch s.engineOf(sess) {
+	case config.KindOpenCode:
 		if cliPath == "" {
 			cliPath = "opencode"
 		}
 		return base + shellQuote(cliPath) + " -s " + sess.ClaudeSessionID
+	case config.KindMcode:
+		// mcode resumes with --session <mvs_…>. The TUI form takes no
+		// --model/--effort (it reads the session's own recorded model), and
+		// passing them to a TUI launch is not supported — so the command
+		// stays minimal and picks up the session's model by itself.
+		if cliPath == "" {
+			cliPath = "mcode"
+		}
+		return base + shellQuote(cliPath) + " --session " + sess.ClaudeSessionID
 	}
 	prov := s.cfg().ProviderByName(sess.Provider)
 	var settings string
@@ -479,7 +493,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind))
 		return
 	}
-	if body.Model != "" && prov.ModelByName(body.Model) == nil {
+	if body.Model != "" && !s.modelKnown(cli, prov, body.Model) {
 		writeErr(w, http.StatusBadRequest, "unknown model for provider "+body.Provider+": "+body.Model)
 		return
 	}
@@ -581,12 +595,18 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Model != nil && *body.Model != "" {
-		// Validate the model against the (possibly newly set) provider.
+		// Validate the model against the (possibly newly set) provider, under
+		// the (possibly newly set) cli — modelKnown is engine-aware, so the
+		// cli that will actually run the turn is what decides.
 		provName := sess.Provider
 		if body.Provider != nil {
 			provName = *body.Provider
 		}
-		if prov := s.cfg().ProviderByName(provName); prov != nil && prov.ModelByName(*body.Model) == nil {
+		patchCliName := sess.CLI
+		if body.CLI != nil {
+			patchCliName = *body.CLI
+		}
+		if prov := s.cfg().ProviderByName(provName); prov != nil && !s.modelKnown(s.cfg().CLIByName(patchCliName), prov, *body.Model) {
 			writeErr(w, http.StatusBadRequest, "unknown model for provider "+provName+": "+*body.Model)
 			return
 		}
@@ -618,15 +638,38 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "invalid effort: "+*body.Effort)
 			return
 		}
+		// mcode's --effort levels are per-model and short (default/low/…/max,
+		// none-thinking/thinking, or none at all) — the shape check above
+		// cannot tell a valid level from a typo, and the CLI only rejects an
+		// unknown one after the run has started. Validate against the model
+		// catalog here so a bad level is a 400 instead of a dead turn.
+		if kind == config.KindMcode && prov != nil && *body.Effort != "" {
+			model := prov.EffectiveModel(sess.ModelOverride)
+			if body.Model != nil {
+				model = prov.EffectiveModel(*body.Model)
+			}
+			cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(model, prov.Name))
+			if m := cat.Find(mcodehist.BareModelID(model)); err == nil && m != nil && len(m.Efforts) > 0 &&
+				!mcodehist.EffortOK(cat, mcodehist.BareModelID(model), *body.Effort) {
+				writeErr(w, http.StatusBadRequest,
+					fmt.Sprintf("模型 %s 不支持推理档位 %q（可选：%s）", model, *body.Effort, strings.Join(m.Efforts, ", ")))
+				return
+			}
+		}
 	}
-	// Resident/peer messaging is a Claude Code protocol feature; opencode
-	// sessions must not enable it (the cli kind that applies after this
+	// Resident/peer messaging is a Claude Code protocol feature; opencode and
+	// mcode sessions must not enable it (the cli kind that applies after this
 	// patch decides).
-	if (body.Resident != nil || body.PeerName != nil) && cli != nil && cli.IsOpenCode() {
-		writeErr(w, http.StatusBadRequest, "opencode 引擎不支持常驻/peer 消息")
+	if (body.Resident != nil || body.PeerName != nil) && cli != nil && (cli.IsOpenCode() || cli.IsMcode()) {
+		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻/peer 消息")
 		return
 	}
 	isOpenCode := cli != nil && cli.IsOpenCode()
+	// Only the claude engine keeps its transcript inside the workspace
+	// (~/.claude/projects/<slug>/), so only it has files to relocate when
+	// the workspace changes. opencode and mcode both key their own store by
+	// session id, and their run is pinned to the session's cwd at spawn.
+	transcriptInWorkspace := !isOpenCode && (cli == nil || !cli.IsMcode())
 	// Changing the workspace path. Resolve + validate up front (pure, no side
 	// effects) so a rejected patch never moves files or stops the resident;
 	// the actual relocation happens after every other check passes.
@@ -663,7 +706,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	// A live resident is bound to the old transcript; stop it before moving
 	// the files underneath it (it is respawned under the new cwd in the
 	// side-effects section below).
-	if cwdChanged && !isOpenCode && sess.Resident {
+	if cwdChanged && transcriptInWorkspace && sess.Resident {
 		s.mgr.TeardownResident(sess.ID)
 	}
 	// Workspace migration: relocate the session's on-disk claude transcript
@@ -673,7 +716,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	// move. A missing source transcript (e.g. imported from another machine)
 	// is fine: the change still applies, the session just replays its stored
 	// events until new turns write a fresh transcript.
-	if cwdChanged && !isOpenCode && sess.ClaudeSessionID != "" {
+	if cwdChanged && transcriptInWorkspace && sess.ClaudeSessionID != "" {
 		moved, err := claudehist.MoveSession(sess.Cwd, effCwd, sess.ClaudeSessionID)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "迁移会话历史文件失败："+err.Error())
@@ -820,12 +863,15 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "empty message")
 		return
 	}
-	// opencode's headless run has no multimodal channel (v1): image blocks
-	// would be silently dropped, so refuse them up front. File uploads still
-	// work (they ride as path mentions in the text).
-	if len(body.Images) > 0 && s.engineOf(sess) == config.KindOpenCode {
-		writeErr(w, http.StatusBadRequest, "opencode 引擎暂不支持图片消息（文件附件可用）")
-		return
+	// The opencode and mcode headless runs have no inline-multimodal channel:
+	// image blocks would be silently dropped, so refuse them up front. File
+	// uploads still work (they ride as path mentions in the text, plus the
+	// engine's own attachment flag, and a vision model reads them that way).
+	if len(body.Images) > 0 {
+		if eng := s.engineOf(sess); eng == config.KindOpenCode || eng == config.KindMcode {
+			writeErr(w, http.StatusBadRequest, eng+" 引擎暂不支持图片消息（文件附件可用）")
+			return
+		}
 	}
 	// Files must have come from this session's uploads dir — the paths are
 	// interpolated into the turn's text, so a crafted payload must not be
@@ -956,9 +1002,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if sess.ClaudeSessionID != "" {
 		// Replay source depends on the engine: claude sessions are parsed from
 		// ~/.claude jsonl on disk, opencode sessions are exported via the CLI
-		// (its transcript lives in opencode's own store).
+		// and mcode sessions are parsed from their own messages.jsonl (both
+		// keep their transcript inside the CLI's own store).
 		var extEvents []*store.Event
-		if s.engineOf(sess) == config.KindOpenCode {
+		switch s.engineOf(sess) {
+		case config.KindOpenCode:
 			if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
 				if oc, err := opencodehist.FetchSession(cli.Path, sess.ClaudeSessionID); err == nil {
 					extEvents = oc.ToEvents()
@@ -966,7 +1014,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					log.Printf("opencode replay %s: %v", sess.ClaudeSessionID, err)
 				}
 			}
-		} else {
+		case config.KindMcode:
+			if mc, err := mcodehist.FetchSession(sess.ClaudeSessionID); err == nil {
+				extEvents = mc.ToEvents()
+			} else {
+				log.Printf("mcode replay %s: %v", sess.ClaudeSessionID, err)
+			}
+		default:
 			extEvents, _ = claudehist.Convert(sess.Cwd, sess.ClaudeSessionID)
 			// 子代理 transcript 单独解析（subagents/agent-*.jsonl），补齐回放侧
 			// 与实时流（parent_tool_use_id 透传）同形的子代理消息事件。
@@ -1275,6 +1329,33 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	if sess.Name == "" {
 		sess.Name = "imported-" + body.ClaudeSessionID[:8]
 	}
+	if cli.IsMcode() {
+		// mcode import: the transcript lives in mcode's own dated session
+		// store. Reading it doubles as the readability check (SSE re-parses on
+		// connect) and yields the session's model, aligned onto the chosen
+		// provider when the model id exists there. mcode does not record the
+		// session's working directory outside its runtime sqlite (which this
+		// project deliberately does not link), so the workspace comes from the
+		// request — the session editor can change it afterwards.
+		if _, err := runner.ResolveCwd(body.Cwd); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		mc, err := mcodehist.FetchSession(body.ClaudeSessionID)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "mcode session not found: "+err.Error())
+			return
+		}
+		if mc.ModelID != "" && prov.ModelByName(mcodehist.BareModelID(mc.ModelID)) != nil {
+			sess.ModelOverride = mcodehist.BareModelID(mc.ModelID)
+		}
+		if err := s.st.Upsert(sess, nil); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, s.view(sess))
+		return
+	}
 	if cli.IsOpenCode() {
 		// opencode import: the transcript lives in opencode's own store. The
 		// export doubles as the readability check (SSE re-exports on connect)
@@ -1435,6 +1516,145 @@ func (s *Server) handleOpenCodeSessionPreview(w http.ResponseWriter, r *http.Req
 		"branch":     gitBranch(oc.Directory),
 		"updated_at": oc.UpdatedAt,
 		"messages":   oc.Preview(8),
+	})
+}
+
+// handleMcodeModels reports the model catalog mcode resolves from its own
+// runtime config (~/.minimax/config.yaml), including each model's reasoning
+// levels and input modalities. mcode has no CLI command that lists its models
+// (`mcode provider list --json` returns an empty `models` array because the
+// set comes from the credential source), so the dropdowns are fed from that
+// file — memoized for variantsTTL, with ?fresh=1 to bypass the memo right
+// after `mcode provider add` or a CLI update.
+func (s *Server) handleMcodeModels(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
+	if cli == nil || !cli.IsMcode() {
+		writeErr(w, http.StatusBadRequest, "a mcode kind cli is required")
+		return
+	}
+	prov := s.cfg().ProviderByName(strings.TrimSpace(q.Get("provider")))
+	if prov == nil || !prov.IsMcode() {
+		writeErr(w, http.StatusBadRequest, "a mcode kind provider is required")
+		return
+	}
+	// mcode's own provider id is the prefix of --model ("minimax/…"); it
+	// need not equal the cc-webui provider name, so prefer the id recorded
+	// in the session's model when one was ever chosen.
+	providerID := prov.Name
+	if m := prov.ModelByName(prov.DefaultModelName()); m != nil {
+		providerID = mcodeProviderIDFromModel(prov.DefaultModelName(), prov.Name)
+	}
+	cat, err := mcodehist.LoadCatalog(providerID)
+	if fresh := q.Get("fresh") == "1"; err == nil && fresh {
+		cat, err = mcodehist.LoadCatalogFresh(providerID)
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cat)
+}
+
+// modelKnown reports whether a model id is selectable on this provider.
+//
+// claude and opencode providers declare their models in config.yaml, so
+// membership in that list is the whole answer. mcode is different: its usable
+// set is resolved at run time by the CLI and is deliberately NOT written into
+// config (it would go stale on the next `mcode provider add` or CLI update), so
+// a config-declared list is normally empty and membership would reject every
+// real model. Those models are checked against mcode's own catalog instead;
+// when that catalog cannot be read (mcode not installed, config missing) the
+// check is skipped rather than blocking a session — a bad model name surfaces
+// immediately as the CLI's own error on the first turn, which is a better
+// failure than refusing to create the session at all.
+func (s *Server) modelKnown(cli *config.CLI, prov *config.Provider, model string) bool {
+	if prov.ModelByName(model) != nil {
+		return true
+	}
+	if cli == nil || prov == nil || !cli.IsMcode() {
+		return false
+	}
+	bare := mcodehist.BareModelID(model)
+	cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(model, prov.Name))
+	if err != nil {
+		log.Printf("mcode model catalog unavailable, skipping model check for %q: %v", model, err)
+		return true
+	}
+	// An unknown bare id is rejected: the catalog was readable, so this is a
+	// genuine "this model does not exist" rather than "we cannot tell".
+	return cat.Find(bare) != nil
+}
+
+// mcodeProviderIDFromModel recovers the mcode provider id from a model name
+// that may already be qualified ("minimax/MiniMax-M3"), falling back to the
+// configured provider name.
+func mcodeProviderIDFromModel(model, fallback string) string {
+	if i := strings.Index(model, "/"); i > 0 {
+		return model[:i]
+	}
+	return fallback
+}
+
+// handleMcodeSessions lists the sessions mcode stored on disk, the import
+// source for the mcode tab. mcode's dated session tree does not record each
+// session's working directory, so `cwd` cannot filter the result — the prefix
+// filter and the newest-first cap still apply.
+func (s *Server) handleMcodeSessions(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
+	if cli == nil || !cli.IsMcode() {
+		writeErr(w, http.StatusBadRequest, "a mcode kind cli is required")
+		return
+	}
+	prefix := strings.ToLower(strings.TrimSpace(q.Get("prefix")))
+	list, err := mcodehist.List()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	filtered := list[:0]
+	for _, item := range list {
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(item.SessionID), prefix) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	list = filtered
+	if list == nil {
+		list = []mcodehist.SessionInfo{}
+	}
+	if len(list) > 200 {
+		list = list[:200]
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// handleMcodeSessionPreview returns a single mcode session's import preview:
+// metadata plus its most recent messages.
+func (s *Server) handleMcodeSessionPreview(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
+	if cli == nil || !cli.IsMcode() {
+		writeErr(w, http.StatusBadRequest, "a mcode kind cli is required")
+		return
+	}
+	id := strings.TrimSpace(q.Get("id"))
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	mc, err := mcodehist.FetchSession(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "mcode session not found: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": mc.ID,
+		"cwd":        mc.Cwd,
+		"branch":     gitBranch(mc.Cwd),
+		"updated_at": mc.UpdatedAt,
+		"messages":   mc.Preview(8),
 	})
 }
 

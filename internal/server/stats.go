@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"cc-webui/internal/claudehist"
+	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/runner"
 	"cc-webui/internal/statsagg"
@@ -20,11 +21,13 @@ var (
 	statsMu            sync.Mutex
 	claudeStatsCache   = claudehist.NewStatsCache()
 	opencodeStatsCache = opencodehist.NewStatsCache()
+	mcodeStatsCache    = mcodehist.NewStatsCache()
 )
 
-// handleStats 返回全部会话（claude 与 opencode 两引擎）的使用统计。两侧各自
-// 增量聚合后合并成一份 Stats：claude 侧只重扫 mtime/size 变了的 jsonl，
-// opencode 侧只重导出 `updated` 前进的会话。?fresh=1 清空两侧缓存强制全量重扫。
+// handleStats 返回全部会话（claude、opencode、mcode 三引擎）的使用统计。两侧
+// claude/opencode 各自增量聚合后合并成一份 Stats：claude 侧只重扫 mtime/size
+// 变了的 jsonl，opencode 侧只重导出 `updated` 前进的会话，mcode 侧只重解析
+// 指纹变了的 messages.jsonl。?fresh=1 清空两侧缓存强制全量重扫。
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	fresh := r.URL.Query().Get("fresh") == "1"
 	statsMu.Lock()
@@ -33,9 +36,26 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if cliPaths, dirs := s.opencodeStatsTargets(); len(cliPaths) > 0 {
 		fas = append(fas, opencodeStatsCache.Refresh(cliPaths, dirs, fresh)...)
 	}
+	// mcode keeps one store under its runtime data dir, shared by every
+	// configured mcode cli, so a single configured cli is enough to include
+	// the engine in the stats at all.
+	if s.hasMcodeCLI() {
+		fas = append(fas, mcodeStatsCache.Refresh(fresh)...)
+	}
 	stats := statsagg.Recompute(fas)
 	statsMu.Unlock()
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// hasMcodeCLI reports whether any configured cli uses the mcode engine.
+func (s *Server) hasMcodeCLI() bool {
+	cfg := s.cfg()
+	for i := range cfg.CLIs {
+		if cfg.CLIs[i].IsMcode() {
+			return true
+		}
+	}
+	return false
 }
 
 // opencodeStatsTargets 返回统计要用的 opencode cli 路径与项目桶目录候选。

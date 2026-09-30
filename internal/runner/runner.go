@@ -17,6 +17,7 @@ import (
 
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/config"
+	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/store"
 )
@@ -633,6 +634,10 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 		m.runOpenCodeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
 		return
 	}
+	if cli.IsMcode() {
+		m.runMcodeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
+		return
+	}
 	m.runClaudeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
 }
 
@@ -968,6 +973,159 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	}
 	// No captureCheckpoint here: opencode has no file-rewind surface, and its
 	// step snapshots live in its own store without a CLI rollback command.
+}
+
+// runMcodeTurn runs one user message through the MiniMax Code engine
+// (`mcode exec --output-format stream-json`). Every stdout line is one JSON
+// event adapted to the canonical cc-webui stream shape and broadcast live
+// (mcodehist — the same mapping the replay path uses, so a reloaded page
+// looks like the live run did). The mcode session id rides on every line
+// (mvs_… ), so it is captured on first sight and stored in the same
+// ClaudeSessionID field opencode reuses; the transcript itself stays in
+// mcode's own store and is replayed from messages.jsonl on later connects.
+//
+// No stdin channel: the message rides as a positional argument, like
+// opencode. Inline images are rejected at the API layer — images and files
+// both travel as mcode's official `--file` attachments. The positional must
+// precede those flags: --file is an array flag and would swallow a trailing
+// positional.
+func (m *Manager) runMcodeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
+	args := []string{"exec", "--output-format", "stream-json"}
+	// mcode takes --permission smart|full|off; "ask" needs an interactive
+	// approver, which a headless run has none of. cc-webui's own default is
+	// bypassPermissions, which lands on "full".
+	if p := mcodePermissionPolicy(sess.PermissionMode, cli.PermissionMode); p != "" {
+		args = append(args, "--permission", p)
+	}
+	model := prov.EffectiveModel(sess.ModelOverride)
+	if model != "" {
+		args = append(args, "--model", mcodeModelID(prov.Name, model))
+	}
+	// Reasoning depth rides mcode's --effort. Unlike claude there is no env
+	// var that overrides it and no global settings file to fight: the value
+	// is validated per model by the CLI itself, and the UI only offers the
+	// levels the model declares (mcodehist.Catalog).
+	if sess.EffortOverride != "" {
+		args = append(args, "--effort", sess.EffortOverride)
+	}
+	if sess.ClaudeSessionID != "" {
+		args = append(args, "--session", sess.ClaudeSessionID)
+	}
+	args = append(args, cli.Args...)
+	// Positional prompt before the attachment flags: `--file <path> <msg>`
+	// would let the array flag consume the message.
+	if msg.Text != "" {
+		args = append(args, msg.Text)
+	}
+	for _, f := range msg.Files {
+		args = append(args, "--file", f.Path)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.setRunning(sessionID, cancel)
+
+	cmd := exec.CommandContext(ctx, cli.Path, args...)
+	cmd.Dir = resolvedCwd
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	envMap := buildEnvMap(cli.EffectiveEnv(prov, model))
+	cmd.Env = envMapToSlice(envMap)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
+		return
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": "start mcode: " + err.Error()})
+		return
+	}
+
+	tx := mcodehist.NewToolTx()
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	for sc.Scan() {
+		ev, ok := mcodehist.ParseLive(sc.Bytes())
+		if !ok {
+			continue
+		}
+		// Capture the mvs_ id from the first line that carries it (all do).
+		if sid := ev.SessionIDOf(); sid != "" && sid != sess.ClaudeSessionID {
+			m.st.Upsert(sess, store.WithClaudeSID(sid))
+			sess.ClaudeSessionID = sid
+		}
+		for _, payload := range ev.Adapt(tx) {
+			m.emit(sessionID, "stream", payload)
+		}
+		// turn.completed carries the per-turn token counts and model; mcode
+		// reports them outside any assistant message, so they ride a
+		// dedicated assistant event for the stats path to pick up.
+		if ev.Type == "turn.completed" {
+			if p := mcodehist.UsagePayload(ev.Usage, ev.Model, ev.TS); p != nil {
+				m.emit(sessionID, "stream", p)
+			}
+		}
+	}
+
+	waitErr := cmd.Wait()
+	m.st.Upsert(sess, func(s *store.Session) { s.UpdatedAt = time.Now() })
+
+	switch {
+	case ctx.Err() != nil:
+		m.emit(sessionID, "status", map[string]string{"state": "interrupted"})
+		m.setIdle(sessionID, "interrupted")
+	case waitErr != nil:
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = waitErr.Error()
+		}
+		log.Printf("mcode turn failed (session %s, mcode sid %s): %s", sessionID, sess.ClaudeSessionID, errMsg)
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": errMsg})
+		m.setIdle(sessionID, errMsg)
+	default:
+		m.emit(sessionID, "status", map[string]string{"state": "turn_end"})
+		m.setIdle(sessionID, "")
+	}
+	// No captureCheckpoint: mcode exposes no file-rewind surface, the same
+	// reason the opencode engine skips it.
+}
+
+// mcodePermissionPolicy maps cc-webui's claude-style permission mode onto
+// mcode's --permission policy. Only "bypassPermissions" means "run
+// unattended without prompting" (mcode: full); every other mode keeps mcode's
+// own smart policy, since its interactive "ask" needs a TUI or ACP client.
+func mcodePermissionPolicy(sessionMode, cliMode string) string {
+	mode := sessionMode
+	if mode == "" {
+		mode = cliMode
+	}
+	if mode == "" {
+		return ""
+	}
+	if mode == "bypassPermissions" {
+		return "full"
+	}
+	return "smart"
+}
+
+// mcodeModelID composes the --model argument: mcode addresses models as
+// <providerId>/<modelId>, where the provider part must match the id in its own
+// runtime config. A name that already carries a slash passes through.
+func mcodeModelID(providerName, modelName string) string {
+	if strings.Contains(modelName, "/") {
+		return modelName
+	}
+	if providerName == "" {
+		return modelName
+	}
+	return providerName + "/" + modelName
 }
 
 // diagnoseOpenCodeRunError enriches a generic opencode run failure with an
