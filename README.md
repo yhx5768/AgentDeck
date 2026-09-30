@@ -26,7 +26,7 @@ cc-webui 是 Claude Code（以及任何兼容 CLI）的 Web 控制台。它把�
 | 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。CLI 开启 `partial_messages` 后支持打字机式逐 token 增量渲染（`--include-partial-messages`）。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块。 |
 | 轨迹视图 | 会话内「轨迹」tab 把同一份事件流投影成按轮(turn)分组的台账：折叠/展开轮次、按角色（用户/助手/工具）筛选、关键词搜索，点开单条记录看 summary / preview / raw 三档详情。对话流之外的另一种审阅视角。 |
-| 使用统计 | 统计本机全部会话（Claude Code 与 opencode 引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/连续天数/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。只走各自 CLI 的官方读取面；opencode 的 `session list` 只看得见当前目录所属的项目桶，所以枚举全部项目额外走一条只读 `opencode db` 查询（实测只读不写，查询失败自动退回按项目桶列举）。增量缓存——首次全量扫描较慢，之后秒回。 |
+| 使用统计 | 统计本机全部会话（Claude Code、opencode、mcode 三个引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/连续天数/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。opencode 走它的 CLI 官方面（`session list` 只看得见当前目录所属的项目桶，故枚举全部项目额外走一条只读 `opencode db` 查询，实测只读不写，失败自动退回按桶列举）；mcode 读它自己的 `messages.jsonl` transcript（mcode 没有 `session list`/`export` 这类 CLI 面）。增量缓存——首次全量扫描较慢，之后秒回。 |
 | 本地文件预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`），右侧面板只读打开并自动跳转到对应行号。 |
 | 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 claude transcript 一并截断，消息文本回填输入框重发。等价 TUI 双击 Esc。Bash 改的文件无法回滚。 |
 | 任务完成通知 | 任务跑完（或出错）时弹系统横幅通知 + 播放提示音，点击通知直达对应会话。侧边栏「设置」里可分别开关，配置存 localStorage 跟着浏览器走，不同终端各自配置。 |
@@ -119,7 +119,17 @@ providers:
 
 ## 工作原理（简要）
 
-- 每条用户消息会启动一个 `claude -p --output-format stream-json --verbose [--resume <sid>] [--model <m>]` 进程，prompt 走 stdin 注入。
+cc-webui 有三个引擎，由 `config.yaml` 里 cli/provider 的 `kind` 决定（`claude` 缺省，另有 `opencode` 与 `mcode`）。会话绑定单一引擎，创建时 cli 与 provider 的 kind 必须一致。
+
+| 引擎 | 一条消息启动的命令 | 会话 id | 历史回放来源 |
+|---|---|---|---|
+| `claude` | `claude -p --output-format stream-json --verbose [--resume <sid>] [--model <m>]` | uuid | `~/.claude/projects/**/<sid>.jsonl` |
+| `opencode` | `opencode run --format json -s <sid> [-m provider/model]` | `ses_…` | `opencode export <sid>` |
+| `mcode` | `mcode exec --output-format stream-json [--session <mvs_…>] [--model <p/m>] [--effort <l>]` | `mvs_…` | `~/.minimax/v2/sessions/**/messages.jsonl` |
+
+三个引擎的内部事件格式互不相同，但都经各自的适配层转成同一套 canonical 事件再渲染，所以工具卡片、轨迹视图、回放/实时一致性在前端是共用一套逻辑的。
+
+- claude 引擎：每条用户消息会启动一个 `claude -p --output-format stream-json --verbose` 进程，prompt 走 stdin 注入。
 - 首轮从 `system/init` 事件捕获 `session_id`，后续轮次用 `--resume` 续接，因此**切换 CLI / Provider / Model / 权限模式不会丢失上下文**。
 - 事件流持久化在 `data_dir`，SSE 先回放历史再实时推送；服务重启不影响会话数据。
 - 停止 = 杀掉当前 claude 进程组。
@@ -188,6 +198,8 @@ internal/store/          # 会话元数据 + 事件日志持久化
 internal/runner/         # claude 进程管理：队列、流解析、事件广播、停止
 internal/server/         # HTTP 路由、鉴权、SSE
 internal/claudehist/     # ~/.claude/projects 扫描与导入转换
+internal/opencodehist/   # opencode 引擎适配：事件转换、export 回放、模型变体、统计
+internal/mcodehist/      # mcode 引擎适配：stream-json 事件转换、transcript 回放、模型目录、统计
 web/                     # 免构建前端（vanilla JS + vendor 的 marked/DOMPurify/highlight.js）
 ```
 

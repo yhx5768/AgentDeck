@@ -16,10 +16,16 @@ default_cwd: "~"
 #   clis[]      - 一个聊天 CLI 二进制安装（path + args + 权限模式 + 共享 env）
 #                 kind: claude（缺省）= Claude Code 及兼容 CLI（stream-json 协议）
 #                 kind: opencode = opencode 引擎（run --format json 协议）
+#                 kind: mcode = MiniMax Code 引擎（exec --output-format
+#                 stream-json 协议，事件形状与前两者都不同，见 AGENTS.md §8）
 #   providers[] - 一个模型后端（kind: claude 的共享 env 是 BASE_URL/TOKEN；
 #                 kind: opencode 的 provider 名必须等于 opencode CLI 的
-#                 providerID，凭据走 opencode 自己的 auth.json，env 不生效）
-#   providers[].models[] - 该后端可选的模型（每个模型可带自己的 env）
+#                 providerID，凭据走 opencode 自己的 auth.json，env 不生效；
+#                 kind: mcode 的凭据走 mcode 自己的登录态，env 同样不生效）
+#   providers[].models[] - 该后端可选的模型（每个模型可带自己的 env）。
+#                 kind: mcode 的这一层可以留空：mcode 的可用模型是动态的，
+#                 前端下拉由服务端读它自己的运行时配置（~/.minimax/config.yaml）
+#                 经 /api/mcode-models 提供，写死在这里只会过期。
 # 生效 env：cli.env → provider.env → model.env（后者覆盖前者）
 # 会话的引擎 = 其 cli 的 kind；创建/修改/导入时 cli 与 provider 的 kind 必须一致。
 clis:
@@ -41,6 +47,16 @@ clis:
   - name: "opencode"
     kind: "opencode"              # opencode 引擎；permission_mode 映射为 --auto
     path: "/home/you/.opencode/bin/opencode"
+    permission_mode: "bypassPermissions"
+    args: []
+    env: {}
+
+  - name: "mcode"
+    kind: "mcode"                 # MiniMax Code 引擎；permission_mode 只映射两种：
+                                   # bypassPermissions → --permission full，
+                                   # 其余一律 --permission smart（mcode 的 ask
+                                   # 需要交互式批准，headless 下无人应答）
+    path: "mcode"                 # `mcode login` 过的凭据，无需额外 env
     permission_mode: "bypassPermissions"
     args: []
     env: {}
@@ -86,6 +102,16 @@ providers:
     models:
       - name: "k3"
       - name: "k3-256k"
+
+  # mcode 引擎示例：provider 名只需在 cc-webui 内唯一，不必等于 mcode 自己的
+  # provider id（后者由服务端从 mcode 配置里解析，模型下拉会自动带上
+  # "minimax/" 这样的前缀）。models 留空即可——前端下拉会从 mcode 自己的配置
+  # 动态读取（含每个模型的推理档位与输入模态），写死才不会随它更新而过期；
+  # 留空时新会话用 mcode 自己的 defaultModel。
+  - name: "mcode-minimax"
+    kind: "mcode"
+    env: {}                       # 凭据来自 `mcode login`，config 的 env 不参与
+    models: []
 
   - name: "sensenova"                # 商汤日日新（SenseNova），见 https://platform.sensenova.cn/docs
     env:

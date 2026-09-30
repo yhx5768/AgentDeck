@@ -14,10 +14,13 @@ import (
 // cli, and cli/provider pairs must share a kind (validated on create/patch/
 // import). kind "claude" covers Claude Code and compatible CLIs (stream-json
 // stdout + ~/.claude jsonl transcript); kind "opencode" is the opencode
-// engine (run --format json stdout + `opencode export` transcript).
+// engine (run --format json stdout + `opencode export` transcript); kind
+// "mcode" is MiniMax Code (exec --output-format stream-json stdout +
+// ~/.minimax messages.jsonl transcript).
 const (
 	KindClaude   = "claude"
 	KindOpenCode = "opencode"
+	KindMcode    = "mcode"
 )
 
 // CLI describes one chat CLI binary.
@@ -59,6 +62,12 @@ func (c *CLI) IsOpenCode() bool { return c.Kind == KindOpenCode }
 
 // IsOpenCode mirrors CLI.IsOpenCode for providers.
 func (p *Provider) IsOpenCode() bool { return p.Kind == KindOpenCode }
+
+// IsMcode reports whether this cli speaks the mcode protocol.
+func (c *CLI) IsMcode() bool { return c.Kind == KindMcode }
+
+// IsMcode mirrors CLI.IsMcode for providers.
+func (p *Provider) IsMcode() bool { return p.Kind == KindMcode }
 
 // ModelByName returns the model with the given name, or nil.
 func (p *Provider) ModelByName(name string) *Model {
