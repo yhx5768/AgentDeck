@@ -264,7 +264,15 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []prov{}
 	for _, p := range s.cfg().Providers {
-		item := prov{Name: p.Name, Kind: p.Kind}
+		// Pre-initialize to an empty slice, not nil: a nil slice marshals to
+		// JSON `null`, and the frontend indexes into this list unguarded
+		// (provider.models[0], provider.models.find). A provider with no
+		// models in config is normal for the mcode engine — its model list
+		// is resolved by the CLI at run time and fetched from
+		// /api/mcode-models instead — so an empty `models: []` in config
+		// would otherwise hand the UI a null and blank the whole chat view on
+		// open.
+		item := prov{Name: p.Name, Kind: p.Kind, Models: []model{}}
 		item.EnvKeys = sortedKeys(p.Env)
 		for _, m := range p.Models {
 			mm := model{Name: m.Name, Input: m.Input}
@@ -310,7 +318,9 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		out.CLIs = append(out.CLIs, it)
 	}
 	for _, p := range s.cfg().Providers {
-		item := prov{Name: p.Name, Kind: p.Kind}
+		// Empty slice, not nil — see handleProviders: a nil marshals to
+		// JSON null and the UI indexes into models unguarded.
+		item := prov{Name: p.Name, Kind: p.Kind, Models: []model{}}
 		item.EnvKeys = sortedKeys(p.Env)
 		for _, m := range p.Models {
 			mm := model{Name: m.Name, Input: m.Input}

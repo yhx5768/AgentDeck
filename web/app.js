@@ -1305,7 +1305,7 @@ function syncMenuForEngine(s) {
 function applyAttachGate() {
   if (!state.current) return;
   const prov = state.providers.find((p) => p.name === state.current.provider);
-  const m = prov && prov.models.find((x) => x.name === state.current.model_override);
+  const m = providerModels(state.current.provider).find((x) => x.name === state.current.model_override);
   const allow = !!(prov && m);
   const btn = $('#btn-attach');
   btn.disabled = !allow || $('#input').disabled;
@@ -1334,6 +1334,16 @@ const provKind = (name) => kindOf(state.providers.find((p) => p.name === name));
 function fillCLISelect(sel, value, kind) {
   fillSelect(sel, kind ? state.clis.filter((c) => kindOf(c) === kind) : state.clis, value,
     (c) => (kindOf(c) === 'claude' ? c.name : `${c.name} · ${c.kind}`));
+}
+
+// provider 的 models 一律经此取，永远返回数组。服务端已保证空列表序列化成
+// [] 而非 null，但前端不能依赖这一点：mcode 的 provider 正常就是 models 为空
+// （模型由 CLI 运行时解析、经 /api/mcode-models 取），一旦某条路径拿到 null，
+// `prov.models[0]` 会抛 TypeError 并中断 openSession 的后续渲染——表现为整个
+// 对话区空白，连刚发的 user prompt 都不显示。
+function providerModels(providerName) {
+  const p = state.providers.find((x) => x.name === providerName);
+  return (p && Array.isArray(p.models)) ? p.models : [];
 }
 
 function fillProviderSelect(sel, value, kind) {
@@ -1480,8 +1490,7 @@ async function modelsForProvider(providerName, cliName) {
       }));
     }
   }
-  const p = state.providers.find((x) => x.name === providerName);
-  return (p && p.models) || [];
+  return providerModels(providerName);
 }
 
 // 会话视图：按当前会话的 cli/provider/model 刷新 session 与 sheet 两处
@@ -1494,8 +1503,8 @@ async function refreshSessionEffort() {
   const sheet = $('#sheet-effort');
   const sheetWrap = sheet.closest('label');
   if (engine === 'opencode') {
-    const prov = state.providers.find((p) => p.name === s.provider);
-    const model = s.model_override || ((prov && prov.models[0]) || {}).name || '';
+    const ms = providerModels(s.provider);
+    const model = s.model_override || (ms[0] && ms[0].name) || '';
     const keys = model
       ? variantKeysFor(await ocVariantsFor(s.cli, s.provider), s.provider, model)
       : [];
@@ -1506,8 +1515,8 @@ async function refreshSessionEffort() {
   if (engine === 'mcode') {
     // mcode 的档位随模型而异（default/low/…/max、none-thinking/thinking，
     // 或模型压根不支持），取自它自己的运行时配置。
-    const prov = state.providers.find((p) => p.name === s.provider);
-    const model = s.model_override || ((prov && prov.models[0]) || {}).name || '';
+    const ms = providerModels(s.provider);
+    const model = s.model_override || (ms[0] && ms[0].name) || '';
     const cat = model ? await mcodeCatalogFor(s.cli, s.provider) : null;
     const keys = mcodeEffortsFor(cat, s.provider, model);
     applyEffortOptions(main, 'mcode', keys);
@@ -1584,7 +1593,7 @@ function fillModelSelect(sel, providerName, value, cliName, defaultLabel) {
     return;
   }
   const p = state.providers.find((x) => x.name === providerName);
-  renderModelList(sel, (p && p.models) || [], value);
+  renderModelList(sel, providerModels(providerName), value);
 }
 
 // config 热加载：后台 watch 到 config.yaml 变动后广播 config_changed（或前端
@@ -4629,11 +4638,10 @@ function renderModelOptions(sel, providerName) {
       if (models.length) sel.value = models[0].name;
     });
     return;
-    return;
   }
-  const p = state.providers.find((x) => x.name === providerName);
-  sel.innerHTML = (p ? p.models : []).map((m) => `<option value="${m.name}">${m.name}</option>`).join('');
-  if (p && p.models.length) sel.value = p.models[0].name;
+  const models = providerModels(providerName);
+  sel.innerHTML = models.map((m) => `<option value="${m.name}">${m.name}</option>`).join('');
+  if (models.length) sel.value = models[0].name;
 }
 
 function renderNsAttached() {
