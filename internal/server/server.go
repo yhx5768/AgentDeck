@@ -1508,10 +1508,17 @@ func (s *Server) handleOpenCodeModelVariants(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"models": data})
 }
 
-// handleOpenCodeSessions lists sessions from the opencode engine's own store
-// (via `opencode session list --format json`), the import source for the
-// opencode tab. Requires the cli name so the backend knows which binary to
-// ask; cwd/prefix filter like the claude history endpoint.
+// handleOpenCodeSessions lists sessions from the opencode engine's own store,
+// the import source for the opencode tab. Requires the cli name so the backend
+// knows which binary to ask; cwd/prefix filter like the claude history endpoint.
+//
+// `session list` is scoped to the project bucket of the process cwd (git repo
+// root, or "global" for anything outside one) and opencode has no CLI surface
+// that enumerates the other buckets, so an empty cwd lists every project
+// through the read-only `opencode db` SELECT of opencodehist.ListAll — the same
+// enumeration the stats surface uses — and falls back to the server's own
+// bucket when that fails. That mirrors the claude/qoder tabs, where an empty
+// cwd already lists every project instead of just the server's directory.
 func (s *Server) handleOpenCodeSessions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
@@ -1521,8 +1528,8 @@ func (s *Server) handleOpenCodeSessions(w http.ResponseWriter, r *http.Request) 
 	}
 	cwd := q.Get("cwd")
 	prefix := strings.ToLower(strings.TrimSpace(q.Get("prefix")))
-	// `session list` 只返回进程 cwd 所属 opencode 项目桶的会话；cwd 参数选桶
-	//（git 仓库根 = 该仓库桶，非 git 目录 = global 桶），空则用服务器自身 cwd。
+	// `session list` 只返回进程 cwd 所属 opencode 项目桶的会话；给了 cwd 参数就在
+	// 那个目录里跑（git 仓库根 = 该仓库桶，非 git 目录 = global 桶），空则跨项目枚举。
 	listDir := ""
 	if cwd != "" {
 		abs, err := runner.ResolveCwd(cwd)
@@ -1533,7 +1540,19 @@ func (s *Server) handleOpenCodeSessions(w http.ResponseWriter, r *http.Request) 
 		listDir = abs
 		cwd = abs
 	}
-	list, err := opencodehist.List(cli.Path, listDir)
+	var (
+		list []opencodehist.SessionInfo
+		err  error
+	)
+	if cwd == "" {
+		list, err = opencodehist.ListAll(cli.Path)
+		if err != nil {
+			log.Printf("opencode 跨项目枚举失败，回落到服务进程所在项目桶：%v", err)
+			list, err = opencodehist.List(cli.Path, "")
+		}
+	} else {
+		list, err = opencodehist.List(cli.Path, listDir)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

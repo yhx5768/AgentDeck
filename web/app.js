@@ -4482,14 +4482,15 @@ async function scanImport() {
   // 必须让用户看见并填。
   $('#import-cwd').placeholder = kind === 'mcode'
     ? '工作目录（mcode 不记录会话目录，导入时按此设置）'
-    : '工作目录过滤';
+    : (kind === 'opencode' ? '工作目录过滤（留空 = 全部项目）' : '工作目录过滤');
   const params = new URLSearchParams();
   if (kind === 'opencode' || kind === 'mcode') {
     // opencode / mcode 的会话源在各自 CLI 自己的存储里，按 cli 查询
     params.set('cli', cliSel.value);
   }
-  // claude 与 qoder 都是"按 cwd 分桶的 jsonl 目录"，所以 cwd 照旧是过滤条件
-  if (cwd && (kind === 'claude' || kind === 'qoder')) params.set('cwd', cwd);
+  // claude / qoder / opencode 都按项目分桶（jsonl 目录 / opencode 自己的桶），
+  // cwd 对它们就是选桶条件；留空时服务端列全部项目。
+  if (cwd && (kind === 'claude' || kind === 'qoder' || kind === 'opencode')) params.set('cwd', cwd);
   if (prefix) params.set('prefix', prefix);
   const url = (kind === 'claude'
       ? '/api/claude-sessions'
