@@ -104,10 +104,11 @@ type Manager struct {
 	mu    sync.Mutex
 	procs map[string]*sessionRuntime
 	perm  *permissionState
+	grp   *groupState
 }
 
 func NewManager(cm *config.Manager, st *store.Store) *Manager {
-	return &Manager{cm: cm, st: st, procs: map[string]*sessionRuntime{}, perm: newPermissionState()}
+	return &Manager{cm: cm, st: st, procs: map[string]*sessionRuntime{}, perm: newPermissionState(), grp: newGroupState()}
 }
 
 // cfg returns the live config (hot-reloadable via config.Manager.Watch).

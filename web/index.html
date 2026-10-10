@@ -151,7 +151,7 @@
               <button class="traj-tab" data-tab="raw">raw</button>
             </div>
             <div id="traj-detail-body"></div>
-          </aside>
+  </aside>
         </div>
       </div>
 
@@ -199,6 +199,39 @@
         <div class="composer-footer">
           <span id="session-stats" class="session-stats"></span>
           <span class="composer-hint" id="queue-hint"></span>
+        </div>
+      </footer>
+    </div>
+
+    <!-- 群聊视图：多成员并行时间线，工具细节去成员会话看 -->
+    <div id="group-view" class="hidden">
+      <header id="group-header-bar">
+        <div class="title-row">
+          <button id="btn-group-drawer" class="icon-btn drawer-toggle" title="打开会话列表"><i data-lucide="menu"></i></button>
+          <span id="group-name" class="group-name"></span>
+          <span id="group-status" class="status-badge"></span>
+          <div class="header-actions">
+            <button id="btn-group-stop" class="icon-btn stop-btn hidden" title="停止本轮"><i data-lucide="square"></i></button>
+            <button id="btn-group-delete" class="icon-btn" title="解散群聊（成员影子会话一并删除）"><i data-lucide="trash-2"></i></button>
+          </div>
+        </div>
+        <div id="group-members" class="group-members"></div>
+      </header>
+      <div id="group-msg-wrap">
+        <div id="group-messages"></div>
+      </div>
+      <footer id="group-composer">
+        <div class="composer-card">
+          <div id="perm-dock-group" class="hidden"></div>
+          <div class="input-wrapper">
+            <textarea id="group-input" rows="1" placeholder="输入消息群发，@成员名 定向，@all 显式群发"></textarea>
+          </div>
+          <div class="composer-toolbar">
+            <div class="ct-side"><span class="composer-hint" id="group-hint"></span></div>
+            <div class="ct-side ct-right">
+              <button id="btn-group-send" class="round-send-btn" aria-label="发送" title="发送"><i data-lucide="arrow-up"></i></button>
+            </div>
+          </div>
         </div>
       </footer>
     </div>
@@ -338,6 +371,21 @@
   <button id="ws-migrate-submit" class="primary-btn">迁移这组全部会话</button>
 </div>
 
+<!-- 新建群聊 -->
+<div id="modal-new-group" class="modal hidden">
+  <div class="modal-card wide">
+    <h3>新建群聊</h3>
+    <label>群名 <input id="ng-name" placeholder="必填"></label>
+    <label>工作目录 <input id="ng-cwd" placeholder="/path/to/project"></label>
+    <div id="ng-members"></div>
+    <button class="ghost-btn" id="ng-add-member" type="button">＋ 加成员</button>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close>取消</button>
+      <button class="primary-btn" id="ng-submit">创建</button>
+    </div>
+  </div>
+</div>
+
 <!-- rename dialog -->
 <div id="modal-rename" class="modal hidden">
   <div class="modal-card">
@@ -358,6 +406,10 @@
   <div class="pop-section-title">排序方式</div>
   <button data-view-sort="manual" class="check"><span class="check-glyph"></span><span>手动排序</span></button>
   <button data-view-sort="updated"><span class="check-glyph"></span><span>最近更新</span></button>
+</div>
+<div id="ws-add-menu" class="popover-menu hidden">
+  <button data-add-kind="single"><span>新建单聊</span></button>
+  <button data-add-kind="group"><span>新建群聊</span></button>
 </div>
 <div id="modal-new" class="modal hidden">
   <div class="modal-card">

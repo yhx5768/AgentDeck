@@ -249,15 +249,20 @@
 
 ## T5 — 待设计（用户已点名，排期在权限卡+渲染验收之后）
 
-### 5.1 多 agent 群聊 orchestrator
+### 5.1 多 agent 群聊 orchestrator ✅ 已完成（2026-10-10）
 
-- 等权限卡 + 渲染两批验收通过后再做。对标 KyrieXu11/cc-webui 的 `server/groups/`：
-  canonical transcript + `@claude/@codex/@all` 路由 + pipeline 顺序执行（后者
-  在 prompt 里以 `[来自 X 的回复]` 看到前者输出）+ 每 agent 独立 model/mode/
-  effort/system prompt + `GroupChatView`。
-- 本仓库差异点：四引擎（对方只有 claude/codex），常驻 peer 消息已有一套点对点
-  通道，群聊是" orchestrator 组装 prompt" 的另一条路，两者关系需先定（复用
-  transcript 还是另起 group transcript）。
+- 影子成员会话（`store.GroupID`，侧栏隐藏、统计排除、可按 id 直接打开看单独
+  回放）＋中心编排并行扇出：`@成员/@all`/空群发（无 @ 即 @all），未知 @ 400；
+  轮内并行（同快照，互不见本轮输出）、轮间串行（忙时 409，草稿保留）。
+- prompt 增量注入（cursor）：成员 resume 上下文已有的一律不重发，只注 peers
+  自其上次参与后的回复（`[来自 X 的回复]`）＋用户消息；首轮全量。opencode/
+  mcode/qoder 一视同仁（调的是自家 `Enqueue`，Kyrie 只能双引擎是他调 SDK）。
+- 群独立 transcript 落盘（`data/groups/<gid>/transcript.jsonl`，user/member
+  干净正文）＋群 SSE（回放＋member_begin/text/end/turn_end）；成员审批卡转发
+  进群 channel，挂共享 dock，决议 POST 到成员会话；锁卡按成员/单聊归属落线。
+- 群视图只看正文（工具细节去成员会话）；members 8 上限；单群单 cwd；文本
+  消息 only（图片/附件 400）；删群等轮停后级联删影子会话。实测：qoder 免费
+  Flash 双成员并行/定向/第二轮增量/删除全通。
 
 ### 5.2 文件面板 + 终端面板
 

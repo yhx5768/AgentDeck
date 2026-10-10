@@ -2941,3 +2941,45 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 #perm-dock.hidden { display: none; }
 #perm-dock .msg-perm { margin: 0; }
 .perm-hint { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--dim); }
+
+/* ---------- 群聊 ---------- */
+#group-section { margin-top: var(--sp-3); }
+#group-list .session-item { cursor: pointer; }
+.group-name { font-weight: 600; font-size: var(--fs-lg); }
+#group-view { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+#group-header-bar { padding: var(--sp-2) var(--sp-4); border-bottom: 1px solid var(--border); }
+#group-header-bar .title-row { display: flex; align-items: center; gap: var(--sp-2); }
+#group-header-bar .header-actions { margin-left: auto; display: flex; gap: var(--sp-1); }
+.group-members { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
+.group-member-chip {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg3);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.group-member-chip:hover { border-color: var(--accent); }
+.group-members-hint { font-size: var(--fs-xs); color: var(--dim); }
+#group-msg-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#group-messages { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-4); padding-bottom: 24px; }
+.group-member-msg { border-left: 3px solid var(--accent); }
+.group-error { color: var(--red); }
+#group-composer { padding: 0 var(--sp-4) var(--sp-3); }
+#group-composer .composer-card { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--bg2); }
+#group-input { width: 100%; box-sizing: border-box; resize: none; background: transparent; border: none; outline: none; color: var(--fg); font-size: var(--fs-md); }
+.ng-member { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.ng-member .ng-name { flex: 1; min-width: 0; }
+.ng-member select { max-width: 150px; }
+#ng-add-member { margin-bottom: var(--sp-2); }
+.group-tag {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  padding: 0 5px;
+  line-height: 1.5;
+}
+.session-item.group-item .sess-name { color: var(--accent); font-weight: 600; }

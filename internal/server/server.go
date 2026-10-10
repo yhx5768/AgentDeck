@@ -165,6 +165,13 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/sessions/{id}/permissions/request", s.auth(s.handlePermissionRequest))
 	s.mux.Handle("POST /api/sessions/{id}/permissions/{pid}", s.auth(s.handlePermissionResolve))
 	s.mux.Handle("GET /api/sessions/{id}/permissions/pending", s.auth(s.handlePermissionPending))
+	s.mux.Handle("GET /api/groups", s.auth(s.handleListGroups))
+	s.mux.Handle("POST /api/groups", s.auth(s.handleCreateGroup))
+	s.mux.Handle("GET /api/groups/{id}", s.auth(s.handleGetGroup))
+	s.mux.Handle("DELETE /api/groups/{id}", s.auth(s.handleDeleteGroup))
+	s.mux.Handle("POST /api/groups/{id}/messages", s.auth(s.handleGroupMessage))
+	s.mux.Handle("POST /api/groups/{id}/stop", s.auth(s.handleGroupStop))
+	s.mux.Handle("GET /api/groups/{id}/events", s.auth(s.handleGroupEvents))
 	s.mux.Handle("GET /api/files", s.auth(s.handleReadFile))
 
 	// Static frontend (index redirects to login when unauthorized; the SPA
@@ -506,6 +513,11 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	showArchived := q.Get("archived") == "true"
 	out := []sessionView{}
 	for _, sess := range s.st.List() {
+		// Shadow group-member sessions live under the group view, never in
+		// the sidebar (they are still openable directly by id).
+		if sess.GroupID != "" {
+			continue
+		}
 		if sess.Archived != showArchived {
 			continue
 		}

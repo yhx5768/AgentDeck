@@ -38,6 +38,10 @@ type Session struct {
 	// transcript as a custom-title; empty means "derive from Name".
 	Resident bool   `json:"resident,omitempty"`
 	PeerName string `json:"peer_name,omitempty"`
+	// GroupID marks a shadow member session owned by a group chat: it runs
+	// the group's turns for one participant and is hidden from the sidebar
+	// (openable directly by id from the group view). Empty = ordinary session.
+	GroupID string `json:"group_id,omitempty"`
 	Archived bool   `json:"archived"`
 	// Unread marks a session whose latest turn just finished (active→idle) but
 	// no client has opened it since. Set server-side by the runner on

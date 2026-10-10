@@ -105,7 +105,12 @@ const state = {
   seenSeq: new Set(), // seqs already rendered on this connection
   toolBlocks: {},     // tool_use_id -> details element
   toolTimers: {},     // tool_use_id -> {timer, start} live elapsed ticker
-  permCards: {},      // permission id -> {wrap, buttons...} outstanding approval cards
+  permCards: {},      // permission id -> {wrap, card, locked} outstanding approval cards
+  groups: [],         // group list
+  currentGroup: null, // open group object {id, name, cwd, members}
+  groupEs: null,
+  groupSeen: null,    // per-connection seq set for group SSE
+  groupLive: null,    // turnID -> {memberID -> {bubble, buf}} streaming member bubbles
   subagentCards: {},  // parent_tool_use_id -> 子代理卡片 {summary, body, count, label}
   agentToolMeta: {},  // Agent tool_use_id -> {title, type}（实时侧卡片标题来源）
   ocVariants: {},     // "cli/provider" -> {ts, data:{model:[--variant 键]}|null}（带 TTL，见 ocVariantsFor）
@@ -184,7 +189,7 @@ function renderIcons(root) {
     'settings-2', 'arrow-up', 'settings', 'bar-chart-3',
     'menu', 'more-vertical', 'send-horizontal', 'folder',
     'panel-left-close', 'panel-left-open', 'list-collapse',
-    'bot',
+    'bot', 'users',
     'list-todo', 'circle', 'circle-check',
   ];
   // lucide 自动 kebab→Pascal，所以 icons map 的 key 也用 PascalCase
@@ -387,6 +392,7 @@ async function loadSessions() {
   renderSessionList();
   renderArchiveList();
   renderWsActivity();
+  loadGroups().catch(() => {}); // 群列表随会话轮询一起刷新（量小）
 }
 
 function statusDot(s) {
@@ -676,7 +682,7 @@ function renderSessionList() {
     });
   }
 
-  if (!list.length) {
+  if (!list.length && !(state.groups || []).length) {
     const empty = document.createElement('div');
     empty.style.cssText = 'padding:24px 12px;color:var(--dim);font-size:12px;text-align:center';
     empty.textContent = q ? '没有匹配的会话' : '暂无会话';
@@ -688,7 +694,18 @@ function renderSessionList() {
   if (state.viewGroup === 'none') {
     const flat = document.createElement('div');
     flat.className = 'session-list-flat';
-    for (const s of list) {
+    const mixed = [
+      ...list.map((s) => ({ ts: new Date(s.updated_at).getTime() || 0, session: s })),
+      ...(state.groups || [])
+        .filter((g) => !q || (g.name || '').toLowerCase().includes(q))
+        .map((g) => ({ ts: new Date(g.updated_at || 0).getTime() || 0, group: g })),
+    ].sort((a, b) => b.ts - a.ts);
+    for (const entry of mixed) {
+      if (entry.group) {
+        appendGroupItem(flat, entry.group);
+        continue;
+      }
+      const s = entry.session;
       const item = document.createElement('div');
       item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
       item.dataset.sessionId = s.id;
@@ -701,16 +718,22 @@ function renderSessionList() {
     return;
   }
 
-  // group by cwd
+  // group by cwd（单聊＋群聊按各自 cwd 落进同一工作区）
   const groups = new Map();
   for (const s of list) {
     const key = s.cwd || '(无目录)';
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
   }
+  for (const g of (state.groups || [])) {
+    if (q && !(g.name || '').toLowerCase().includes(q)) continue;
+    const key = g.cwd || '(无目录)';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ __group: true, ...g });
+  }
   const ordered = [...groups.entries()].sort((a, b) => {
-    const ta = Math.max(...a[1].map((s) => new Date(s.updated_at).getTime()));
-    const tb = Math.max(...b[1].map((s) => new Date(s.updated_at).getTime()));
+    const ta = Math.max(...a[1].map((s) => new Date(s.updated_at || 0).getTime() || 0));
+    const tb = Math.max(...b[1].map((s) => new Date(s.updated_at || 0).getTime() || 0));
     return tb - ta;
   });
 
@@ -720,7 +743,7 @@ function renderSessionList() {
 
     const header = document.createElement('div');
     header.className = 'group-header';
-    header.innerHTML = `<span class="chev"><i data-lucide="chevron-down"></i></span><i data-lucide="folder" class="dir-icon"></i><span class="dir"></span><span class="count">${sessions.length}</span><button class="group-migrate-btn icon-btn" title="迁移/修改工作区路径"><i data-lucide="settings"></i></button><button class="group-add-btn icon-btn" title="在此工作区新建会话"><i data-lucide="plus"></i></button>`;
+    header.innerHTML = `<span class="chev"><i data-lucide="chevron-down"></i></span><i data-lucide="folder" class="dir-icon"></i><span class="dir"></span><span class="count">${sessions.length}</span><button class="group-migrate-btn icon-btn" title="迁移/修改工作区路径"><i data-lucide="settings"></i></button><button class="group-add-btn icon-btn" title="新建单聊 / 群聊"><i data-lucide="plus"></i></button>`;
     header.querySelector('.dir').textContent = shortenPath(cwd);
     header.title = cwd;
     renderIcons(header);
@@ -735,10 +758,10 @@ function renderSessionList() {
       }
       saveCollapsedGroups();
     };
-    // "+" button: jump to new-session composer with this cwd pre-filled
+    // "+" button: choose single chat or group chat in this workspace
     header.querySelector('.group-add-btn').onclick = (e) => {
       e.stopPropagation();
-      openNewSessionView(cwd);
+      openWsAddMenu(cwd, e.currentTarget);
     };
     // "settings" button: migrate every session of this workspace to a new path
     header.querySelector('.group-migrate-btn').onclick = (e) => {
@@ -748,6 +771,10 @@ function renderSessionList() {
     group.appendChild(header);
 
     for (const s of sessions) {
+      if (s.__group) {
+        appendGroupItem(group, s);
+        continue;
+      }
       const item = document.createElement('div');
       item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
       item.dataset.sessionId = s.id;
@@ -1249,6 +1276,8 @@ async function openSession(id) {
   switchChatTab('chat');
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
+  $('#group-view').classList.add('hidden');
+  relocatePermCards();
   $('#chat-view').classList.remove('hidden');
   // 清 DOM 前先摘 observer，防悬空引用 + 旧会话文本闪现
   hidePinnedPrompt();
@@ -2824,17 +2853,47 @@ const PERM_OTHER = '__other__';
 // 待审批卡停靠在输入框上方（composer 卡片顶部），位置固定不随消息流跑；
 // 审批完（锁卡）才落进消息流随历史走。dock 在 composer 里，显隐撑高输入框，
 // 高度变化由已有的 ResizeObserver 自动换算成消息区 padding。
-function permDock() { return $('#perm-dock'); }
+// 群视图有自己的 composer+dock：永远用当前可见的那个。
+function permDock() {
+  const gv = $('#group-view');
+  if (gv && !gv.classList.contains('hidden')) return $('#perm-dock-group');
+  return $('#perm-dock');
+}
+function activeMsgBox() {
+  const gv = $('#group-view');
+  if (gv && !gv.classList.contains('hidden')) return $('#group-messages');
+  return $('#messages');
+}
 function syncPermDock() {
   const dock = permDock();
   if (!dock) return;
   dock.classList.toggle('hidden', dock.children.length === 0);
 }
-// 卡片落进消息流：已锁定的卡从 dock 搬到 #messages 末尾（appendChild 即搬迁）。
-function landPermCard(entry) {
-  const box = $('#messages');
+// 卡片落进消息流：已锁定的卡从 dock 搬到消息区末尾（appendChild 即搬迁）。
+// 成员审批结果归群时间线（toGroup），单聊卡走当前视图。
+function landPermCard(entry, toGroup) {
+  const box = toGroup ? $('#group-messages') : activeMsgBox();
   if (entry && entry.wrap && entry.wrap.parentElement !== box) box.appendChild(entry.wrap);
-  syncPermDock();
+  document.querySelectorAll('#perm-dock, #perm-dock-group').forEach((dock) => {
+    if (dock) dock.classList.toggle('hidden', dock.children.length === 0);
+  });
+}
+// 切视图时把未锁卡搬到当前 dock，避免悬在隐藏的 composer 里
+function relocatePermCards() {
+  const dock = permDock();
+  if (!dock) return;
+  for (const id of Object.keys(state.permCards || {})) {
+    const e = state.permCards[id];
+    if (e && !e.locked && e.wrap && e.wrap.parentElement !== dock) dock.appendChild(e.wrap);
+  }
+  document.querySelectorAll('#perm-dock, #perm-dock-group').forEach((dd) => {
+    if (dd) dd.classList.toggle('hidden', dd.children.length === 0);
+  });
+}
+// 群转发的审批卡自带 member_id（决议 POST 到成员影子会话）；单聊卡走当前会话
+function permResolveSid(d) {
+  if (d && d.member_id) return d.member_id;
+  return (state.current && state.current.id) || '';
 }
 function permInputSummary(tool, input) {
   if (tool === 'AskUserQuestion' && input && Array.isArray(input.questions)) {
@@ -2932,12 +2991,12 @@ function buildAskUserCard(card, d, questions, box, wrap) {
     });
     setBusy(true);
     try {
-      await api(`/api/sessions/${state.current.id}/permissions/${d.id}`, {
+      await api(`/api/sessions/${permResolveSid(d)}/permissions/${d.id}`, {
         method: 'POST', body: JSON.stringify({ behavior: 'allow', answers }),
       });
       lockPermCard(card, 'allow', '已回答');
       state.permCards[d.id].locked = true;
-      landPermCard(state.permCards[d.id]);
+      landPermCard(state.permCards[d.id], !!(d && d.member_id));
     } catch (e) {
       setBusy(false);
       refresh();
@@ -2949,12 +3008,12 @@ function buildAskUserCard(card, d, questions, box, wrap) {
   card.querySelector('.perm-deny').onclick = async () => {
     setBusy(true);
     try {
-      await api(`/api/sessions/${state.current.id}/permissions/${d.id}`, {
+      await api(`/api/sessions/${permResolveSid(d)}/permissions/${d.id}`, {
         method: 'POST', body: JSON.stringify({ behavior: 'deny', message: '用户跳过了这个提问' }),
       });
       lockPermCard(card, 'deny', '已跳过');
       state.permCards[d.id].locked = true;
-      landPermCard(state.permCards[d.id]);
+      landPermCard(state.permCards[d.id], !!(d && d.member_id));
     } catch (e) {
       setBusy(false);
       const st = card.querySelector('.perm-state');
@@ -3022,14 +3081,14 @@ function renderPermissionCard(d, box) {
   const answer = async (behavior, message) => {
     setBusy(true);
     try {
-      await api(`/api/sessions/${state.current.id}/permissions/${d.id}`, {
+      await api(`/api/sessions/${permResolveSid(d)}/permissions/${d.id}`, {
         method: 'POST', body: JSON.stringify({ behavior, message }),
       });
       // 结果经 SSE permission_resolved 回来统一锁卡；这里先乐观锁，丢包也不悬空
       lockPermCard(card, behavior === 'deny' ? 'deny' : 'allow',
         behavior === 'deny' ? '已拒绝' : behavior === 'allow_tool_session' ? '已允许同名工具' : '已允许本次');
       state.permCards[d.id].locked = true;
-      landPermCard(state.permCards[d.id]);
+      landPermCard(state.permCards[d.id], !!(d && d.member_id));
     } catch (e) {
       setBusy(false);
       const st = card.querySelector('.perm-state');
@@ -3093,8 +3152,8 @@ function resolvePermissionCard(d) {
     if (!entry.locked) {
       lockPermCard(entry.card, d.behavior, permLabel(entry.card, d.behavior, d.timeout, d.auto_allowed));
       entry.locked = true;
+      landPermCard(entry, !!(d && d.member_id));
     }
-    landPermCard(entry);
     return;
   }
   // 重连/刷新时错过 request：补一张已锁定的卡，避免"工具没动静"的 mystery gap
@@ -3105,7 +3164,7 @@ function resolvePermissionCard(d) {
       if (e2.timer) clearInterval(e2.timer);
       lockPermCard(e2.card, d.behavior, d.timeout ? '已超时自动拒绝' : d.behavior === 'deny' ? '已拒绝' : '已允许');
       e2.locked = true;
-      landPermCard(e2);
+      landPermCard(e2, !!(d && d.member_id));
     }
   }
 }
@@ -5066,6 +5125,8 @@ let nsPendingCwd = '';
 async function openNewSessionView(cwd) {
   nsPendingCwd = cwd || '';
   $('#chat-view').classList.add('hidden');
+  $('#group-view').classList.add('hidden');
+  relocatePermCards();
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.remove('hidden');
   $('#ns-cwd-display').textContent = cwd ? `工作区: ${cwd}` : '';
@@ -5466,6 +5527,341 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   });
+}
+
+// ---------- 群聊（影子成员会话＋并行编排） ----------
+// 群时间线只看正文（user/成员回复）；工具调用、审批之外的细节去成员会话看
+// （成员是真实会话，点名字直接打开，回放/工具卡全量）。审批卡经群 SSE 转发，
+// 挂同一个 dock，决议 POST 到成员影子会话。
+async function loadGroups() {
+  try {
+    state.groups = await api('/api/groups') || [];
+  } catch (_) {
+    state.groups = [];
+  }
+  renderSessionList(); // 群与单聊合并渲染（按工作区分组，群挂群聊小标签）
+}
+// 群条目：与会话同行，挂「群聊」小标签，点开进群视图
+function appendGroupItem(box, g) {
+  const el = document.createElement('div');
+  el.className = 'session-item group-item' + (state.currentGroup && state.currentGroup.id === g.id ? ' active' : '');
+  el.innerHTML = '<span class="dot"></span><span class="sess-name"></span><span class="group-tag">群聊</span><span class="sess-meta"></span>';
+  el.querySelector('.sess-name').textContent = g.name;
+  el.querySelector('.sess-meta').textContent = `${(g.members || []).length} 成员${g.running ? ' · 跑着' : ''}`;
+  el.querySelector('.dot').className = 'dot' + (g.running ? ' running' : '');
+  el.onclick = () => openGroup(g.id);
+  box.appendChild(el);
+}
+function hideAllViews() {
+  $('#empty-state').classList.add('hidden');
+  $('#chat-view').classList.add('hidden');
+  $('#new-session-view').classList.add('hidden');
+  $('#group-view').classList.add('hidden');
+}
+async function openGroup(gid) {
+  let data;
+  try {
+    data = await api(`/api/groups/${gid}`);
+  } catch (e) {
+    alert('打开群聊失败：' + e.message);
+    return;
+  }
+  if (state.es) { state.es.close(); state.es = null; }
+  state.currentGroup = data.group;
+  state.groupSeen = new Set();
+  state.groupLive = {};
+  hideAllViews();
+  $('#group-view').classList.remove('hidden');
+  $('#group-name').textContent = data.group.name;
+  renderGroupMembers(data.group);
+  const box = $('#group-messages');
+  box.innerHTML = '';
+  for (const e of (data.transcript || [])) renderGroupEntry(e, box);
+  updateGroupStatus(data.group.running);
+  relocatePermCards();
+  connectGroupEvents(gid);
+  // 各成员的未决审批补卡（transient，不进回放）
+  for (const mb of (data.group.members || [])) {
+    try {
+      const r = await api(`/api/sessions/${mb.id}/permissions/pending`);
+      for (const p of (r && r.pending) || []) {
+        p.member_id = mb.id;
+        p.member_name = mb.name;
+        renderPermissionCard(p);
+      }
+    } catch (_) {}
+  }
+  renderSessionList(); // 刷新合并列表里的 active 高亮
+  if (!isMobile()) $('#group-input').focus();
+}
+$('#ng-add-member').onclick = () => {
+  const { row } = ngMemberRow();
+  $('#ng-members').appendChild(row);
+};
+$('#ng-submit').onclick = async () => {
+  const name = $('#ng-name').value.trim();
+  const cwd = $('#ng-cwd').value.trim();
+  const members = [...$('#ng-members').querySelectorAll('.ng-member')].map((row) => ({
+    name: row.querySelector('.ng-name').value.trim(),
+    cli: row.querySelector('.ng-cli').value,
+    provider: row.querySelector('.ng-prov').value,
+  })).filter((m) => m.name && m.cli && m.provider);
+  if (!name || !cwd || members.length === 0) {
+    alert('群名、工作目录、至少一个完整成员必填');
+    return;
+  }
+  try {
+    const g = await api('/api/groups', { method: 'POST', body: JSON.stringify({ name, cwd, members }) });
+    $('#modal-new-group').classList.add('hidden');
+    await loadGroups();
+    openGroup(g.id);
+  } catch (e) {
+    alert('建群失败：' + e.message);
+  }
+};
+$('#btn-group-send').onclick = () => sendGroupMessage();
+$('#group-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendGroupMessage();
+  }
+});
+$('#group-input').addEventListener('input', (e) => {
+  e.target.style.height = 'auto';
+  e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px';
+});
+$('#btn-group-stop').onclick = async () => {
+  if (!state.currentGroup) return;
+  try {
+    await api(`/api/groups/${state.currentGroup.id}/stop`, { method: 'POST' });
+  } catch (e) {
+    alert('停止失败：' + e.message);
+  }
+};
+$('#btn-group-delete').onclick = async () => {
+  const g = state.currentGroup;
+  if (!g) return;
+  if (!confirm(`解散群聊「${g.name}」？成员影子会话一并删除，群记录清除。`)) return;
+  try {
+    await api(`/api/groups/${g.id}`, { method: 'DELETE' });
+    if (state.groupEs) state.groupEs.close();
+    state.groupEs = null;
+    state.currentGroup = null;
+    $('#group-view').classList.add('hidden');
+    $('#empty-state').classList.remove('hidden');
+    await loadGroups();
+  } catch (e) {
+    alert('解散失败：' + e.message);
+  }
+};
+$('#btn-group-drawer').onclick = openDrawer;
+function renderGroupMembers(g) {
+  const bar = $('#group-members');
+  bar.innerHTML = '';
+  for (const mb of (g.members || [])) {
+    const b = document.createElement('button');
+    b.className = 'group-member-chip';
+    b.title = `打开成员会话 ${mb.name}（看工具调用与完整回放）`;
+    b.textContent = `👤 ${mb.name}`;
+    b.onclick = () => openSession(mb.id);
+    bar.appendChild(b);
+  }
+  const hint = document.createElement('span');
+  hint.className = 'group-members-hint';
+  hint.textContent = '点成员看它的单独回放（含工具调用）';
+  bar.appendChild(hint);
+}
+function updateGroupStatus(running) {
+  $('#group-status').textContent = running ? '跑着…' : '';
+  $('#group-status').classList.toggle('running', !!running);
+  $('#btn-group-stop').classList.toggle('hidden', !running);
+}
+// 群时间线条目：复用对话气泡样式类（.msg/.msg-user/.bubble/role-tag），
+// 成员色用 --accent 边框区分（工具细节不在这里，去成员会话看）。
+function renderGroupEntry(e, box) {
+  box = box || $('#group-messages');
+  if (!e) return;
+  if (e.Kind === 'user' || e.kind === 'user') {
+    const text = e.Text || e.text || '';
+    const bubble = addMsg('msg-user', '你', box);
+    bubble.textContent = text;
+  } else if (e.Kind === 'member' || e.kind === 'member') {
+    const name = e.MemberName || e.member_name || '成员';
+    const text = e.Text || e.text || '';
+    if (!text.trim()) return;
+    const bubble = addMsg('msg-assistant group-member-msg', escapeHtml(name), box);
+    bubble.innerHTML = md(text);
+  }
+}
+function gStatusLine(key, text) {
+  const box = $('#group-messages');
+  let el = box.querySelector(`[data-gstatus="${key}"]`);
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'meta-line';
+    el.dataset.gstatus = key;
+    box.appendChild(el);
+  }
+  el.textContent = text;
+  return el;
+}
+function gClearStatus(key) {
+  const el = $('#group-messages').querySelector(`[data-gstatus="${key}"]`);
+  if (el) el.remove();
+}
+function connectGroupEvents(gid) {
+  if (state.groupEs) state.groupEs.close();
+  const es = new EventSource(`/api/groups/${gid}/events`);
+  state.groupEs = es;
+  let opened = false;
+  es.onopen = () => {
+    if (opened && state.currentGroup && state.currentGroup.id === gid) openGroup(gid);
+    opened = true;
+  };
+  es.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    if (!state.groupSeen) state.groupSeen = new Set();
+    if (state.groupSeen.has(ev.seq)) return;
+    state.groupSeen.add(ev.seq);
+    if (ev.kind === 'replay_end') return;
+    // 成员审批卡：与单聊同一渲染器，决议挂成员会话
+    if (ev.kind === 'permission_request') {
+      const d = ev.data || {};
+      renderPermissionCard(d);
+      return;
+    }
+    if (ev.kind === 'permission_resolved') {
+      resolvePermissionCard(ev.data);
+      return;
+    }
+    if (ev.kind !== 'group') return;
+    const d = ev.data || {};
+    const box = $('#group-messages');
+    if (d.type === 'user') {
+      const bubble = addMsg('msg-user', '你', box);
+      bubble.textContent = d.text || '';
+      updateGroupStatus(true);
+    } else if (d.type === 'member_begin') {
+      gStatusLine(`begin-${d.turn_id}-${d.member_id}`, `👤 ${d.member_name} 正在输入…`);
+      updateGroupStatus(true);
+    } else if (d.type === 'member_text') {
+      state.groupLive = state.groupLive || {};
+      const turn = (state.groupLive[d.turn_id] = state.groupLive[d.turn_id] || {});
+      let live = turn[d.member_id];
+      if (!live) {
+        const bubble = addMsg('msg-assistant group-member-msg', escapeHtml(d.member_name || '成员'), box);
+        live = turn[d.member_id] = { bubble, buf: '' };
+      }
+      live.buf += (live.buf ? '\n\n' : '') + (d.text || '');
+      live.bubble.textContent = live.buf; // 流式先纯文本，结束再 md
+      gClearStatus(`begin-${d.turn_id}-${d.member_id}`);
+    } else if (d.type === 'member_end') {
+      const turn = state.groupLive && state.groupLive[d.turn_id];
+      const live = turn && turn[d.member_id];
+      if (live) {
+        if (d.ok && d.text) live.bubble.innerHTML = md(d.text);
+        else if (!d.ok) live.bubble.innerHTML = `<span class="group-error">（${escapeHtml(d.error || '无回复')}）</span>`;
+        delete turn[d.member_id];
+      } else if (d.ok && d.text) {
+        // 重连/刷新错过直播：直接落正文（回放里也有，不会丢）
+        const bubble = addMsg('msg-assistant group-member-msg', escapeHtml(d.member_name || '成员'), box);
+        bubble.innerHTML = md(d.text);
+      }
+      gClearStatus(`begin-${d.turn_id}-${d.member_id}`);
+    } else if (d.type === 'turn_end') {
+      updateGroupStatus(false);
+      loadGroups().catch(() => {});
+    }
+    box.scrollTop = box.scrollHeight;
+  };
+}
+async function sendGroupMessage() {
+  const g = state.currentGroup;
+  if (!g) return;
+  const ta = $('#group-input');
+  const text = ta.value.trim();
+  if (!text) return;
+  $('#group-hint').textContent = '';
+  try {
+    await api(`/api/groups/${g.id}/messages`, { method: 'POST', body: JSON.stringify({ text }) });
+    ta.value = '';
+    ta.style.height = 'auto';
+  } catch (e) {
+    // 409 本轮未结束：留着草稿提示，不吞消息
+    $('#group-hint').textContent = e.message.includes('in flight') ? '本轮还没跑完，稍等再发（草稿已保留）' : ('发送失败：' + e.message);
+  }
+}
+// ---------- 新建群聊弹窗 ----------
+let ngMemberIdx = 0;
+function ngMemberRow() {
+  const i = ngMemberIdx++;
+  const row = document.createElement('div');
+  row.className = 'ng-member';
+  row.innerHTML =
+    '<input class="ng-name" placeholder="成员名（@用，无空格）">' +
+    '<select class="ng-cli"></select>' +
+    '<select class="ng-prov"></select>' +
+    '<button class="icon-btn ng-del" title="删成员">✕</button>';
+  const cliSel = row.querySelector('.ng-cli');
+  const provSel = row.querySelector('.ng-prov');
+  cliSel.innerHTML = state.clis.map((c) => `<option value="${c.name}">${escapeHtml(c.name)}${kindOf(c) === 'claude' ? '' : ' · ' + c.kind}</option>`).join('');
+  const refill = () => {
+    const kind = cliKind(cliSel.value);
+    provSel.innerHTML = state.providers.filter((p) => (p.kind || 'claude') === kind)
+      .map((p) => `<option value="${p.name}">${escapeHtml(p.name)}</option>`).join('');
+  };
+  cliSel.onchange = refill;
+  refill();
+  row.querySelector('.ng-del').onclick = () => row.remove();
+  return { row, cliSel };
+}
+// 工作区加号：单聊 / 群聊二选一（群聊预填该工作区）
+let wsAddCwd = '';
+function openWsAddMenu(cwd, anchor) {
+  wsAddCwd = cwd;
+  const pop = $('#ws-add-menu');
+  pop.classList.remove('hidden');
+  const rect = anchor.getBoundingClientRect();
+  const pw = 180, ph = 90;
+  let x = rect.right + 4;
+  let y = rect.top - 4;
+  if (x + pw > window.innerWidth - 8) x = rect.right - pw;
+  x = Math.max(8, Math.min(x, window.innerWidth - pw - 8));
+  if (y + ph > window.innerHeight - 8) y = Math.max(8, rect.top - ph - 6);
+  pop.style.left = x + 'px';
+  pop.style.top = y + 'px';
+}
+function closeWsAddMenu() { $('#ws-add-menu').classList.add('hidden'); }
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('#ws-add-menu') && !e.target.closest('.group-add-btn')) closeWsAddMenu();
+});
+$('#ws-add-menu').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-add-kind]');
+  if (!btn) return;
+  closeWsAddMenu();
+  if (btn.dataset.addKind === 'group') {
+    $('#ng-cwd').value = wsAddCwd;
+    openNewGroupDialog(wsAddCwd);
+  } else {
+    openNewSessionView(wsAddCwd);
+  }
+});
+function openNewGroupDialog(cwd) {
+  $('#ng-name').value = '';
+  $('#ng-cwd').value = cwd || (state.current && state.current.cwd) || state.home || '';
+  const box = $('#ng-members');
+  box.innerHTML = '';
+  ngMemberIdx = 0;
+  // 默认两个成员位：名取前两个 cli，省手工
+  for (let i = 0; i < 2; i++) {
+    const { row, cliSel } = ngMemberRow();
+    if (state.clis[i]) cliSel.value = state.clis[i].name;
+    cliSel.dispatchEvent(new Event('change'));
+    row.querySelector('.ng-name').value = state.clis[i] ? state.clis[i].name : '';
+    box.appendChild(row);
+  }
+  openModal('#modal-new-group');
+  renderIcons($('#modal-new-group'));
 }
 
 (async function boot() {

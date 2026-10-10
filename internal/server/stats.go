@@ -53,6 +53,31 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		fas = append(fas, qoderStatsCache.RefreshWithModels(
 			claudehist.HistoryDirIn(claudehist.QoderProfile, ""), s.qoderModelHints(), fresh)...)
 	}
+	// Shadow group-member sessions run the group's turns under their own
+	// engine session ids — drop those aggregates so group activity isn't
+	// double-counted as individual sessions (the group log itself is not
+	// scanned, so the group as such stays out of stats for now).
+	skip := map[string]bool{}
+	for _, sess := range s.st.List() {
+		if sess.GroupID == "" {
+			continue
+		}
+		if sess.ClaudeSessionID != "" {
+			skip[sess.ClaudeSessionID] = true
+		}
+		for _, prev := range sess.PreviousClaudeSessionIDs {
+			skip[prev] = true
+		}
+	}
+	if len(skip) > 0 {
+		kept := fas[:0]
+		for _, fa := range fas {
+			if !skip[fa.FileID] {
+				kept = append(kept, fa)
+			}
+		}
+		fas = kept
+	}
 	stats := statsagg.Recompute(fas)
 	statsMu.Unlock()
 	writeJSON(w, http.StatusOK, stats)
