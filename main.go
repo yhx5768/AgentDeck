@@ -27,7 +27,13 @@ func main() {
 	configPath := flag.String("config", config.DefaultPath(), "path to config.yaml")
 	listen := flag.String("listen", "", "override listen address (e.g. 0.0.0.0:8321)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	permHelper := flag.Bool("perm-helper", false, "run as PermissionRequest hook helper (internal, spawned by the CLI)")
 	flag.Parse()
+
+	if *permHelper {
+		runner.RunPermHelper()
+		return
+	}
 
 	if *showVersion {
 		fmt.Printf("cc-webui %s\n", version)

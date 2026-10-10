@@ -69,15 +69,29 @@
 - 前端：当前 turn 结束后在用户输入框上方显示「💡 建议：…」（点击填入输入框）。
 - 预计工作量：后端 1h，前端 几小时。
 
-### 2.4 移动审批（Permission prompts）
+### 2.4 移动审批（Permission prompts）✅ 已完成（2026-10-09）
 
-> 远程 Web 场景的杀手特性。当前 `bypassPermissions` 全放行；要做出「手机弹窗审批」就得用 hooks 或 `--permission-prompt-tool`。
+> 远程 Web 场景的杀手特性。已落地：非 bypass 的 claude/qoder 会话经 `--settings`
+> 的 `PermissionRequest` hook（`cc-webui -perm-helper`）走 Web 审批，不再全放行。
 
-- **方案 A**：外部 hook（`--settings` 里 `permissions.prompt-tool` 指向 cc-webui 的辅助端点）。
-- **方案 B**：`--permission-prompt-tool <command>` [V 已验证]，CLI 把权限决策委托给外部命令 → cc-webui 注册一个 helper：发 SSE 通知前端 → 前端弹审批卡片 → 用户点批准/拒绝 → helper 返回决策。
-- 此外还有 `AskUserQuestion` 工具（plan 模式常用）的 user input 处理 — 同一 helper 可以复用。
-- 价值：远程使用时真正敢用 default 权限模式而不是 bypassPermissions。
-- 预计工作量：较大（2-3 天）。需设计 helper 协议、超时、SSE 通知。
+- 落地为**方案 A 变体**：`--settings` 里 `hooks.PermissionRequest` 指向本二进制
+  的 `-perm-helper`（env 传 session/addr/token），helper POST
+  `/api/sessions/{id}/permissions/request` 并阻塞等决策 → SSE `permission_request`
+  通知前端 → 审批卡 → `POST .../permissions/{pid}` → helper 输出 hook JSON 退出。
+  注：`--permission-prompt-tool` 经核实是 MCP tool 名（需跑 MCP server + 30s 启动
+  等待），不是 shell 命令，遂未采用；TODO 原方案 B 描述有误。
+- 三档：允许本次 / 本次会话都允许（同名工具 allowance，后续免问，前端显示
+  "已按规则允许"）/ 拒绝（可附理由回传模型）。hook 上限 60s，helper 等 55s，
+  超时自动拒绝（fail-closed，故障也拒绝不放行）。
+- 多 CLI 适配：仅 claude/qoder 注入 hook（`permissionHookWanted`）；opencode
+ （`--auto` 自动放行，无 headless 审批面）、mcode（smart/full，ask 需 TUI）不注
+  入，前端权限下拉 title 已注明。`auto`/`dontAsk` 选项已加入三个权限下拉。
+- AskUserQuestion 答案回填 ✅（2026-10-09）：题目按单选/多选 + 其他自定义渲染，
+  答案以问题原文为 key 经 `updatedInput.answers` 回传（多选逗号连接），跳过走
+  deny；后端拒绝给 AskUserQuestion 建 session allowance（ crafted 调用也拿不到
+  免问）。缺省行为：不填答案提交按钮保持禁用，超时/跳过模型收到未回答。
+- 待补（MVP 明确未做）：`updatedPermissions` 的 setMode 规则下发；allowance 跨重
+  启持久化（现仅内存，删会话即清）。
 
 ### 2.5 Hook 事件可视化（`--include-hook-events`）
 
@@ -182,6 +196,10 @@
 
 ## T4 — 体验润色（不影响核心功能）
 
+- [x] **渲染三件套**（2026-10-09）：CJK autolink（尾部中文标点从 href 剥离）、单 `~`
+  保护（`~~` 删除线不受影响）、空消息过滤（空 text/thinking 不占位，时间线不断
+  裂）、工具三态 + 耗时（执行中蓝点转圈 → ✓/✗，summary 行实时计时 + 定格）、
+  edit/write diff（`(−N +M)` 统计、Write 200 行截断、上下文折叠越界修复）。
 - [ ] **Subagent 消息浏览面板**：UI 上点 subagent 卡片 → 打开侧栏显示完整 subagent transcript（前端 + `claudehist` 子 agent 解析已支持）。
 - [ ] **rate limit 状态栏**：流里 `rate_limit_event`（SDK 0.2.x 类型）出现时显示在状态栏。
 - [ ] **Web Push 通知**：turn_end 时浏览器通知；PWA 友好（service worker 已就绪）。
@@ -197,7 +215,7 @@
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| `--permission-prompt-tool` | ✅ [V] | 已验证 CLI 接受；隐藏 flag |
+| `--permission-prompt-tool` | ⚠️ 纠正 | 曾标 [V] 为 shell 命令；2026-10-09 核实官方文档：它是 **MCP tool 名**（需跑 MCP server + 30s 启动等待），遂未采用，改走 `PermissionRequest` hook |
 | `--max-turns` | ✅ [V] | 同上 |
 | `--max-thinking-tokens` | ✅ [V] | 同上 |
 | `--thinking-display` | ✅ [V] | 同上 |
@@ -226,4 +244,31 @@
 6. T2.8 resume-from-message（与 2.1 互补，工期相近，一起做）
 7. T2.4 移动审批（最大架构动作，远程场景差异化卖点）
 8. T3.x per-session MCP / Agents / Plugins / Structured output / CLAUDE.md / hooks UI / setting_sources（按需求做）
+
+---
+
+## T5 — 待设计（用户已点名，排期在权限卡+渲染验收之后）
+
+### 5.1 多 agent 群聊 orchestrator
+
+- 等权限卡 + 渲染两批验收通过后再做。对标 KyrieXu11/cc-webui 的 `server/groups/`：
+  canonical transcript + `@claude/@codex/@all` 路由 + pipeline 顺序执行（后者
+  在 prompt 里以 `[来自 X 的回复]` 看到前者输出）+ 每 agent 独立 model/mode/
+  effort/system prompt + `GroupChatView`。
+- 本仓库差异点：四引擎（对方只有 claude/codex），常驻 peer 消息已有一套点对点
+  通道，群聊是" orchestrator 组装 prompt" 的另一条路，两者关系需先定（复用
+  transcript 还是另起 group transcript）。
+
+### 5.2 文件面板 + 终端面板
+
+- 用户想做，但涉及安全，先设计再动手，不直接开工。
+- 安全面清单（设计时必须回答）：
+  - 文件面板现在 `/api/files` 是**只读 + 限会话 cwd + EvalSymlinks + 2MiB +
+    拒二进制**；可编辑意味着写回盘上 → 需要写白名单（cwd 内 + 拒 dotfile/
+    拒 symlink 逃逸）、并发写冲突（CLI 正好也在改同一文件）、大文件截断策略。
+  - 终端面板意味着远端 shell → 需要执行白名单/黑名单（`rm -rf /` 熔断）、进程组
+    隔离 + 超时 + 输出窗口上限（参考对方 256KB rolling）、会话级隔离、重启后孤
+    儿进程清理。默认必须关闭，显式开启才给。
+  - 鉴权面：`gateway_token` 是唯一 gate，面板一旦可写/可执行，token 泄露 = 整机
+    沦陷，需先评估 token 分级或只读/读写模式开关。
 9. T4 体验润色长尾

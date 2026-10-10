@@ -32,9 +32,37 @@ const CODE_COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 
 
 // Render markdown to sanitized HTML; force all links to open in a new tab
 // so clicking a link never navigates away from the chat.
+const CJK_TRAIL_RE = /[。、，；：？！「」『』（）【】《》〈〉“”‘’—…·）】〉》\].]+$/;
+// 中英混排 autolink 修正：marked 会把紧贴 URL 的中文标点吞进 href（如
+// "看https://x。")，这里把尾部 CJK 标点从 href 里剥出来，还给正文。
+function fixCjkAutolink(tpl) {
+  tpl.content.querySelectorAll('a[href]').forEach((a) => {
+    const href = a.getAttribute('href');
+    if (!href || !/^https?:\/\//i.test(href)) return;
+    const m = href.match(CJK_TRAIL_RE);
+    if (!m) return;
+    const trail = m[0];
+    a.setAttribute('href', href.slice(0, href.length - trail.length));
+    // 链接文本尾部同样被吞时一起剥离，保持显示与跳转一致
+    if (a.textContent.endsWith(trail)) {
+      a.textContent = a.textContent.slice(0, a.textContent.length - trail.length);
+    }
+    a.after(document.createTextNode(trail));
+  });
+}
+// 单 ~ 保护：GFM 删除线只要 ~~，孤立的 ~（如 a~b、~/.config）不应触发 del。
+// 只处理非代码段，代码块/行内代码原样保留。
+function guardSingleTilde(text) {
+  const parts = String(text || '').split(/(```[\s\S]*?```|`[^`\n]*`)/g);
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i].replace(/(?<!~)~(?!~)/g, '&#126;');
+  }
+  return parts.join('');
+}
 const md = (text) => {
   const tpl = document.createElement('template');
-  tpl.innerHTML = DOMPurify.sanitize(marked.parse(text || ''));
+  tpl.innerHTML = DOMPurify.sanitize(marked.parse(guardSingleTilde(text || '')));
+  fixCjkAutolink(tpl);
   tpl.content.querySelectorAll('a[href]').forEach((a) => {
     const file = parseFileLink(a.getAttribute('href'));
     if (file) {
@@ -76,6 +104,8 @@ const state = {
   pendingBySid: {},   // sessionId -> 待发送消息 {text, images}；本轮结束后自动提交，切会话不丢
   seenSeq: new Set(), // seqs already rendered on this connection
   toolBlocks: {},     // tool_use_id -> details element
+  toolTimers: {},     // tool_use_id -> {timer, start} live elapsed ticker
+  permCards: {},      // permission id -> {wrap, buttons...} outstanding approval cards
   subagentCards: {},  // parent_tool_use_id -> 子代理卡片 {summary, body, count, label}
   agentToolMeta: {},  // Agent tool_use_id -> {title, type}（实时侧卡片标题来源）
   ocVariants: {},     // "cli/provider" -> {ts, data:{model:[--variant 键]}|null}（带 TTL，见 ocVariantsFor）
@@ -1200,6 +1230,12 @@ async function openSession(id) {
   // 待发送消息按会话留在 pendingBySid 里，切换不清空；下面随视图重建恢复显示。
   state.seenSeq = new Set();
   state.toolBlocks = {};
+  state.toolTimers = {};
+  state.permCards = {};
+  if (typeof permDock === 'function') {
+    const dock0 = permDock();
+    if (dock0) { dock0.innerHTML = ''; syncPermDock(); }
+  }
   state.subagentCards = {};
   state.agentToolMeta = {};
   state.historyBuf = [];
@@ -1246,6 +1282,7 @@ async function openSession(id) {
   renderSessionList();
   renderWsActivity();
   connectEvents(id);
+  fetchPendingPermissions(id); // 重连/刷新后补回未决审批卡（transient 事件不进回放）
   refreshSessionEffort(); // opencode 会话按模型 variants 重建推理等级下拉（异步）
   // 切会话后光标直接进输入框，省一次点击；无 cwd 时输入框被禁用则不 focus，
   // 移动端也不 focus——自动弹软键盘会挡住刚加载的历史。
@@ -1727,6 +1764,15 @@ function connectEvents(id) {
       refreshProfiles();
       return;
     }
+    // 权限审批：transient 事件，不进回放缓冲，直接渲染/锁卡
+    if (ev.kind === 'permission_request') {
+      renderPermissionCard(ev.data);
+      return;
+    }
+    if (ev.kind === 'permission_resolved') {
+      resolvePermissionCard(ev.data);
+      return;
+    }
     // 子代理（Agent 工具）消息：实时流由父进程 stdout 以 parent_tool_use_id
     // 透传；回放侧由服务端 ConvertSubagents 从 subagents/*.jsonl 产出同形
     // 事件。两侧都经 renderEvent 渲染成折叠卡片，但不计入统计/轨迹。
@@ -1763,6 +1809,17 @@ function resetChatForReplay() {
   for (const n of optimistic) box.appendChild(n);
   state.seenSeq = new Set();
   state.toolBlocks = {};
+  for (const id of Object.keys(state.toolTimers || {})) {
+    try { clearInterval(state.toolTimers[id].timer); } catch (_) {}
+  }
+  state.toolTimers = {};
+  for (const id of Object.keys(state.permCards || {})) {
+    const e = state.permCards[id];
+    if (e && e.timer) { try { clearInterval(e.timer); } catch (_) {} }
+  }
+  state.permCards = {};
+  const dock = permDock();
+  if (dock) { dock.innerHTML = ''; syncPermDock(); }
   state.subagentCards = {};
   state.agentToolMeta = {};
   state.historyBuf = [];
@@ -2323,9 +2380,10 @@ function renderToolUse(block, box, ts, raw) {
     state.agentToolMeta[block.id] = { title: block.input.description || '', type: block.input.subagent_type || '' };
   }
   const details = document.createElement('details');
-  details.className = 'tool-block';
+  details.className = 'tool-block tool-running';
   const summary = document.createElement('summary');
-  summary.innerHTML = `<span class="tool-name"></span><span class="tool-summary-text"></span>`;
+  summary.innerHTML = `<span class="tool-status" title="执行中"></span><span class="tool-name"></span><span class="tool-summary-text"></span><span class="tool-elapsed"></span>`;
+  summary.querySelector('.tool-status').textContent = '●';
   summary.querySelector('.tool-name').textContent = block.name || 'tool';
   summary.querySelector('.tool-summary-text').textContent = toolSummary(block.input);
   const body = document.createElement('div');
@@ -2337,7 +2395,19 @@ function renderToolUse(block, box, ts, raw) {
   // raw：直接挂进调用方给的容器（子代理卡片体），不包消息气泡壳
   if (raw) box.appendChild(details);
   else wrapInMsg(details, box, ts);
-  state.toolBlocks[block.id] = details;
+  if (block.id) {
+    state.toolBlocks[block.id] = details;
+    // 工具计时：tool_use 落盘即起表，每秒刷一次已用时长；tool_result 回来定格。
+    const start = Date.now();
+    const elapsedEl = summary.querySelector('.tool-elapsed');
+    const tick = () => {
+      const s = Math.max(0, Math.floor((Date.now() - start) / 1000));
+      elapsedEl.textContent = s >= 60 ? `${Math.floor(s / 60)}m${s % 60}s` : `${s}s`;
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    state.toolTimers[block.id] = { timer, start };
+  }
 }
 
 // 工具 body 定制视图：bash 终端风 / read 文件头 / write 全绿 diff / edit 红绿 diff。
@@ -2551,7 +2621,9 @@ function buildReadView(input) {
   return view;
 }
 
-// Write：新文件 = 全部新增，复用 diff 行的全绿样式
+// Write：新文件 = 全部新增，复用 diff 行的全绿样式；超长内容截断，避免大文件
+// 把 DOM 撑爆（结果里另有完整回执）。
+const WRITE_MAX_LINES = 200;
 function buildWriteView(input) {
   const view = document.createElement('div');
   view.className = 'diff-view';
@@ -2559,7 +2631,11 @@ function buildWriteView(input) {
   // 末尾换行导致的空行不算一行内容
   const count = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
   view.appendChild(filePathHead('diff-file', `${input.file_path || '(新文件)'}（+${count} 行）`, input.file_path || ''));
-  for (const l of lines) view.appendChild(diffLineEl('add', '+', l));
+  const shown = lines.slice(0, WRITE_MAX_LINES);
+  for (const l of shown) view.appendChild(diffLineEl('add', '+', l));
+  if (lines.length > WRITE_MAX_LINES) {
+    view.appendChild(diffLineEl('fold', '', `⋮ 还有 ${lines.length - WRITE_MAX_LINES} 行未展示`));
+  }
   return view;
 }
 
@@ -2583,8 +2659,19 @@ function buildEditDiff(input) {
   if (!pairs.length) return null;
   const view = document.createElement('div');
   view.className = 'diff-view';
+  let totalDel = 0, totalAdd = 0;
+  for (const [oldStr, newStr] of pairs) {
+    totalDel += oldStr.split('\n').length;
+    totalAdd += newStr.split('\n').length;
+  }
+  const stat = `(−${totalDel} +${totalAdd}${pairs.length > 1 ? ` · ${pairs.length} 处` : ''})`;
   if (input.file_path) {
-    view.appendChild(filePathHead('diff-file', input.file_path, input.file_path));
+    view.appendChild(filePathHead('diff-file', `${input.file_path} ${stat}`, input.file_path));
+  } else {
+    const s = document.createElement('div');
+    s.className = 'diff-file diff-stat';
+    s.textContent = stat;
+    view.appendChild(s);
   }
   for (const [oldStr, newStr] of pairs) {
     appendDiffHunk(view, oldStr, newStr);
@@ -2617,27 +2704,23 @@ function appendDiffHunk(view, oldStr, newStr) {
   const ctxSuf = a.slice(a.length - suf);
 
   const addLine = (cls, sign, text) => view.appendChild(diffLineEl(cls, sign, text));
-  const addCtx = (lines, from, to) => {
-    for (let i = from; i < to; i++) addLine('ctx', ' ', lines[i]);
-  };
   const fold = (n) => addLine('fold', '', `⋮ ${n} 行未变化`);
 
-  const CTX = 3; // 差异段两端保留的上下文行数
+  // 上下文只保留贴着差异段的 CTX 行，远端折叠（之前版本索引越界会吞行）。
+  const CTX = 3;
   if (ctxPre.length > CTX) {
-    addCtx(ctxPre, 0, 1);
     fold(ctxPre.length - CTX);
-    addCtx(ctxPre, ctxPre.length - CTX + 1, ctxPre.length);
+    for (const l of ctxPre.slice(ctxPre.length - CTX)) addLine('ctx', ' ', l);
   } else {
-    addCtx(ctxPre, 0, ctxPre.length);
+    for (const l of ctxPre) addLine('ctx', ' ', l);
   }
   for (const l of del) addLine('del', '-', l);
   for (const l of add) addLine('add', '+', l);
   if (ctxSuf.length > CTX) {
-    addCtx(ctxSuf, 0, CTX - 1);
+    for (const l of ctxSuf.slice(0, CTX)) addLine('ctx', ' ', l);
     fold(ctxSuf.length - CTX);
-    addCtx(ctxSuf, ctxSuf.length - 1, ctxSuf.length);
   } else {
-    addCtx(ctxSuf, 0, ctxSuf.length);
+    for (const l of ctxSuf) addLine('ctx', ' ', l);
   }
 }
 
@@ -2651,13 +2734,36 @@ function toolResultText(content) {
 
 function renderToolResult(block, box, raw) {
   const text = toolResultText(block.content);
+  // 工具计时定格：无论结果是否展示（todo/task 成功结果会提前 return），状态都
+  // 要从"执行中"翻成完成/失败，否则转圈停不下来。
+  const finalizeTool = (target, isError) => {
+    const t = block.tool_use_id && state.toolTimers[block.tool_use_id];
+    if (t) {
+      clearInterval(t.timer);
+      delete state.toolTimers[block.tool_use_id];
+    }
+    if (!target) return;
+    target.classList.remove('tool-running');
+    target.classList.add(isError ? 'tool-error' : 'tool-done');
+    const st = target.querySelector('.tool-status');
+    if (st) {
+      st.textContent = isError ? '✗' : '✓';
+      st.title = isError ? '失败' : '完成';
+    }
+    const el = target.querySelector('.tool-elapsed');
+    if (el && t) {
+      const s = Math.max(0, Math.floor((Date.now() - t.start) / 1000));
+      el.textContent = s >= 60 ? `${Math.floor(s / 60)}m${s % 60}s` : `${s}s`;
+      el.title = '工具耗时';
+    }
+  };
   const target = block.tool_use_id && state.toolBlocks[block.tool_use_id];
   if (target) {
     // TodoWrite 的结果固定是 "Todos have been modified…"，无信息量，不展示
-    if (target.classList.contains('tool-todo')) return;
+    if (target.classList.contains('tool-todo')) { finalizeTool(target, !!block.is_error); return; }
     // Task* 的成功结果同理（"Task #N created successfully"），面板已反映状态；
     // 但错误结果（如输入校验失败）必须展示
-    if (target.classList.contains('tool-task') && !block.is_error) return;
+    if (target.classList.contains('tool-task') && !block.is_error) { finalizeTool(target, false); return; }
     const r = document.createElement('div');
     r.className = 'tool-result';
     const body = document.createElement('div');
@@ -2671,6 +2777,7 @@ function renderToolResult(block, box, raw) {
     if (block.is_error) body.style.color = 'var(--red)';
     r.appendChild(body);
     target.appendChild(r);
+    finalizeTool(target, !!block.is_error);
     if (isPeerSend && block.is_error) markPeerSendFailed(target);
     return;
   }
@@ -2697,6 +2804,316 @@ function markPeerSendFailed(details) {
   m.className = 'peer-send-fail';
   m.textContent = ' · 投递失败';
   st.appendChild(m);
+}
+
+// ---------- 权限审批卡（PermissionRequest hook） ----------
+// 后端在非 bypass 的 claude/qoder 会话里注入 PermissionRequest hook，工具调用
+// 前 CLI 起 helper 问服务端，服务端经 SSE 下发 permission_request，前端渲染此卡。
+// opencode（--auto 自动放行）与 mcode（smart/full，无 headless 审批面）不走这里。
+// 三档：允许本次 / 本次会话都允许（同名工具后续免问）/ 拒绝（可附理由回传模型）。
+// 55s 无人审批 helper 端自动拒绝（CLI hook 上限 60s）。
+// AskUserQuestion 不是"放不放行"，是模型在问你问题：答案要以问题原文为 key、
+// 选项 label 为 value 经 updatedInput.answers 回传，否则 CLI 报
+// "The user did not answer the questions"。畸形 input 才退回通用卡。
+function parsePermQuestions(input) {
+  if (!input || !Array.isArray(input.questions)) return [];
+  return input.questions.filter((q) => q && typeof q.question === 'string');
+}
+const PERM_TIMEOUT_S = 55;
+const PERM_OTHER = '__other__';
+// 待审批卡停靠在输入框上方（composer 卡片顶部），位置固定不随消息流跑；
+// 审批完（锁卡）才落进消息流随历史走。dock 在 composer 里，显隐撑高输入框，
+// 高度变化由已有的 ResizeObserver 自动换算成消息区 padding。
+function permDock() { return $('#perm-dock'); }
+function syncPermDock() {
+  const dock = permDock();
+  if (!dock) return;
+  dock.classList.toggle('hidden', dock.children.length === 0);
+}
+// 卡片落进消息流：已锁定的卡从 dock 搬到 #messages 末尾（appendChild 即搬迁）。
+function landPermCard(entry) {
+  const box = $('#messages');
+  if (entry && entry.wrap && entry.wrap.parentElement !== box) box.appendChild(entry.wrap);
+  syncPermDock();
+}
+function permInputSummary(tool, input) {
+  if (tool === 'AskUserQuestion' && input && Array.isArray(input.questions)) {
+    return `提问 ${input.questions.length} 个`;
+  }
+  return toolSummary(input);
+}
+// AskUserQuestion 选题卡：每题单选/多选 + "其他"自定义输入，提交把
+// {问题原文: 选项label} 回传（多选逗号连接），跳过走 deny。
+function buildAskUserCard(card, d, questions, box, wrap) {
+  const picked = {}; // qi -> [label]
+  const custom = {}; // qi -> text
+  let html =
+    '<div class="perm-head"><span class="perm-title">模型提问</span>' +
+    '<span class="perm-countdown"></span></div>';
+  questions.forEach((q, qi) => {
+    const opts = Array.isArray(q.options) ? q.options : [];
+    html += '<div class="perm-q" data-qi="' + qi + '">';
+    if (q.header) html += '<div class="perm-q-header"></div>';
+    html += '<div class="perm-q-text"></div><div class="perm-opts">';
+    opts.forEach((o) => {
+      const label = (o && o.label) || '';
+      html += '<button class="perm-opt" type="button" data-label="' + escapeHtml(label).replace(/"/g, '&quot;') + '">' +
+        '<span class="perm-opt-label"></span>' +
+        (o && o.description ? '<span class="perm-opt-desc"></span>' : '') + '</button>';
+    });
+    html += '<button class="perm-opt perm-opt-other" type="button" data-label="' + PERM_OTHER + '">' +
+      '<span class="perm-opt-label">其他（自定义）</span></button>' +
+      '<input class="perm-opt-custom hidden" placeholder="自定义回答" maxlength="500">' +
+      '</div></div>';
+  });
+  html += '<div class="perm-btns">' +
+    '<button class="perm-btn perm-submit" type="button" disabled>提交回答</button>' +
+    '<button class="perm-btn perm-deny" type="button">跳过</button></div>' +
+    '<div class="perm-hint">超时未作答会自动拒绝，模型会重新提问，不会丢问题</div>' +
+    '<div class="perm-state hidden"></div>';
+  card.innerHTML = html;
+  card.querySelectorAll('.perm-q').forEach((qEl) => {
+    const qi = Number(qEl.dataset.qi);
+    const q = questions[qi];
+    if (q.header) qEl.querySelector('.perm-q-header').textContent = q.header;
+    qEl.querySelector('.perm-q-text').textContent = q.question;
+    const labels = qEl.querySelectorAll('.perm-opt[data-label]');
+    labels.forEach((btn, bi) => {
+      const opt = (q.options || [])[bi];
+      if (opt && opt.label) {
+        btn.querySelector('.perm-opt-label').textContent = opt.label;
+        const desc = btn.querySelector('.perm-opt-desc');
+        if (desc && opt.description) desc.textContent = opt.description;
+      }
+    });
+  });
+  const submitBtn = card.querySelector('.perm-submit');
+  const customInputs = card.querySelectorAll('.perm-opt-custom');
+  const answerFor = (qi) => {
+    const cur = picked[qi] || [];
+    return cur.map((l) => (l === PERM_OTHER ? (custom[qi] || '').trim() : l)).filter(Boolean).join('，');
+  };
+  const refresh = () => {
+    submitBtn.disabled = !questions.every((_, qi) => answerFor(qi).length > 0);
+  };
+  card.querySelectorAll('.perm-opt').forEach((btn) => {
+    btn.onclick = () => {
+      const qEl = btn.closest('.perm-q');
+      const qi = Number(qEl.dataset.qi);
+      const label = btn.dataset.label;
+      const multi = !!questions[qi].multiSelect;
+      let cur = picked[qi] || [];
+      if (!multi) cur = (cur[0] === label) ? [] : [label];
+      else cur = cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label];
+      picked[qi] = cur;
+      qEl.querySelectorAll('.perm-opt').forEach((b) => {
+        b.classList.toggle('picked', (picked[qi] || []).includes(b.dataset.label));
+      });
+      const customInput = qEl.querySelector('.perm-opt-custom');
+      const showCustom = (picked[qi] || []).includes(PERM_OTHER);
+      customInput.classList.toggle('hidden', !showCustom);
+      if (showCustom) customInput.focus();
+      refresh();
+    };
+  });
+  customInputs.forEach((inp) => {
+    inp.oninput = () => {
+      const qi = Number(inp.closest('.perm-q').dataset.qi);
+      custom[qi] = inp.value;
+      refresh();
+    };
+  });
+  const setBusy = (busy) => card.querySelectorAll('.perm-btns button').forEach((b) => { b.disabled = busy; });
+  submitBtn.onclick = async () => {
+    const answers = {};
+    questions.forEach((q, qi) => {
+      const a = answerFor(qi);
+      if (a) answers[q.question] = a;
+    });
+    setBusy(true);
+    try {
+      await api(`/api/sessions/${state.current.id}/permissions/${d.id}`, {
+        method: 'POST', body: JSON.stringify({ behavior: 'allow', answers }),
+      });
+      lockPermCard(card, 'allow', '已回答');
+      state.permCards[d.id].locked = true;
+      landPermCard(state.permCards[d.id]);
+    } catch (e) {
+      setBusy(false);
+      refresh();
+      const st = card.querySelector('.perm-state');
+      st.classList.remove('hidden');
+      st.textContent = '提交失败：' + e.message + '，可重试';
+    }
+  };
+  card.querySelector('.perm-deny').onclick = async () => {
+    setBusy(true);
+    try {
+      await api(`/api/sessions/${state.current.id}/permissions/${d.id}`, {
+        method: 'POST', body: JSON.stringify({ behavior: 'deny', message: '用户跳过了这个提问' }),
+      });
+      lockPermCard(card, 'deny', '已跳过');
+      state.permCards[d.id].locked = true;
+      landPermCard(state.permCards[d.id]);
+    } catch (e) {
+      setBusy(false);
+      const st = card.querySelector('.perm-state');
+      st.classList.remove('hidden');
+      st.textContent = '提交失败：' + e.message + '，可重试';
+    }
+  };
+  const cd = card.querySelector('.perm-countdown');
+  const deadline = Date.now() + PERM_TIMEOUT_S * 1000;
+  const timer = setInterval(() => {
+    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    cd.textContent = left > 0 ? `${left}s` : '已超时';
+    if (left <= 0) clearInterval(timer);
+  }, 1000);
+  cd.textContent = `${PERM_TIMEOUT_S}s`;
+  wrap.appendChild(card);
+  // 待审批停靠输入框上方（dock），不进消息流；锁卡后才落进历史
+  permDock().appendChild(wrap);
+  syncPermDock();
+  state.permCards[d.id] = { wrap, card, locked: false, timer };
+}
+function renderPermissionCard(d, box) {
+  box = box || $('#messages');
+  if (!d || !d.id || state.permCards[d.id]) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'msg msg-perm';
+  wrap.dataset.permId = d.id;
+  const card = document.createElement('div');
+  card.className = 'perm-card';
+  const tool = d.tool || 'tool';
+  card.dataset.tool = tool;
+  const questions = tool === 'AskUserQuestion' ? parsePermQuestions(d.input) : [];
+  if (questions.length > 0) {
+    buildAskUserCard(card, d, questions, box, wrap);
+    return;
+  }
+  const summary = permInputSummary(tool, d.input);
+  card.innerHTML =
+    '<div class="perm-head"><span class="perm-title">权限请求</span>' +
+    '<span class="perm-dot">·</span><span class="perm-tool"></span>' +
+    '<span class="perm-countdown"></span></div>' +
+    (summary ? '<div class="perm-summary"></div>' : '') +
+    '<details class="perm-detail"><summary>查看完整参数</summary><pre class="perm-json"></pre></details>' +
+    '<div class="perm-reason-row hidden"><input class="perm-reason" placeholder="拒绝理由（会回传给模型，可空）" maxlength="500"></div>' +
+    '<div class="perm-btns">' +
+    '<button class="perm-btn perm-allow" type="button">允许本次</button>' +
+    '<button class="perm-btn perm-allow-session" type="button">本次会话都允许</button>' +
+    '<button class="perm-btn perm-deny" type="button">拒绝</button>' +
+    '</div>' +
+    '<div class="perm-state hidden"></div>';
+  card.querySelector('.perm-tool').textContent = tool;
+  if (summary) card.querySelector('.perm-summary').textContent = summary;
+  card.querySelector('.perm-json').textContent = JSON.stringify(d.input || {}, null, 2);
+  if (d.auto_allowed) {
+    lockPermCard(card, 'allow', '已按规则允许（同名工具）');
+    wrap.appendChild(card);
+    box.appendChild(wrap);
+    state.permCards[d.id] = { wrap, card, locked: true };
+    return;
+  }
+  const btns = card.querySelector('.perm-btns');
+  const reasonRow = card.querySelector('.perm-reason-row');
+  const reasonInput = card.querySelector('.perm-reason');
+  const setBusy = (busy) => btns.querySelectorAll('button').forEach((b) => { b.disabled = busy; });
+  const answer = async (behavior, message) => {
+    setBusy(true);
+    try {
+      await api(`/api/sessions/${state.current.id}/permissions/${d.id}`, {
+        method: 'POST', body: JSON.stringify({ behavior, message }),
+      });
+      // 结果经 SSE permission_resolved 回来统一锁卡；这里先乐观锁，丢包也不悬空
+      lockPermCard(card, behavior === 'deny' ? 'deny' : 'allow',
+        behavior === 'deny' ? '已拒绝' : behavior === 'allow_tool_session' ? '已允许同名工具' : '已允许本次');
+      state.permCards[d.id].locked = true;
+      landPermCard(state.permCards[d.id]);
+    } catch (e) {
+      setBusy(false);
+      const st = card.querySelector('.perm-state');
+      st.classList.remove('hidden');
+      st.textContent = '提交失败：' + e.message + '，可重试';
+    }
+  };
+  card.querySelector('.perm-allow').onclick = () => answer('allow');
+  card.querySelector('.perm-allow-session').onclick = () => answer('allow_tool_session');
+  const denyBtn = card.querySelector('.perm-deny');
+  denyBtn.onclick = () => {
+    // 第一次点展开理由框，第二次点真正拒绝（理由可选填）
+    if (reasonRow.classList.contains('hidden')) {
+      reasonRow.classList.remove('hidden');
+      reasonInput.focus();
+      denyBtn.textContent = '确认拒绝';
+      return;
+    }
+    answer('deny', reasonInput.value.trim());
+  };
+  // 倒计时：55s 到 helper 自动拒绝，卡片置灰提示
+  const cd = card.querySelector('.perm-countdown');
+  const deadline = Date.now() + PERM_TIMEOUT_S * 1000;
+  const timer = setInterval(() => {
+    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    cd.textContent = left > 0 ? `${left}s` : '已超时';
+    if (left <= 0) clearInterval(timer);
+  }, 1000);
+  cd.textContent = `${PERM_TIMEOUT_S}s`;
+  wrap.appendChild(card);
+  // 待审批停靠输入框上方（dock），不进消息流；锁卡后才落进历史
+  permDock().appendChild(wrap);
+  syncPermDock();
+  state.permCards[d.id] = { wrap, card, locked: false, timer };
+}
+function lockPermCard(card, behavior, label) {
+  card.classList.add('perm-locked');
+  const btns = card.querySelector('.perm-btns');
+  if (btns) btns.remove();
+  const reasonRow = card.querySelector('.perm-reason-row');
+  if (reasonRow) reasonRow.remove();
+  const cd = card.querySelector('.perm-countdown');
+  if (cd) cd.remove();
+  const st = card.querySelector('.perm-state');
+  st.classList.remove('hidden');
+  st.textContent = label || (behavior === 'deny' ? '已拒绝' : '已允许');
+  st.classList.toggle('perm-denied', behavior === 'deny');
+}
+function resolvePermissionCard(d) {
+  if (!d || !d.id) return;
+  const permLabel = (card, behavior, timeout, auto) => {
+    const isAsk = card && card.dataset && card.dataset.tool === 'AskUserQuestion';
+    if (timeout) return isAsk ? '已超时，模型会重问' : '已超时自动拒绝';
+    if (behavior === 'deny') return isAsk ? '已跳过' : '已拒绝';
+    if (auto) return '已按规则允许（同名工具）';
+    return isAsk ? '已回答' : '已允许';
+  };
+  const entry = state.permCards[d.id];
+  if (entry) {
+    if (entry.timer) clearInterval(entry.timer);
+    if (!entry.locked) {
+      lockPermCard(entry.card, d.behavior, permLabel(entry.card, d.behavior, d.timeout, d.auto_allowed));
+      entry.locked = true;
+    }
+    landPermCard(entry);
+    return;
+  }
+  // 重连/刷新时错过 request：补一张已锁定的卡，避免"工具没动静"的 mystery gap
+  if (d.behavior && state.current) {
+    renderPermissionCard({ id: d.id, tool: 'tool', input: {}, auto_allowed: false }, $('#messages'));
+    const e2 = state.permCards[d.id];
+    if (e2) {
+      if (e2.timer) clearInterval(e2.timer);
+      lockPermCard(e2.card, d.behavior, d.timeout ? '已超时自动拒绝' : d.behavior === 'deny' ? '已拒绝' : '已允许');
+      e2.locked = true;
+      landPermCard(e2);
+    }
+  }
+}
+async function fetchPendingPermissions(id) {
+  try {
+    const r = await api(`/api/sessions/${id}/permissions/pending`);
+    for (const p of (r && r.pending) || []) renderPermissionCard(p);
+  } catch (_) { /* 无待审批时静默 */ }
 }
 
 // ---------- file viewer（右侧栏预览本地文件） ----------
@@ -2966,16 +3383,20 @@ function renderEvent(ev, box) {
       renderSubagentEvent(d, box, ev.ts);
     } else if (d.type === 'assistant' && d.message && Array.isArray(d.message.content)) {
       for (const block of d.message.content) {
-        if (block.type === 'text' && block.text) {
+        // 空消息过滤：无正文的 text/thinking 不占位（Claude 5 会发无文本 thinking，
+        // 中断/空 delta 也会留下空壳），否则时间线被空白块切断。
+        if (block.type === 'text') {
+          if (!block.text || !block.text.trim()) continue;
           const lb = liveTake('text');
           if (lb) lb.el.remove(); // 完整版替换 live 气泡，避免重复
           const bubble = addMsg('msg-assistant', 'claude', box, ev.ts);
           bubble.innerHTML = md(block.text);
         } else if (block.type === 'tool_use') {
+          if (!block.name) continue;
           renderToolUse(block, box, ev.ts);
         } else if (block.type === 'thinking') {
           const lb = liveTake('thinking');
-          if (block.thinking) {
+          if (block.thinking && block.thinking.trim()) {
             if (lb) lb.el.remove(); // 完整版替换 live thinking
             const details = document.createElement('details');
             details.className = 'tool-block thinking-block';
@@ -3096,11 +3517,15 @@ function subagentRefreshSummary(card) {
 }
 
 function renderSubagentEvent(d, box, ts) {
-  const card = ensureSubagentCard(d.parent_tool_use_id, d, box, ts);
   const blocks = (d.message && Array.isArray(d.message.content)) ? d.message.content : [];
+  // 空消息过滤：整条 subagent 事件无有效内容时连卡片壳都不建，避免空白卡片。
+  const hasContent = blocks.some((b) => b && ((b.type === 'text' && b.text && b.text.trim()) || (b.type === 'tool_use' && b.name)));
+  if (!hasContent) return;
+  const card = ensureSubagentCard(d.parent_tool_use_id, d, box, ts);
   for (const b of blocks) {
     if (!b) continue;
-    if (b.type === 'text' && b.text) {
+    if (b.type === 'text') {
+      if (!b.text || !b.text.trim()) continue;
       const div = document.createElement('div');
       div.className = 'subagent-msg';
       div.innerHTML = md(b.text);

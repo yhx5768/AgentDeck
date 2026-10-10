@@ -25,6 +25,7 @@ cc-webui 是 Claude Code（以及任何兼容 CLI）的 Web 控制台。它把�
 | 导入已有会话 | 扫描各引擎自己的历史目录（`~/.claude/projects`、`~/.qoder-cn/projects`、opencode / mcode 的会话库），把本地历史会话一键接进 Web UI 继续聊。 |
 | 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 claude transcript 一并截断，消息文本回填输入框重发。等价 TUI 双击 Esc。Bash 改的文件无法回滚。仅 claude 引擎有（文件回滚依赖 CLI 的 `--rewind-files`），其余引擎入口隐藏。 |
 | 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。CLI 开启 `partial_messages` 后支持打字机式逐 token 增量渲染（`--include-partial-messages`）。 |
+| 权限审批卡 | 非 bypass 的 claude/qoder 会话在工具调用前弹审批卡：允许本次 / 本次会话都允许（同名工具）/ 拒绝（可附理由），55s 超时自动拒绝。经 `--settings` 的 `PermissionRequest` hook 实现；opencode（自动放行）与 mcode（smart/full）无审批面。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块。 |
 | 轨迹视图 | 会话内「轨迹」tab 把同一份事件流投影成按轮(turn)分组的台账：折叠/展开轮次、按角色（用户/助手/工具）筛选、关键词搜索，点开单条记录看 summary / preview / raw 三档详情。对话流之外的另一种审阅视角。 |
 | 使用统计 | 统计本机全部会话（Claude Code、opencode、mcode、qoder 四个引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/连续天数/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。opencode 走它的 CLI 官方面（`session list` 只看得见当前目录所属的项目桶，故枚举全部项目额外走一条只读 `opencode db` 查询，实测只读不写，失败自动退回按桶列举）；mcode 读它自己的 `messages.jsonl` transcript（mcode 没有 `session list`/`export` 这类 CLI 面）；qoder 与 Claude Code 同构，读 `~/.qoder-cn/projects` 的 jsonl。增量缓存——首次全量扫描较慢，之后秒回。注意 qoder 的 `usage` 不上报 token 数（计费走 `credits`），所以对 qoder 会话而言消息数/工具数/活跃天数都准，token 类指标对它无意义。 |
@@ -77,14 +78,14 @@ default_cwd: "~"        # 新建会话默认工作目录
 clis:
   - name: "official-claude"
     path: "claude"
-    permission_mode: "bypassPermissions"
+    permission_mode: "default"   # 默认走 Web 审批卡；bypassPermissions 才全放行
     partial_messages: true   # 打字机式逐 token 流式渲染（需新版 Claude Code）
     args: []
     env: {}
 
   - name: "ducc"
     path: "/home/you/.baidu-cc/baidu-cc/bin/ducc"
-    permission_mode: "bypassPermissions"
+    permission_mode: "default"   # 默认走 Web 审批卡；bypassPermissions 才全放行
     args: []
     env: {}
 
@@ -183,6 +184,9 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 | POST | `/api/sessions/{id}/uploads?name=` | 上传附件（图片外的文件类型，落盘后经消息文本引用） |
 | POST | `/api/sessions/{id}/stop` | 中断当前轮 |
 | POST | `/api/sessions/{id}/rewind` | 回滚到某条用户消息 `{checkpoint}`（文件+对话） |
+| POST | `/api/sessions/{id}/permissions/request` | 审批 helper 上报工具调用（阻塞等决策，内部用） |
+| POST | `/api/sessions/{id}/permissions/{pid}` | 审批决策 `{behavior: allow\|allow_tool_session\|deny, message?}` |
+| GET | `/api/sessions/{id}/permissions/pending` | 未决审批列表（重连补卡） |
 | GET | `/api/sessions/{id}/events` | SSE：历史回放 + 实时事件 |
 | GET | `/api/claude-sessions?cwd=` | 扫描本机 `~/.claude/projects` |
 | GET | `/api/qoder-sessions?cwd=` | 扫描本机 `~/.qoder-cn/projects` |

@@ -299,16 +299,17 @@ func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residen
 		args = append(args, "--effort", sess.EffortOverride)
 	}
 	env := cli.EffectiveEnv(prov, model)
-	// Same rule as runStreamJSONTurn: the file is for config env only, an env-less
-	// provider takes its level from --effort and the process env.
-	needsSettings := len(env) > 0
+	// Same rule as runStreamJSONTurn, plus the approval hook: hook sessions
+	// need the file even with empty env (see runStreamJSONTurn).
+	withHook := permissionHookWanted(cli, sess.PermissionMode)
+	needsSettings := len(env) > 0 || withHook
 	applyEffortEnv(env, sess.EffortOverride)
 	if sess.ClaudeSessionID != "" {
 		args = append(args, "--resume", sess.ClaudeSessionID)
 	}
 	args = append(args, cli.Args...)
 	if needsSettings && !hasArg(args, "--settings") {
-		if p, err := m.settingsFile(cli.Name, prov.Name, model, sess.EffortOverride, env); err == nil {
+		if p, err := m.settingsFileEx(cli.Name, prov.Name, model, sess.EffortOverride, env, withHook); err == nil {
 			args = append(args, "--settings", p)
 		} else {
 			log.Printf("settings file for %s/%s/%s: %v", cli.Name, prov.Name, model, err)
@@ -331,6 +332,11 @@ func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residen
 		return nil
 	}
 	envMap := buildEnvMap(env)
+	if withHook {
+		envMap["CC_WEBUI_PERM_SESSION"] = sess.ID
+		envMap["CC_WEBUI_PERM_ADDR"] = permLoopbackAddr(m.cfg().Listen)
+		envMap["CC_WEBUI_PERM_TOKEN"] = m.cfg().GatewayToken
+	}
 	// 常驻 session：CLI 在 interactive kind 下忽略 transcript 的 custom-title
 	//（见 bundled CLI 源码 ~"interactive" 分支强制走 derived 名）。要自定义
 	// 地址名只能通过 CLAUDE_CODE_SESSION_NAME env 注入，CLI 启动时直接以它

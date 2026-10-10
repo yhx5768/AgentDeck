@@ -103,10 +103,11 @@ type Manager struct {
 	st    *store.Store
 	mu    sync.Mutex
 	procs map[string]*sessionRuntime
+	perm  *permissionState
 }
 
 func NewManager(cm *config.Manager, st *store.Store) *Manager {
-	return &Manager{cm: cm, st: st, procs: map[string]*sessionRuntime{}}
+	return &Manager{cm: cm, st: st, procs: map[string]*sessionRuntime{}, perm: newPermissionState()}
 }
 
 // cfg returns the live config (hot-reloadable via config.Manager.Watch).
@@ -452,9 +453,22 @@ func sanitizeName(name string) string {
 // holds its settings file for its whole lifetime, so two sessions on the same
 // model with different efforts must not overwrite each other's copy.
 func SettingsPath(dataDir, cliName, providerName, modelName, effort string) string {
+	return SettingsPathWithPerm(dataDir, cliName, providerName, modelName, effort, false)
+}
+
+// SettingsPathWithPerm extends SettingsPath with the permission-hook marker:
+// hook-carrying files get a "__perm" suffix so a bypass session and an
+// approval session on the same model never overwrite each other's copy.
+// The resume-command display path (EnsureSettingsFile) stays hook-free on
+// purpose: a terminal answers prompts interactively itself, and the command
+// stays portable (no data_dir absolute path) for env-less providers.
+func SettingsPathWithPerm(dataDir, cliName, providerName, modelName, effort string, withHook bool) string {
 	name := cliName + "__" + providerName + "__" + modelName
 	if effort != "" {
 		name += "__effort-" + effort
+	}
+	if withHook {
+		name += "__perm"
 	}
 	return filepath.Join(dataDir, "settings", sanitizeName(name)+".json")
 }
@@ -473,6 +487,15 @@ func SettingsPath(dataDir, cliName, providerName, modelName, effort string) stri
 // tighten it. Providers with no config env get no file at all, so their
 // sessions carry no pin and inbound peer messages follow the CLI default.
 func (m *Manager) settingsFile(cliName, providerName, modelName, effort string, env map[string]string) (string, error) {
+	return m.settingsFileEx(cliName, providerName, modelName, effort, env, false)
+}
+
+// settingsFileEx is settingsFile plus the interactive-approval hook. withHook
+// injects a PermissionRequest hook pointing at this binary's -perm-helper so
+// tool prompts in headless -p runs are answered from the web UI instead of
+// being auto-denied. Only the spawn path uses it; the resume-command display
+// path (EnsureSettingsFile) stays hook-free (see SettingsPathWithPerm).
+func (m *Manager) settingsFileEx(cliName, providerName, modelName, effort string, env map[string]string, withHook bool) (string, error) {
 	dir := filepath.Join(m.cfg().DataDir, "settings")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
@@ -482,15 +505,60 @@ func (m *Manager) settingsFile(cliName, providerName, modelName, effort string, 
 		out[k] = v
 	}
 	applyEffortEnv(out, effort)
-	raw, err := json.Marshal(map[string]any{"env": out, "crossSessionInbound": "accept"})
+	doc := map[string]any{"env": out, "crossSessionInbound": "accept"}
+	if withHook {
+		doc["hooks"] = map[string]any{
+			"PermissionRequest": []any{
+				map[string]any{
+					"matcher": "*",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": permHelperCommand(),
+							"timeout": 60,
+						},
+					},
+				},
+			},
+		}
+	}
+	raw, err := json.Marshal(doc)
 	if err != nil {
 		return "", err
 	}
-	path := SettingsPath(m.cfg().DataDir, cliName, providerName, modelName, effort)
+	path := SettingsPathWithPerm(m.cfg().DataDir, cliName, providerName, modelName, effort, withHook)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// permHelperCommand returns the shell command the CLI runs for every
+// PermissionRequest hook invocation: this same binary in helper mode. The
+// session/address/token travel via env (CC_WEBUI_PERM_*) so the shared
+// settings file needs no per-session templating.
+func permHelperCommand() string {
+	ex, err := os.Executable()
+	if err != nil || ex == "" {
+		ex = os.Args[0]
+	}
+	return fmt.Sprintf("%q -perm-helper", ex)
+}
+
+// permLoopbackAddr derives the helper's dial address from the server listen
+// address: the helper always dials 127.0.0.1:<port> regardless of the listen
+// bind (0.0.0.0/:789 etc. all serve loopback).
+func permLoopbackAddr(listen string) string {
+	port := listen
+	if i := strings.LastIndex(listen, ":"); i >= 0 && i+1 < len(listen) {
+		port = listen[i+1:]
+	}
+	if port == "" {
+		return listen
+	}
+	// listen may already be "127.0.0.1:8321" — LastIndex handles it; a bare
+	// ":8321" or "0.0.0.0:8321" both collapse to loopback + port.
+	return "127.0.0.1:" + port
 }
 
 // EnsureSettingsFile materializes the --settings file for a
@@ -750,12 +818,19 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 		args = append(args, d.effortFlag, sess.EffortOverride)
 	}
 	env := cli.EffectiveEnv(prov, model)
+	// Interactive approval (PermissionRequest hook) needs a --settings file
+	// even when there is no config env: without the file the CLI has nowhere
+	// to discover the hook and prompts are auto-denied headless. Env-less
+	// providers (ducc-models) otherwise skip the file for portability (see
+	// SettingsPathWithPerm); the hook is the one exception worth pinning.
+	withHook := permissionHookWanted(cli, sess.PermissionMode)
 	// Only config env earns a --settings file (endpoint/token the CLI would not
 	// otherwise have). An env-less provider such as ducc-models gets its
 	// endpoint and per-model setup from the launcher itself and its level from
 	// --effort plus the process env (applyEffortEnv), so there is nothing worth
-	// pinning the spawn to <data_dir>/settings/.
-	needsSettings := len(env) > 0
+	// pinning the spawn to <data_dir>/settings/ — unless the approval hook
+	// needs a home (see above).
+	needsSettings := len(env) > 0 || withHook
 	if d.effortEnv {
 		applyEffortEnv(env, sess.EffortOverride)
 	}
@@ -765,7 +840,7 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 	args = append(args, cli.Args...)
 
 	if needsSettings && !hasArg(args, "--settings") {
-		if p, err := m.settingsFile(cli.Name, prov.Name, model, sess.EffortOverride, env); err == nil {
+		if p, err := m.settingsFileEx(cli.Name, prov.Name, model, sess.EffortOverride, env, withHook); err == nil {
 			args = append(args, "--settings", p)
 		} else {
 			log.Printf("settings file for %s/%s/%s: %v", cli.Name, prov.Name, model, err)
@@ -785,6 +860,11 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 		return nil
 	}
 	envMap := buildEnvMap(env)
+	if withHook {
+		envMap["CC_WEBUI_PERM_SESSION"] = sessionID
+		envMap["CC_WEBUI_PERM_ADDR"] = permLoopbackAddr(m.cfg().Listen)
+		envMap["CC_WEBUI_PERM_TOKEN"] = m.cfg().GatewayToken
+	}
 	cmd.Env = envMapToSlice(envMap)
 
 	stdin, err := cmd.StdinPipe()

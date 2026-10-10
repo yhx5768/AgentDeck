@@ -162,6 +162,9 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/notes", s.auth(s.handlePutNotes))
 	s.mux.Handle("POST /api/sessions/{id}/fork", s.auth(s.handleFork))
 	s.mux.Handle("POST /api/sessions/{id}/rewind", s.auth(s.handleRewind))
+	s.mux.Handle("POST /api/sessions/{id}/permissions/request", s.auth(s.handlePermissionRequest))
+	s.mux.Handle("POST /api/sessions/{id}/permissions/{pid}", s.auth(s.handlePermissionResolve))
+	s.mux.Handle("GET /api/sessions/{id}/permissions/pending", s.auth(s.handlePermissionPending))
 	s.mux.Handle("GET /api/files", s.auth(s.handleReadFile))
 
 	// Static frontend (index redirects to login when unauthorized; the SPA
@@ -886,6 +889,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.mgr.TeardownResident(id)
 	s.mgr.Stop(id)
+	s.mgr.ClearPermissions(id)
 	// Uploaded attachments live under data/uploads/<sid>/ — drop them with
 	// the session. Best-effort: the store is the source of truth, a leftover
 	// uploads dir is only wasted space.

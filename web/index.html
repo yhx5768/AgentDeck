@@ -159,6 +159,7 @@
         <div id="error-banner" class="hidden"></div>
         <div id="workspace-gate" class="hidden"><i data-lucide="alert-triangle"></i> 未选 workspace（cwd）— 聊天区已禁用</div>
         <div class="composer-card">
+          <div id="perm-dock" class="hidden"></div>
           <div id="attached-images" class="attached-images"></div>
           <div class="input-wrapper">
             <div id="slash-popup" class="slash-popup hidden"></div>
@@ -168,12 +169,14 @@
           <div class="composer-toolbar">
             <div class="ct-side">
               <button id="btn-attach" class="round-icon-btn" title="添加图片或文件（可粘贴/拖拽）"><i data-lucide="plus"></i></button>
-              <select id="session-perm" class="pill-select" title="权限模式">
+              <select id="session-perm" class="pill-select" title="权限模式：default/plan/acceptEdits 会弹审批卡（仅 claude/qoder）；opencode 自动放行、mcode 走 smart 策略，均无审批卡">
                 <option value="">默认权限</option>
                 <option value="bypassPermissions">bypass</option>
                 <option value="acceptEdits">acceptEdits</option>
                 <option value="plan">plan</option>
                 <option value="default">default</option>
+                <option value="auto">auto</option>
+                <option value="dontAsk">dontAsk</option>
               </select>
             </div>
             <div class="ct-side ct-right">
@@ -269,12 +272,14 @@
           </select>
         </label>
         <label>权限
-          <select id="sheet-perm">
+          <select id="sheet-perm" title="权限模式：default/plan/acceptEdits 会弹审批卡（仅 claude/qoder）">
             <option value="">profile 默认</option>
             <option value="bypassPermissions">bypass</option>
             <option value="acceptEdits">acceptEdits</option>
             <option value="plan">plan</option>
             <option value="default">default</option>
+            <option value="auto">auto</option>
+            <option value="dontAsk">dontAsk</option>
           </select>
         </label>
       </div>
@@ -373,12 +378,14 @@
     </label>
     <label>工作目录 <input id="new-cwd" placeholder="/path/to/project"></label>
     <label>权限模式
-      <select id="new-perm">
+      <select id="new-perm" title="权限模式：default/plan/acceptEdits 会弹审批卡（仅 claude/qoder）">
         <option value="">profile 默认</option>
         <option value="bypassPermissions">bypassPermissions</option>
         <option value="acceptEdits">acceptEdits</option>
         <option value="plan">plan</option>
         <option value="default">default</option>
+        <option value="auto">auto</option>
+        <option value="dontAsk">dontAsk</option>
       </select>
     </label>
     <div class="modal-actions">
