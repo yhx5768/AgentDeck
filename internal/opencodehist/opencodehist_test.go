@@ -11,7 +11,7 @@ import (
 
 // fixture mirrors the real `opencode export` JSON shape (field names taken
 // from a live export of opencode 1.18.x). Parts that must be skipped
-// (reasoning / patch / step-*) are present in realistic positions.
+// (patch / step-*) are present in realistic positions.
 const fixture = `{
   "info": {
     "id": "ses_test123",
@@ -91,12 +91,12 @@ func TestParseExportMeta(t *testing.T) {
 func TestToEventsShape(t *testing.T) {
 	s := mustParse(t)
 	evs := s.ToEvents()
-	// user hello / assistant text / assistant tool_use / user tool_result /
-	// user continue / assistant text done / assistant text chunk
-	if len(evs) != 7 {
-		t.Fatalf("want 7 events, got %d: %s", len(evs), eventKinds(evs))
+	// user hello / assistant thinking / assistant text / assistant tool_use /
+	// user tool_result / user continue / assistant text done / assistant chunk
+	if len(evs) != 8 {
+		t.Fatalf("want 8 events, got %d: %s", len(evs), eventKinds(evs))
 	}
-	wantKinds := []string{"user", "stream", "stream", "stream", "user", "stream", "stream"}
+	wantKinds := []string{"user", "stream", "stream", "stream", "stream", "user", "stream", "stream"}
 	for i, w := range wantKinds {
 		if evs[i].Kind != w {
 			t.Fatalf("event %d kind = %s, want %s", i, evs[i].Kind, w)
@@ -109,10 +109,17 @@ func TestToEventsShape(t *testing.T) {
 		t.Fatalf("user event payload: %s err=%v", evs[0].Data, err)
 	}
 
-	// Event 1: assistant text of msg_a1 — reasoning/step parts skipped.
-	asst := streamObj(t, evs[1])
+	// Event 1: the reasoning part, as a claude-shaped thinking block. step-*
+	// and patch stay skipped.
+	think := streamObj(t, evs[1])["message"].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if think["type"] != "thinking" || think["thinking"] != "let me think" || think["id"] != "prt_r1" {
+		t.Fatalf("thinking block: %v", think)
+	}
+
+	// Event 2: assistant text of msg_a1.
+	asst := streamObj(t, evs[2])
 	if asst["type"] != "assistant" {
-		t.Fatalf("event 1 type: %v", asst["type"])
+		t.Fatalf("event 2 type: %v", asst["type"])
 	}
 	msg := asst["message"].(map[string]any)
 	if msg["id"] != "msg_a1" {
@@ -127,20 +134,20 @@ func TestToEventsShape(t *testing.T) {
 		t.Fatalf("text block: %v", b0)
 	}
 
-	// Events 2+3: tool_use then tool_result paired by callID.
-	ev2 := streamObj(t, evs[2])
-	tu := ev2["message"].(map[string]any)["content"].([]any)[0].(map[string]any)
+	// Events 3+4: tool_use then tool_result paired by callID.
+	ev3 := streamObj(t, evs[3])
+	tu := ev3["message"].(map[string]any)["content"].([]any)[0].(map[string]any)
 	if tu["type"] != "tool_use" || tu["id"] != "tool_1" || tu["name"] != "bash" {
 		t.Fatalf("tool_use block: %v", tu)
 	}
 	if in := tu["input"].(map[string]any); in["command"] != "echo hi" {
 		t.Fatalf("tool input: %v", tu["input"])
 	}
-	ev3 := streamObj(t, evs[3])
-	if ev3["type"] != "user" {
-		t.Fatalf("tool_result event type: %v", ev3["type"])
+	ev4 := streamObj(t, evs[4])
+	if ev4["type"] != "user" {
+		t.Fatalf("tool_result event type: %v", ev4["type"])
 	}
-	tr := ev3["message"].(map[string]any)["content"].([]any)[0].(map[string]any)
+	tr := ev4["message"].(map[string]any)["content"].([]any)[0].(map[string]any)
 	if tr["type"] != "tool_result" || tr["tool_use_id"] != "tool_1" {
 		t.Fatalf("tool_result block: %v", tr)
 	}
@@ -148,9 +155,9 @@ func TestToEventsShape(t *testing.T) {
 		t.Fatalf("tool_result content: %v", tr["content"])
 	}
 
-	// Events 5+6: two text parts of one step stay two distinct events with the
+	// Events 6+7: two text parts of one step stay two distinct events with the
 	// same message id (fingerprints differ via the part id on text blocks).
-	for i := 5; i <= 6; i++ {
+	for i := 6; i <= 7; i++ {
 		a := streamObj(t, evs[i])
 		am := a["message"].(map[string]any)
 		if am["id"] != "msg_a3" {
@@ -184,6 +191,38 @@ func TestLiveDedup(t *testing.T) {
 	// A repeated completed event for the same call id must not duplicate.
 	if out3 := AdaptPart("msg_x", completed, ts, tx); len(out3) != 0 {
 		t.Fatalf("repeated completed part: want 0 events, got %d", len(out3))
+	}
+}
+
+// Reasoning is announced empty and streamed through message.part.delta, so the
+// live path sees it twice: once with no text, once assembled. The empty one must
+// render nothing at all, and a repeated assembled one must not grow a second
+// thinking card.
+func TestLiveReasoningDedup(t *testing.T) {
+	ts := time.UnixMilli(1787000000300)
+	empty := map[string]any{"type": "reasoning", "text": "", "id": "prt_r1"}
+	full := map[string]any{"type": "reasoning", "text": "let me think", "id": "prt_r1"}
+
+	tx := NewToolTx()
+	if out := AdaptPart("msg_x", empty, ts, tx); len(out) != 0 {
+		t.Fatalf("empty reasoning part: want 0 events, got %d", len(out))
+	}
+	out := AdaptPart("msg_x", full, ts, tx)
+	if len(out) != 1 {
+		t.Fatalf("assembled reasoning part: want 1 event, got %d", len(out))
+	}
+	blk := streamObjFrom(t, out[0])["message"].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if blk["type"] != "thinking" || blk["thinking"] != "let me think" {
+		t.Fatalf("reasoning block: %v", blk)
+	}
+	if again := AdaptPart("msg_x", full, ts, tx); len(again) != 0 {
+		t.Fatalf("repeated reasoning part: want 0 events, got %d", len(again))
+	}
+	// Whitespace-only reasoning must not open an empty card either.
+	if out := AdaptPart("msg_y", map[string]any{
+		"type": "reasoning", "text": "  \n ", "id": "prt_r2",
+	}, ts, tx); len(out) != 0 {
+		t.Fatalf("blank reasoning part: want 0 events, got %d", len(out))
 	}
 }
 

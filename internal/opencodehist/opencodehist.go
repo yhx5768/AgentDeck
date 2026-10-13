@@ -8,18 +8,22 @@
 //
 //	user message text part     -> kind=user event {text}
 //	assistant text part        -> stream assistant event, one text block
+//	assistant reasoning part   -> stream assistant event, one thinking block
 //	assistant tool part        -> stream assistant event (tool_use block) +
 //	                              stream user event (tool_result block)
-//	reasoning / patch / step-* -> skipped
+//	patch / step-* / future    -> skipped
 //
 // Parts of one assistant step share a message id; each part becomes its own
 // event carrying that id, mirroring Claude Code's split-line layout which the
 // frontend (trajectory byMsgId merge, per-block chat rendering) already
-// handles. Reasoning is skipped on BOTH paths, and must stay that way: the live
-// engine streams a reasoning part's text as message.part.delta with the same
-// field:"text" as an answer (see openCodeTurn.streamable in internal/runner,
-// which gates on the announced part type for the same reason). Dropping it
-// here and there is what keeps a reload identical to the live view.
+// handles.
+//
+// Reasoning maps to the same claude-shaped thinking block the claude engine
+// and mcode already produce, and it has to be mapped on BOTH paths: the live
+// engine does stream reasoning parts (as message.part.delta with the same
+// field:"text" as an answer — see openCodeTurn.streamable in internal/runner,
+// which gates the deltas on the announced part type). Rendering it on one path
+// only is what makes "refresh after reload" differ from the live view.
 package opencodehist
 
 import (
@@ -474,10 +478,15 @@ type outEvent struct {
 type ToolTx struct {
 	assistantSent map[string]bool // callID -> assistant tool_use block emitted
 	resultSent    map[string]bool // callID -> tool_result emitted
+	thinkingSent  map[string]bool // part id -> thinking block emitted
 }
 
 func NewToolTx() *ToolTx {
-	return &ToolTx{assistantSent: map[string]bool{}, resultSent: map[string]bool{}}
+	return &ToolTx{
+		assistantSent: map[string]bool{},
+		resultSent:    map[string]bool{},
+		thinkingSent:  map[string]bool{},
+	}
 }
 
 // AdaptPart converts one assistant-side opencode part (live or export shape)
@@ -508,13 +517,48 @@ func adaptPart(messageID string, part map[string]any, ts time.Time, tx *ToolTx) 
 			block["id"] = id
 		}
 		return []outEvent{assistantEvent(messageID, ts, block)}
+	case "reasoning":
+		return adaptReasoning(part, messageID, ts, tx)
 	case "tool":
 		return adaptTool(part, messageID, ts, tx)
 	default:
-		// reasoning / patch / step-start / step-finish / future types:
-		// nothing chat-visible in v1.
+		// patch / step-start / step-finish / future types: nothing
+		// chat-visible.
 		return nil
 	}
+}
+
+// adaptReasoning renders one reasoning part as a claude-shaped thinking block.
+//
+// The frontend has rendered these since the claude engine's own thinking
+// support (it is also what mcode's reasoning items map to), so opencode's
+// gets the same treatment instead of being dropped: a collapsible "thinking…"
+// card, never mixed into the answer bubble.
+//
+// Only the assembled part carries text. Live, opencode announces a reasoning
+// part empty and then streams it through message.part.delta with the same
+// field:"text" as the answer — indistinguishable from the answer's own deltas
+// — so the runner drops those increments (see openCodeTurn.streamable) and the
+// block appears once the part completes. One reasoning part produces exactly
+// one non-empty update, but the guard makes a repeated update a no-op instead
+// of a second identical card.
+func adaptReasoning(part map[string]any, messageID string, ts time.Time, tx *ToolTx) []outEvent {
+	text, _ := part["text"].(string)
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	id, _ := part["id"].(string)
+	if id != "" {
+		if tx.thinkingSent[id] {
+			return nil
+		}
+		tx.thinkingSent[id] = true
+	}
+	block := map[string]any{"type": "thinking", "thinking": text}
+	if id != "" {
+		block["id"] = id
+	}
+	return []outEvent{assistantEvent(messageID, ts, block)}
 }
 
 func adaptTool(part map[string]any, messageID string, ts time.Time, tx *ToolTx) []outEvent {
