@@ -999,17 +999,62 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "empty file")
 		return
 	}
-	dst := filepath.Join(dir, name)
-	if err := os.WriteFile(dst, data, 0o600); err != nil {
+	stored, dst, err := writeUploadExclusive(dir, name, data)
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": name,
+		"name": stored,
 		"path": dst,
-		"mime": mime.TypeByExtension(filepath.Ext(name)),
+		"mime": mime.TypeByExtension(filepath.Ext(stored)),
 		"size": len(data),
 	})
+}
+
+// maxUploadCollisions caps the -2/-3/… suffix search in writeUploadExclusive,
+// so a pathological name (or a client looping on one name) can't spin.
+const maxUploadCollisions = 1000
+
+// writeUploadExclusive stores data under dir/name and returns the stored name
+// plus its absolute path, never clobbering an existing file: on collision it
+// appends -2, -3, … before the extension (image.png → image-2.png). name must
+// already be a bare single file name (sanitizeUploadName), so the path stays
+// inside dir.
+//
+// Every pasted image carries File.name === "image.png" in every browser, and
+// engines without an inline-image channel (mcode) turn each image into an
+// uploaded file. With a plain overwrite the second paste silently replaced the
+// first, so a turn that carried four images handed the model the same path
+// four times — the last image, four times. O_EXCL makes the reservation atomic
+// so two parallel uploads of one name can't land on the same suffix either.
+func writeUploadExclusive(dir, name string, data []byte) (string, string, error) {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 1; i <= maxUploadCollisions; i++ {
+		cand := name
+		if i > 1 {
+			cand = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		p := filepath.Join(dir, cand)
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return "", "", err
+		}
+		if _, err := f.Write(data); err != nil {
+			_ = f.Close()
+			_ = os.Remove(p)
+			return "", "", err
+		}
+		if err := f.Close(); err != nil {
+			return "", "", err
+		}
+		return cand, p, nil
+	}
+	return "", "", fmt.Errorf("too many uploads named %q", name)
 }
 
 // sanitizeUploadName keeps the client-supplied name to a bare single file

@@ -3946,11 +3946,22 @@ async function attachFiles(files) {
 // 传当前会话；新建会话流程在会话建成后才上传，也走这里。
 async function uploadAttachment(f, sid) {
   if (!sid) throw new Error('请先进入一个会话再添加附件');
-  return api(`/api/sessions/${sid}/uploads?name=${encodeURIComponent(f.name)}`, {
+  const name = attachmentName(f);
+  return api(`/api/sessions/${sid}/uploads?name=${encodeURIComponent(name)}`, {
     method: 'POST',
     body: f,
     headers: { 'Content-Type': 'application/octet-stream' },
   });
+}
+
+// 上传用的文件名。剪贴板里来的文件可能压根没有名字（Safari），服务端
+// sanitizeUploadName 会直接 400，按 MIME 补一个即可。同一批剪贴板图片在
+// 各浏览器里都叫 image.png——落盘重名由服务端去重（writeUploadExclusive
+// 追加 -2/-3 后缀），这里不掺和，免得显示名和真实文件名对不上。
+function attachmentName(f) {
+  if (f.name && f.name.trim()) return f.name.trim();
+  const ext = String(f.type || '').split('/')[1] || 'bin';
+  return `attachment.${ext.replace(/[^a-z0-9]/gi, '')}`;
 }
 
 function fmtMiB(n) { return (n / 1024 / 1024).toFixed(1); }
