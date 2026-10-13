@@ -15,10 +15,11 @@
 // Parts of one assistant step share a message id; each part becomes its own
 // event carrying that id, mirroring Claude Code's split-line layout which the
 // frontend (trajectory byMsgId merge, per-block chat rendering) already
-// handles. Reasoning is skipped on purpose: the live engine (opencode serve,
-// see internal/opencodeapi) does not stream reasoning parts, only export has
-// them, so replaying them would make "refresh after reload" differ from the
-// live view.
+// handles. Reasoning is skipped on BOTH paths, and must stay that way: the live
+// engine streams a reasoning part's text as message.part.delta with the same
+// field:"text" as an answer (see openCodeTurn.streamable in internal/runner,
+// which gates on the announced part type for the same reason). Dropping it
+// here and there is what keeps a reload identical to the live view.
 package opencodehist
 
 import (

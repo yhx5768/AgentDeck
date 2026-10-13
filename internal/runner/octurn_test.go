@@ -247,3 +247,59 @@ func TestOpenCodeTurnSkipsUserEchoParts(t *testing.T) {
 		t.Error("empty id must not be treated as user")
 	}
 }
+
+// Regression: a reasoning part streams with the same field:"text" as the
+// answer, so the field cannot separate them — only the part announcement can.
+// Forwarding those deltas shows the model's private thinking in the chat as if
+// it were the reply, while AdaptPart drops it once the full part lands, so the
+// transcript would also change under a reload.
+//
+// The event order below is what opencode 1.18.35 actually emits (captured from
+// a live `opencode serve`): the part is announced empty, its deltas stream, then
+// the assembled part lands.
+func TestOpenCodeTurnSkipsReasoningDeltas(t *testing.T) {
+	tu := &openCodeTurn{
+		msgRoles:  map[string]string{"msg_asst": "assistant", "msg_user": "user"},
+		partTypes: map[string]string{"prt_reason": "reasoning", "prt_text": "text"},
+	}
+
+	// The reasoning deltas: same field, same message, different part.
+	for _, d := range []string{"Let me", " think", " about it"} {
+		pd := opencodeapi.PartDelta{
+			MessageID: "msg_asst", PartID: "prt_reason", Field: "text", Delta: d,
+		}
+		if tu.streamable(pd) {
+			t.Errorf("reasoning delta %q must not stream", d)
+		}
+	}
+	// The answer's deltas still stream — the fix must not cost token rendering.
+	if !tu.streamable(opencodeapi.PartDelta{
+		MessageID: "msg_asst", PartID: "prt_text", Field: "text", Delta: "1026",
+	}) {
+		t.Error("text delta must stream")
+	}
+	// A part never announced is not provably an answer, so it does not stream;
+	// its assembled part still arrives and renders whole.
+	if tu.streamable(opencodeapi.PartDelta{
+		MessageID: "msg_asst", PartID: "prt_unknown", Field: "text", Delta: "?",
+	}) {
+		t.Error("delta for an unannounced part must not stream")
+	}
+	// The echoed user prompt stays filtered, whatever its part type.
+	if tu.streamable(opencodeapi.PartDelta{
+		MessageID: "msg_user", PartID: "prt_text", Field: "text", Delta: "hi",
+	}) {
+		t.Error("user echo delta must not stream")
+	}
+	// Tool parts carry no deltas today, but a future field must not slip past.
+	if tu.streamable(opencodeapi.PartDelta{
+		MessageID: "msg_asst", PartID: "prt_text", Field: "input", Delta: "{}",
+	}) {
+		t.Error("non-text field must not stream")
+	}
+	if tu.streamable(opencodeapi.PartDelta{
+		MessageID: "", PartID: "prt_text", Field: "text", Delta: "x",
+	}) {
+		t.Error("delta without a message id must not stream")
+	}
+}

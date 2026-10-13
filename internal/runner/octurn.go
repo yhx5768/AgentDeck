@@ -54,9 +54,13 @@ type openCodeTurn struct {
 	// said it. message.updated arrives before the parts of that message, so
 	// looking the id up here is reliable.
 	msgRoles map[string]string
-	// deltaRoles remembers the role of a message whose parts are arriving as
-	// deltas, so a streamed user echo is still recognised and skipped.
-	deltaRoles map[string]string
+	// partTypes maps opencode part ids to their announced `part.type`. A
+	// message.part.delta carries only {partID, field, delta} — and reasoning
+	// parts stream with the same field:"text" as the answer — so the only way
+	// to tell them apart is the part announcement, which opencode always
+	// publishes first (verified live: every delta is preceded by a
+	// message.part.updated for that partID).
+	partTypes map[string]string
 	// drained is closed by consume when the SSE stream ends.
 	drained chan struct{}
 	// doneCh is closed by finishTurn once no more card answers can land.
@@ -94,7 +98,7 @@ func newOpenCodeTurn(srv *opencodeapi.Server, hub *opencodeapi.Hub, m *Manager, 
 		tx:         opencodehist.NewToolTx(),
 		cards:      map[string]*ocCard{},
 		msgRoles:   map[string]string{},
-		deltaRoles: map[string]string{},
+		partTypes:  map[string]string{},
 		drained:    make(chan struct{}),
 		doneCh:     make(chan struct{}),
 		turnDoneCh: make(chan struct{}),
@@ -235,6 +239,15 @@ func (t *openCodeTurn) consume(events <-chan opencodeapi.Event) {
 		if pe, ok := ev.Part(); ok {
 			if pe.Part == nil {
 				continue
+			}
+			// Record the type before anything else can bail out: the deltas
+			// that follow are bare {partID, field, delta} and can only be
+			// classified through this announcement.
+			if id, _ := pe.Part["id"].(string); id != "" {
+				tp, _ := pe.Part["type"].(string)
+				t.mu.Lock()
+				t.partTypes[id] = tp
+				t.mu.Unlock()
 			}
 			messageID := pe.MessageID
 			if messageID == "" {
@@ -740,23 +753,10 @@ func (t *openCodeTurn) isUserMessage(id string) bool {
 // carrying the SAME part id: the frontend keys partial blocks by id and
 // replaces the buffer, so repeated ids merge into one rendered paragraph while
 // the final updated event settles it.
-//
-// A user-side message (the echoed prompt) is skipped, mirroring the whole-part
-// path — otherwise the question would stream back as the model's answer.
 func (t *openCodeTurn) streamDelta(pd opencodeapi.PartDelta) {
-	if pd.Field != "" && pd.Field != "text" {
-		return // reasoning/other fields are not rendered by cc-webui
-	}
-	if pd.MessageID == "" {
+	if !t.streamable(pd) {
 		return
 	}
-	t.mu.Lock()
-	if t.msgRoles[pd.MessageID] == "user" {
-		t.mu.Unlock()
-		return
-	}
-	t.mu.Unlock()
-
 	// A dedicated event kind rather than a canonical assistant block: the
 	// frontend renders each canonical text block as its OWN bubble, so
 	// emitting one per increment would produce a pile of fragments. This
@@ -768,4 +768,37 @@ func (t *openCodeTurn) streamDelta(pd opencodeapi.PartDelta) {
 		"partID":    pd.PartID,
 		"delta":     pd.Delta,
 	})
+}
+
+// streamable decides whether one increment belongs in the transcript.
+//
+// Only `text` parts pass. A reasoning part streams with the very same
+// field:"text", so the field alone cannot tell the two apart — forwarding those
+// deltas paints the model's private thinking into the transcript as if it were
+// the answer. AdaptPart already drops reasoning once the full part lands
+// (opencodehist.adaptPart's default branch), so skipping the deltas is what
+// keeps the live view and the post-reload replay identical.
+//
+// A part never seen announced is dropped as well: a missing or reordered
+// announcement costs at most the token-by-token paint, since the assembled part
+// still arrives and renders whole, while a leaked reasoning stream cannot be
+// taken back once it is on screen.
+//
+// A user-side message (the echoed prompt) is skipped, mirroring the whole-part
+// path — otherwise the question would stream back as the model's answer. Its
+// role is only known if message.updated arrived, and an unknown role passes, so
+// a dropped role event costs a duplicated echo rather than a swallowed answer.
+func (t *openCodeTurn) streamable(pd opencodeapi.PartDelta) bool {
+	if pd.Field != "" && pd.Field != "text" {
+		return false // opencode reserves fields other than text
+	}
+	if pd.MessageID == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.msgRoles[pd.MessageID] == "user" {
+		return false
+	}
+	return t.partTypes[pd.PartID] == "text"
 }
