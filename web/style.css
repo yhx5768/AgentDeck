@@ -2841,7 +2841,10 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 .diff-stat { padding: var(--sp-2) var(--sp-3); color: var(--dim); font-size: var(--fs-xs); }
 
 /* ---------- 权限审批卡 ---------- */
-.msg-perm { margin: var(--sp-3) 0; }
+/* 只覆盖纵向间距：横向 margin 必须留给 .msg 的 auto 才能居中。
+   若写成 `margin: var(--sp-3) 0` 会把 auto 清掉，卡落到左边缘、与其他
+   消息对不齐（“歪了”）。停靠输入框上方的 dock 另有 `margin: 0`。 */
+.msg-perm { margin-top: var(--sp-3); margin-bottom: var(--sp-3); }
 .perm-card {
   border: 1px solid var(--orange);
   border-left: 3px solid var(--orange);
