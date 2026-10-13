@@ -255,52 +255,49 @@ func (e Event) MessageIDOf() string {
 	return part.MessageID
 }
 
-// PermissionAsked decodes a `permission.asked` event. opencode puts the
-// request object under properties.data.
+// PermissionAsked decodes a `permission.asked` event.
+//
+// Live 1.18.35 puts the request fields directly on `properties`
+// ({"id":…,"sessionID":…,"permission":…,"patterns":…,"tool":{…}}). Older /
+// REST-era shapes wrap the same object under `properties.data`, so both
+// spellings are accepted. Getting this wrong is silent: the card never
+// opens and opencode's tool waits forever for a reply that never comes.
 func (e Event) PermissionAsked() (PermissionRequest, bool) {
 	if e.Type != "permission.asked" && e.Type != "permission.updated" {
 		return PermissionRequest{}, false
 	}
 	top, nest := e.view()
-	raw := top.Data
-	if len(raw) == 0 {
-		raw = nest.Data
+	for _, raw := range []json.RawMessage{top.Data, nest.Data, e.Properties} {
+		if len(raw) == 0 {
+			continue
+		}
+		var pr PermissionRequest
+		if err := json.Unmarshal(raw, &pr); err == nil && pr.ID != "" {
+			return pr, true
+		}
 	}
-	if len(raw) == 0 {
-		return PermissionRequest{}, false
-	}
-	var pr PermissionRequest
-	if err := json.Unmarshal(raw, &pr); err != nil || pr.ID == "" {
-		return PermissionRequest{}, false
-	}
-	return pr, true
+	return PermissionRequest{}, false
 }
 
-// QuestionAsked decodes a `question.asked` event. Unlike permission, the
-// request object sits one level deeper, under properties.properties.
+// QuestionAsked decodes a `question.asked` event. Like permission, the live
+// 1.18.35 event carries the object directly on `properties`; the decoder also
+// accepts the `data`-wrapped and one-level-deeper `properties.properties`
+// spellings.
 func (e Event) QuestionAsked() (QuestionRequest, bool) {
 	if e.Type != "question.asked" && e.Type != "question.updated" {
 		return QuestionRequest{}, false
 	}
 	top, nest := e.view()
-	raw := top.Data
-	if len(raw) == 0 {
-		raw = nest.Data
+	for _, raw := range []json.RawMessage{top.Data, nest.Data, top.Nested, nest.Nested, e.Properties} {
+		if len(raw) == 0 {
+			continue
+		}
+		var qr QuestionRequest
+		if err := json.Unmarshal(raw, &qr); err == nil && qr.ID != "" {
+			return qr, true
+		}
 	}
-	if len(raw) == 0 {
-		raw = top.Nested
-	}
-	if len(raw) == 0 {
-		raw = nest.Nested
-	}
-	if len(raw) == 0 {
-		return QuestionRequest{}, false
-	}
-	var qr QuestionRequest
-	if err := json.Unmarshal(raw, &qr); err != nil || qr.ID == "" {
-		return QuestionRequest{}, false
-	}
-	return qr, true
+	return QuestionRequest{}, false
 }
 
 // SessionError decodes a `session.error` event.

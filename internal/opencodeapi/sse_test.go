@@ -49,7 +49,8 @@ func TestEventNonPartIsNotAPart(t *testing.T) {
 	}
 }
 
-// permission.asked carries its request under properties.data.
+// permission.asked carries its request under properties.data (older / REST-era
+// spelling, kept for compatibility).
 func TestEventPermissionAsked(t *testing.T) {
 	ev := Event{
 		Type: "permission.asked",
@@ -69,6 +70,37 @@ func TestEventPermissionAsked(t *testing.T) {
 	}
 	if pr.CallID != "call_1" {
 		t.Fatalf("callID = %q, want call_1", pr.CallID)
+	}
+}
+
+// The live 1.18.35 envelope is flattened: the request fields sit directly on
+// `properties`, with no `data` wrapper. This exact shape was captured from a
+// running server's /event stream; missing it silently drops every card.
+func TestEventPermissionAskedFlat(t *testing.T) {
+	ev := Event{
+		Type: "permission.asked",
+		Properties: json.RawMessage(`{
+			"id":"per_1","sessionID":"ses_1","permission":"external_directory",
+			"patterns":["/etc/*"],
+			"metadata":{"filepath":"/etc/hosts","parentDir":"/etc"},
+			"always":["/etc/*"],
+			"tool":{"messageID":"msg_1","callID":"call_1"}}`),
+	}
+	if got := ev.SessionIDOf(); got != "ses_1" {
+		t.Fatalf("sessionID = %q, want ses_1", got)
+	}
+	pr, ok := ev.PermissionAsked()
+	if !ok {
+		t.Fatal("expected a permission event")
+	}
+	if pr.ID != "per_1" || pr.Permission != "external_directory" {
+		t.Fatalf("decoded %+v, want id=per_1 permission=external_directory", pr)
+	}
+	if len(pr.Patterns) != 1 || pr.Patterns[0] != "/etc/*" {
+		t.Fatalf("patterns = %v", pr.Patterns)
+	}
+	if got := pr.Metadata["filepath"]; got != "/etc/hosts" {
+		t.Fatalf("metadata.filepath = %v, want /etc/hosts", got)
 	}
 }
 
@@ -100,6 +132,28 @@ func TestEventQuestionAsked(t *testing.T) {
 	}
 	if len(q.Options) != 1 || q.Options[0].Label != "A" {
 		t.Fatalf("options = %+v", q.Options)
+	}
+}
+
+// The same flattening applies to question.asked; accept the flat spelling too.
+func TestEventQuestionAskedFlat(t *testing.T) {
+	ev := Event{
+		Type: "question.asked",
+		Properties: json.RawMessage(`{
+			"id":"que_1","sessionID":"ses_1","questions":[
+				{"question":"Which one?","header":"Pick","multiple":true,
+				 "options":[{"label":"A","description":"first"}]}
+			]}`),
+	}
+	qr, ok := ev.QuestionAsked()
+	if !ok {
+		t.Fatal("expected a question event")
+	}
+	if qr.ID != "que_1" || len(qr.Questions) != 1 {
+		t.Fatalf("decoded %+v", qr)
+	}
+	if qr.Questions[0].Question != "Which one?" {
+		t.Fatalf("question = %+v", qr.Questions[0])
 	}
 }
 

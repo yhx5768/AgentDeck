@@ -324,13 +324,24 @@ type ModelV1 struct {
 	ModelID    string `json:"modelID"`
 }
 
-// PromptPart is one input part. Type is "text" or "file"; a file carries its
-// payload in the text field (a data: uri for inline images, a file:// uri for
-// on-disk uploads) — this is the inline-image channel `opencode run -f` lacked.
+// PromptPart is one input part. opencode's TextPartInput and FilePartInput are
+// separate shapes and both are strict (`additionalProperties:false`):
+//
+//	text → {type:"text", text}          (text required)
+//	file → {type:"file", mime, url}     (mime + url required; "text" is illegal)
+//
+// so a file part must carry its payload in `url` (a data: uri for inline
+// images, a file:// uri for on-disk uploads), never in `text`. Leaving the
+// wrong field unset (or an empty text part with the key omitted) makes
+// opencode answer 400 "Missing key at parts[0].text".
 type PromptPart struct {
 	Type string `json:"type"`
+	// Text is set only for type=="text". Omitted for file parts (illegal there).
 	Text string `json:"text,omitempty"`
+	// Mime is required for a file part.
 	Mime string `json:"mime,omitempty"`
+	// Url is the file payload: a data: uri (inline) or file:// uri (on disk).
+	Url string `json:"url,omitempty"`
 	// Filename is display-only.
 	Filename string `json:"filename,omitempty"`
 	// SourceID references a file added earlier via the file endpoints.
@@ -369,13 +380,17 @@ func (s *Server) PromptAsync(ctx context.Context, sessionID string, in PromptInp
 }
 
 // Interrupt stops a running turn (the Stop button).
-func (s *Server) Interrupt(ctx context.Context, sessionID string) error {
-	return s.do(ctx, http.MethodPost, fmt.Sprintf("/api/session/%s/interrupt", sessionID), struct{}{}, nil)
-}
-
-// Abort is the v1 spelling of Interrupt, kept as a fallback.
-func (s *Server) Abort(ctx context.Context, sessionID string) error {
-	return s.do(ctx, http.MethodPost, fmt.Sprintf("/session/%s/abort", sessionID), struct{}{}, nil)
+//
+// The turns cc-webui drives use the v1 prompt_async path, whose abort is the
+// flat /session/{id}/abort route. The v2 /api/session/{id}/interrupt route
+// answers 204 but is a no-op for a v1 turn, so Stop would silently do nothing
+// (verified live: v2 → the bash tool kept running; v1 abort → "Aborted" and
+// the session went idle at once). directory scopes the abort to the session's
+// project, exactly as create-session does.
+func (s *Server) Interrupt(ctx context.Context, directory, sessionID string) error {
+	path := queryPath(fmt.Sprintf("/session/%s/abort", sessionID),
+		map[string]any{"directory": directory})
+	return s.do(ctx, http.MethodPost, path, struct{}{}, nil)
 }
 
 // Messages returns the session's messages (for a fresh-session resync).

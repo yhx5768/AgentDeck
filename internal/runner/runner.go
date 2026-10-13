@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -453,6 +454,20 @@ func (m *Manager) work(sessionID string) {
 			m.runTurn(sessionID, msg)
 		}
 	}
+}
+
+// mimeForFile guesses the MIME type of an uploaded file from its extension.
+// opencode's file part requires `mime` to be present, and rejects the part
+// otherwise; the guess is display/metadata only (the payload rides the url).
+func mimeForFile(name string) string {
+	t := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+	if i := strings.IndexByte(t, ';'); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	if t == "" {
+		return "application/octet-stream"
+	}
+	return t
 }
 
 func hasArg(args []string, name string) bool {
@@ -1045,6 +1060,7 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	m.setRunning(sessionID, cancel)
 
 	turn := newOpenCodeTurn(srv, hub, m, sessionID)
+	turn.dir = resolvedCwd
 	m.ocTurns.set(sessionID, turn)
 	defer m.ocTurns.clear(sessionID, turn)
 
@@ -1090,8 +1106,14 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 
 	// v1 prompt shape: {model, parts}. See opencodeapi.PromptInput for why the
 	// v2 envelope must not be used here.
-	prompt := opencodeapi.PromptInput{
-		Parts: []opencodeapi.PromptPart{{Type: "text", Text: msg.Text}},
+	//
+	// opencode's part shapes are strict: a "text" part requires a non-empty
+	// `text`, and a "file" part requires `mime` + `url` and rejects `text`
+	// outright. So the text part is only added when there is text (an
+	// image-only paste has none), and attachments carry their payload in `url`.
+	var prompt opencodeapi.PromptInput
+	if msg.Text != "" {
+		prompt.Parts = append(prompt.Parts, opencodeapi.PromptPart{Type: "text", Text: msg.Text})
 	}
 	if ref := openCodeModelV1(prov, model); ref != nil {
 		prompt.Model = ref
@@ -1105,13 +1127,14 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 		prompt.Parts = append(prompt.Parts, opencodeapi.PromptPart{
 			Type: "file",
 			Mime: img.MediaType,
-			Text: "data:" + img.MediaType + ";base64," + img.Data,
+			Url:  "data:" + img.MediaType + ";base64," + img.Data,
 		})
 	}
 	for _, f := range msg.Files {
 		prompt.Parts = append(prompt.Parts, opencodeapi.PromptPart{
 			Type:     "file",
-			Text:     "file://" + f.Path,
+			Mime:     mimeForFile(f.Name),
+			Url:      "file://" + f.Path,
 			Filename: f.Name,
 		})
 	}

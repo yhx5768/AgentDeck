@@ -82,14 +82,21 @@ func (s *Server) ListSessionPermissionRequests(ctx context.Context, sessionID st
 
 // ReplyPermission answers a pending approval.
 //
+// The requests cc-webui bridges are the v1 `permission.asked` events, whose
+// reply endpoint is the flat /permission route; the v2
+// /api/session/{id}/permission/{rid}/reply route 404s a v1 request (verified
+// live: v2 → 404, v1 → 200 and the tool resumes). `directory` scopes the reply
+// to the session's project exactly as create-session does.
+//
 // Caveat worth knowing before using "always": opencode appends the rule to
 // the running server process's in-memory approved list. It is NOT persisted,
 // it is scoped to the whole server instance for that directory rather than to
 // one session, and the pattern comes from the tool, not from us. Persisting a
 // durable grant goes through /api/permission/saved instead.
-func (s *Server) ReplyPermission(ctx context.Context, sessionID, requestID string, r PermissionReply) error {
-	return s.do(ctx, http.MethodPost,
-		fmt.Sprintf("/api/session/%s/permission/%s/reply", sessionID, requestID), r, nil)
+func (s *Server) ReplyPermission(ctx context.Context, directory, requestID string, r PermissionReply) error {
+	path := queryPath(fmt.Sprintf("/permission/%s/reply", requestID),
+		map[string]any{"directory": directory})
+	return s.do(ctx, http.MethodPost, path, r, nil)
 }
 
 // ListQuestionRequests returns pending user questions across all sessions.
@@ -100,16 +107,20 @@ func (s *Server) ListQuestionRequests(ctx context.Context) ([]QuestionRequest, e
 }
 
 // ReplyQuestion delivers answers to a pending question and unblocks the turn.
-func (s *Server) ReplyQuestion(ctx context.Context, sessionID, requestID string, r QuestionReply) error {
-	return s.do(ctx, http.MethodPost,
-		fmt.Sprintf("/api/session/%s/question/%s/reply", sessionID, requestID), r, nil)
+// Like ReplyPermission, the question.asked events cc-webui handles are the v1
+// kind, so the reply goes to the flat /question route.
+func (s *Server) ReplyQuestion(ctx context.Context, directory, requestID string, r QuestionReply) error {
+	path := queryPath(fmt.Sprintf("/question/%s/reply", requestID),
+		map[string]any{"directory": directory})
+	return s.do(ctx, http.MethodPost, path, r, nil)
 }
 
 // RejectQuestion refuses to answer; the tool returns "Unanswered" and the
 // model decides what to do next.
-func (s *Server) RejectQuestion(ctx context.Context, sessionID, requestID string) error {
-	return s.do(ctx, http.MethodPost,
-		fmt.Sprintf("/api/session/%s/question/%s/reject", sessionID, requestID), struct{}{}, nil)
+func (s *Server) RejectQuestion(ctx context.Context, directory, requestID string) error {
+	path := queryPath(fmt.Sprintf("/question/%s/reject", requestID),
+		map[string]any{"directory": directory})
+	return s.do(ctx, http.MethodPost, path, struct{}{}, nil)
 }
 
 // ---- revert (rewind) ----

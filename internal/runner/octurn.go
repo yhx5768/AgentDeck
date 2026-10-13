@@ -34,6 +34,9 @@ type openCodeTurn struct {
 	mgr         *Manager
 	sessionID   string // cc-webui session id
 	ocSessionID string // opencode session id (ses_…)
+	// dir is the session's working directory. Permission/question replies are
+	// directory-scoped in opencode 1.18.35, so it must ride the reply calls.
+	dir string
 
 	tx *opencodehist.ToolTx
 
@@ -367,10 +370,9 @@ const ocCardTimeout = 55 * time.Second
 // openPermissionCard bridges one `permission.asked` event onto the existing
 // cc-webui approval card, then answers opencode with the user's decision.
 func (t *openCodeTurn) openPermissionCard(pr opencodeapi.PermissionRequest) {
-	ocSID := pr.SessionID
-	if ocSID == "" {
-		ocSID = t.ocSessionID
-	}
+	// opencode 1.18.35's permission replies are directory-scoped, not
+	// session-scoped: the flat v1 /permission route has no session path
+	// segment, so t.dir is what pins the reply to this session's project.
 	// Same-tool session allowance ("本次会话都允许"): skip the card and reply
 	// `always` straight away, but still broadcast a transient pair so the
 	// timeline shows why there was no card.
@@ -379,7 +381,7 @@ func (t *openCodeTurn) openPermissionCard(pr opencodeapi.PermissionRequest) {
 			"type": "permission_request", "id": "oc-" + pr.ID, "tool": pr.Permission,
 			"patterns": pr.Patterns, "auto_allowed": true, "ts": time.Now().UnixMilli(),
 		})
-		_ = t.srv.ReplyPermission(context.Background(), ocSID, pr.ID,
+		_ = t.srv.ReplyPermission(context.Background(), t.dir, pr.ID,
 			opencodeapi.PermissionReply{Reply: "always"})
 		t.mgr.BroadcastTransient(t.sessionID, "permission_resolved", map[string]any{
 			"type": "permission_resolved", "id": "oc-" + pr.ID,
@@ -416,7 +418,7 @@ func (t *openCodeTurn) openPermissionCard(pr opencodeapi.PermissionRequest) {
 		}
 		// Reject rather than allow: a silent auto-approve after a timeout is
 		// the worst failure mode for an approval card.
-		_ = t.srv.ReplyPermission(context.Background(), ocSID, pr.ID,
+		_ = t.srv.ReplyPermission(context.Background(), t.dir, pr.ID,
 			opencodeapi.PermissionReply{Reply: "reject", Message: "用户未在时限内审批"})
 		return
 	case <-t.turnDone():
@@ -427,7 +429,7 @@ func (t *openCodeTurn) openPermissionCard(pr opencodeapi.PermissionRequest) {
 	if d.Behavior == "deny" && d.Message != "" {
 		reply.Message = d.Message
 	}
-	_ = t.srv.ReplyPermission(context.Background(), ocSID, pr.ID, reply)
+	_ = t.srv.ReplyPermission(context.Background(), t.dir, pr.ID, reply)
 	t.mgr.BroadcastTransient(t.sessionID, "permission_resolved", map[string]any{
 		"type": "permission_resolved", "id": pid, "behavior": d.Behavior,
 	})
@@ -478,10 +480,8 @@ func permissionCardInput(pr opencodeapi.PermissionRequest) map[string]any {
 // description}] / multiple / custom) lines up with Claude's AskUserQuestion
 // input closely enough that the existing card parses it unchanged.
 func (t *openCodeTurn) openQuestionCard(qr opencodeapi.QuestionRequest) {
-	ocSID := qr.SessionID
-	if ocSID == "" {
-		ocSID = t.ocSessionID
-	}
+	// Same as permissions: the flat v1 /question route is directory-scoped,
+	// so replies carry t.dir rather than a session id.
 	questions := qr.Questions
 	if len(questions) == 0 {
 		return
@@ -521,19 +521,19 @@ func (t *openCodeTurn) openQuestionCard(qr opencodeapi.QuestionRequest) {
 		}
 		// Reject, not answer: the model then sees "Unanswered" and can move
 		// on or re-ask. Denying a question is the honest outcome.
-		_ = t.srv.RejectQuestion(context.Background(), ocSID, qr.ID)
+		_ = t.srv.RejectQuestion(context.Background(), t.dir, qr.ID)
 		return
 	case <-t.turnDone():
 		// Turn ended while the card was open (interrupt / server gone).
 		t.mgr.removePending(pid)
-		_ = t.srv.RejectQuestion(context.Background(), ocSID, qr.ID)
+		_ = t.srv.RejectQuestion(context.Background(), t.dir, qr.ID)
 		return
 	}
 
 	answers := openCodeAnswersFromClaude(d.Answers, questions)
 	if len(answers) == 0 {
-		_ = t.srv.RejectQuestion(context.Background(), ocSID, qr.ID)
-	} else if err := t.srv.ReplyQuestion(context.Background(), ocSID, qr.ID,
+		_ = t.srv.RejectQuestion(context.Background(), t.dir, qr.ID)
+	} else if err := t.srv.ReplyQuestion(context.Background(), t.dir, qr.ID,
 		opencodeapi.QuestionReply{Answers: answers}); err != nil {
 		log.Printf("opencode question reply failed (session %s, rid %s): %v", t.sessionID, qr.ID, err)
 	}
@@ -684,16 +684,13 @@ func (m *Manager) interruptOpenCodeTurn(sessionID string) bool {
 	if t == nil {
 		return false
 	}
-	// POST the interrupt so opencode actually stops the agent loop; the
+	// POST the abort so opencode actually stops the agent loop; the
 	// context cancel that follows only unwinds our own HTTP call.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := t.srv.Interrupt(ctx, t.ocSessionID); err != nil {
-			// v1 spelling, in case the running server predates /api/...
-			if err2 := t.srv.Abort(ctx, t.ocSessionID); err2 != nil {
-				log.Printf("opencode interrupt failed (session %s): %v", sessionID, err)
-			}
+		if err := t.srv.Interrupt(ctx, t.dir, t.ocSessionID); err != nil {
+			log.Printf("opencode interrupt failed (session %s): %v", sessionID, err)
 		}
 	}()
 	t.interrupt()
