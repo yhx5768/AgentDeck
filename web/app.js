@@ -191,6 +191,7 @@ function renderIcons(root) {
     'panel-left-close', 'panel-left-open', 'list-collapse',
     'bot', 'users',
     'list-todo', 'circle', 'circle-check',
+    'sliders-horizontal',
   ];
   // lucide 自动 kebab→Pascal，所以 icons map 的 key 也用 PascalCase
   const toPascal = (s) =>
@@ -1403,9 +1404,11 @@ const kindOf = (item) => (item && item.kind) || 'claude';
 const cliKind = (name) => kindOf(state.clis.find((c) => c.name === name));
 const provKind = (name) => kindOf(state.providers.find((p) => p.name === name));
 
-// 引擎是否接受内嵌 base64 图片（走 --input-format stream-json 的多模态载荷）。
-// claude 与 qoder 都吃：qoderclicn 1.1.65 实测能正确读出 base64 PNG 的内容。
-// opencode / mcode 不支持，只能降级成文件附件（见 attachFiles / nsAttachFiles）。
+// 引擎是否接受内嵌 base64 图片。
+// claude 与 qoder 都吃：qoderclicn 1.1.65 实测能正确读出 base64 PNG 的内容，
+// 都走 --input-format stream-json 的多模态载荷。
+// opencode 走 `opencode serve` 的 prompt file part，同样原样内嵌。
+// 只有 mcode 没有内嵌通道，图片降级成文件附件（见 attachFiles / nsAttachFiles）。
 const engineTakesImages = (kind) => kind === 'claude' || kind === 'qoder';
 
 function fillCLISelect(sel, value, kind) {
@@ -1440,7 +1443,9 @@ const EFFORT_STATIC = {}; // select id -> 静态 HTML（claude 全集）
 // 缓存只作兜底——首个打开的会话若是 opencode 它也不会被污染（opencode
 // 分支不读静态 HTML）。
 for (const eid of ['session-effort', 'sheet-effort', 'ns-effort', 'new-effort']) {
-  const el = $(eid);
+  // 注意 '#'：$ 就是 querySelector，裸 id 会被当成标签名，永远匹配不到，
+  // 快照会整张表都落空（只剩下面的懒缓存兜底）。
+  const el = $('#' + eid);
   if (el) EFFORT_STATIC[eid] = el.innerHTML;
 }
 
@@ -1449,17 +1454,24 @@ function effortStaticHTML(sel) {
   return EFFORT_STATIC[sel.id];
 }
 
+// 运行时动态建的 effort 下拉（群成员行、成员档案面板）没有 id，进不了上面的
+// 按 id 快照，而懒缓存会把「第一次重建前的 innerHTML」当成 claude 全集——先开过
+// opencode 的成员再切回 claude 就会拿到一份 opencode 的键。这里留一份 claude
+// 模板，动态下拉由调用方显式传进 applyEffortOptions。
+const EFFORT_CLAUDE_HTML = EFFORT_STATIC['ns-effort'] || EFFORT_STATIC['sheet-effort'] || '';
+
 // 按 engine + 模型 variants 键重建/恢复一个 effort 下拉并决定显隐。
 // wrap 可选：随下拉一起显隐的外层 label（sheet/new 面板里的 select 裸着
-// 不好看）。重建时保留当前选中值（能对上才恢复）。
-function applyEffortOptions(sel, kind, keys, wrap) {
+// 不好看）。staticHTML 可选：动态下拉的 claude 模板，见 EFFORT_CLAUDE_HTML。
+// 重建时保留当前选中值（能对上才恢复）。
+function applyEffortOptions(sel, kind, keys, wrap, staticHTML) {
   const show = (v) => {
     sel.classList.toggle('hidden', !v);
     if (wrap) wrap.classList.toggle('hidden', !v);
   };
   if (kind === 'claude') {
     const cur = sel.value;
-    sel.innerHTML = effortStaticHTML(sel);
+    sel.innerHTML = staticHTML || effortStaticHTML(sel);
     if (cur) sel.value = cur;
     show(true);
     return;
@@ -2840,7 +2852,7 @@ function markPeerSendFailed(details) {
 // 前 CLI 起 helper 问服务端，服务端经 SSE 下发 permission_request，前端渲染此卡。
 // opencode（--auto 自动放行）与 mcode（smart/full，无 headless 审批面）不走这里。
 // 三档：允许本次 / 本次会话都允许（同名工具后续免问）/ 拒绝（可附理由回传模型）。
-// 55s 无人审批 helper 端自动拒绝（CLI hook 上限 60s）。
+// 55s 无人审批自动拒绝。
 // AskUserQuestion 不是"放不放行"，是模型在问你问题：答案要以问题原文为 key、
 // 选项 label 为 value 经 updatedInput.answers 回传，否则 CLI 报
 // "The user did not answer the questions"。畸形 input 才退回通用卡。
@@ -5329,9 +5341,8 @@ async function nsAttachFiles(files) {
     state.nsAttached = state.nsAttached || [];
     const noInlineImages = !engineTakesImages(cliKind($('#ns-cli').value));
     if (ALLOWED_MIME.includes(f.type) && noInlineImages) {
-      // opencode / mcode 引擎没有内嵌图片通道：图片按文件附件走（`opencode run
-      // -f`、`mcode exec --file`），视觉模型可直接看到。会话建成后 nsSend 统一
-      // 上传为 path。
+      // mcode 引擎没有内嵌图片通道：图片按文件附件走（`mcode exec --file`），
+      // 视觉模型可直接看到。会话建成后 nsSend 统一上传为 path。
       state.nsAttached.push({ kind: 'file', name: f.name, size: f.size, file: f });
       continue;
     }
@@ -5447,7 +5458,8 @@ document.addEventListener('pointerdown', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     // 层级链：最上层先关，一次 Esc 只退一层
-    if (state.showSearch) $('#btn-search-toggle').click();
+    if (gmOpen) closeGroupMemberPanel();
+    else if (state.showSearch) $('#btn-search-toggle').click();
     else if (!$('#file-viewer').classList.contains('hidden')) closeFileViewer();
     else if (document.body.classList.contains('sheet-open')) closeSheet();
     else if (document.body.classList.contains('drawer-open')) closeDrawer();
@@ -5557,6 +5569,8 @@ function hideAllViews() {
   $('#chat-view').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  closeGroupMemberPanel();
+  closeGroupMentionPopup();
 }
 async function openGroup(gid) {
   let data;
@@ -5574,9 +5588,11 @@ async function openGroup(gid) {
   $('#group-view').classList.remove('hidden');
   $('#group-name').textContent = data.group.name;
   renderGroupMembers(data.group);
-  const box = $('#group-messages');
-  box.innerHTML = '';
-  for (const e of (data.transcript || [])) renderGroupEntry(e, box);
+  // 时间线只由 SSE 回放画（与单聊一致）：这里若先把 data.transcript 画一遍，
+  // 紧接着 connectGroupEvents 的回放会把同一批条目再发一次，而 groupSeen 刚
+  // 被清空、没有任何东西能拦它——每条消息都会出现两遍。断开重连时 onopen 又
+  // 走一遍 openGroup，清空 + 新连接回放，同样只画一次。
+  $('#group-messages').innerHTML = '';
   updateGroupStatus(data.group.running);
   relocatePermCards();
   connectGroupEvents(gid);
@@ -5605,6 +5621,9 @@ $('#ng-submit').onclick = async () => {
     name: row.querySelector('.ng-name').value.trim(),
     cli: row.querySelector('.ng-cli').value,
     provider: row.querySelector('.ng-prov').value,
+    // 空 = 继承：provider 默认模型 / 不指定档位
+    model: row.querySelector('.ng-model').value,
+    effort: row.querySelector('.ng-effort').value,
   })).filter((m) => m.name && m.cli && m.provider);
   if (!name || !cwd || members.length === 0) {
     alert('群名、工作目录、至少一个完整成员必填');
@@ -5620,16 +5639,120 @@ $('#ng-submit').onclick = async () => {
   }
 };
 $('#btn-group-send').onclick = () => sendGroupMessage();
-$('#group-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+// ---------- 群聊 @成员 自动补全 ----------
+// 打 @ 列出本群成员（外加 @all 群发），↑↓/Tab/Enter 选中，鼠标点选也行；选中后
+// 把光标前的 @词 替换成 "@名 "。只认词首的 @——服务端 parseGroupRecipients 按空白
+// 切 token 识别 @"名字"（成员名本身不含空格），非词首的 @ 不弹正好与它一致。
+const groupInputEl = $('#group-input');
+const groupMentionPopupEl = $('#group-mention-popup');
+const groupMention = { open: false, items: [], active: 0 };
+
+// 光标前正在输入的 @词。成员名按建群校验不含空格/@，但可以是中文，所以 token
+// 用「非空白非 @」而不是 \w。只认词首：开头、空白之后，或紧跟中文/全角标点
+// （中文里「看下@小王」这种不带空格的写法很常见）；邮箱/URL 里的 @ 不弹。
+// 这条判定与服务端 parseGroupRecipients 对齐——那边按空白切 token、要求 token
+// 以 @ 开头，所以选中时若前一个字不是空白会补一个空格，否则这条 @ 不会被路由。
+const CJK_OR_SPACE = /[\s぀-鿿　-〿＀-￯]/;
+
+function currentMentionToken(text, pos) {
+  const before = text.slice(0, pos);
+  const m = before.match(/@[^\s@]*$/);
+  if (!m) return null;
+  const start = pos - m[0].length;
+  if (start > 0 && !CJK_OR_SPACE.test(before[start - 1])) return null;
+  return { prefix: m[0], start };
+}
+// 候选项：@all 固定排第一，后面是本群成员（右侧提示模型/后端，分辨同名近似的人）
+function groupMentionCandidates() {
+  const ms = (state.currentGroup && state.currentGroup.members) || [];
+  return [{ name: 'all', hint: '群发全体' }]
+    .concat(ms.map((m) => ({ name: m.name, hint: m.model || m.provider || '' })));
+}
+function openGroupMentionPopup(filter) {
+  const q = filter.toLowerCase();
+  const items = groupMentionCandidates().filter((x) => !q || x.name.toLowerCase().includes(q));
+  if (!items.length) { closeGroupMentionPopup(); return; }
+  groupMention.open = true;
+  groupMention.items = items;
+  groupMention.active = 0;
+  groupMentionPopupEl.innerHTML = '';
+  items.forEach((it, i) => {
+    const el = document.createElement('div');
+    el.className = 'slash-popup-item' + (i === 0 ? ' active' : '');
+    el.innerHTML = `<span class="slash-name">@${escapeHtml(it.name)}</span>` +
+      (it.hint ? `<span class="slash-desc">${escapeHtml(it.hint)}</span>` : '');
+    // 用 mousedown 而不是 click：先 preventDefault 掉失焦，弹窗不会被 blur 的
+    // 延时关闭抢在 click 之前收掉，textarea 也保持焦点。
+    el.onmousedown = (e) => { e.preventDefault(); selectGroupMention(i); };
+    el.onmouseenter = () => setGroupMentionActive(i);
+    groupMentionPopupEl.appendChild(el);
+  });
+  groupMentionPopupEl.classList.remove('hidden');
+}
+function setGroupMentionActive(i) {
+  groupMention.active = i;
+  for (const el of groupMentionPopupEl.children) el.classList.remove('active');
+  const el = groupMentionPopupEl.children[i];
+  if (el) {
+    el.classList.add('active');
+    el.scrollIntoView({ block: 'nearest' });
+  }
+}
+function moveGroupMentionActive(delta) {
+  if (!groupMention.open) return;
+  const n = groupMention.items.length;
+  setGroupMentionActive((groupMention.active + delta + n) % n);
+}
+function closeGroupMentionPopup() {
+  groupMention.open = false;
+  groupMention.items = [];
+  groupMentionPopupEl.classList.add('hidden');
+}
+function selectGroupMention(idx) {
+  if (!groupMention.open) return;
+  const it = groupMention.items[idx ?? groupMention.active];
+  if (!it) return;
+  const ta = groupInputEl;
+  const tok = currentMentionToken(ta.value, ta.selectionStart);
+  closeGroupMentionPopup();
+  if (!tok) return;
+  // 前一个字不是空白就补一个空格：中文常写成「看下@小王」，不补服务端切不出
+  // 这个 token，这条 @ 就白发了。
+  const lead = tok.start > 0 && !/\s/.test(ta.value[tok.start - 1]) ? ' ' : '';
+  const rep = lead + '@' + it.name + ' ';
+  const caret = tok.start + rep.length;
+  ta.value = ta.value.slice(0, tok.start) + rep + ta.value.slice(ta.selectionStart);
+  ta.setSelectionRange(caret, caret);
+  ta.focus();
+  syncGroupInputHeight();
+}
+function syncGroupInputHeight() {
+  const ta = groupInputEl;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
+}
+groupInputEl.addEventListener('input', () => {
+  syncGroupInputHeight();
+  const tok = currentMentionToken(groupInputEl.value, groupInputEl.selectionStart);
+  if (tok) openGroupMentionPopup(tok.prefix.slice(1));
+  else closeGroupMentionPopup();
+});
+groupInputEl.addEventListener('keydown', (e) => {
+  if (groupMention.open) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveGroupMentionActive(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); moveGroupMentionActive(-1); return; }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.isComposing)) {
+      e.preventDefault(); selectGroupMention(); return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); closeGroupMentionPopup(); return; }
+  }
+  // isComposing：中文输入法选词时按 Enter 只是确认候选词，不能拿去发消息
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     sendGroupMessage();
   }
 });
-$('#group-input').addEventListener('input', (e) => {
-  e.target.style.height = 'auto';
-  e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px';
-});
+groupInputEl.addEventListener('blur', () => setTimeout(closeGroupMentionPopup, 150));
 $('#btn-group-stop').onclick = async () => {
   if (!state.currentGroup) return;
   try {
@@ -5659,39 +5782,116 @@ function renderGroupMembers(g) {
   const bar = $('#group-members');
   bar.innerHTML = '';
   for (const mb of (g.members || [])) {
+    const item = document.createElement('span');
+    item.className = 'group-member-item';
     const b = document.createElement('button');
     b.className = 'group-member-chip';
     b.title = `打开成员会话 ${mb.name}（看工具调用与完整回放）`;
     b.textContent = `👤 ${mb.name}`;
     b.onclick = () => openSession(mb.id);
-    bar.appendChild(b);
+    const tune = document.createElement('button');
+    tune.className = 'icon-btn group-member-tune';
+    tune.title = '调整该成员的 CLI / Provider / 模型 / 推理档位';
+    tune.innerHTML = '<i data-lucide="sliders-horizontal"></i>';
+    tune.onclick = () => openGroupMemberPanel(g, mb, tune);
+    item.appendChild(b);
+    item.appendChild(tune);
+    bar.appendChild(item);
   }
   const hint = document.createElement('span');
   hint.className = 'group-members-hint';
   hint.textContent = '点成员看它的单独回放（含工具调用）';
   bar.appendChild(hint);
+  renderIcons(bar);
+}
+// 成员档案面板：运行时改单个成员的 CLI/Provider/模型/档位，落
+// PATCH /api/groups/{id}/members/{memberId}。服务端同时改影子会话（真正跑的那
+// 份）与群 meta（这里显示的那份），改动从下一轮派发生效。
+let gmOpen = null; // { gid, memberId }
+function closeGroupMemberPanel() {
+  $('#group-member-panel').classList.add('hidden');
+  gmOpen = null;
+}
+// 把一条成员记录灌进面板：初值与「改失败后回滚」共用一份。
+function gmFillPanel(row, mb) {
+  const p = ngProfileParts(row);
+  const engine = cliKind(mb.cli);
+  // 会话绑定单一引擎，所以 cli 下拉只列同 kind 的（与单聊视图一致）。
+  fillCLISelect(p.cli, mb.cli, engine);
+  fillProviderSelect(p.prov, mb.provider, engine);
+  fillModelSelect(p.model, mb.provider, mb.model, mb.cli);
+  p.effort.value = mb.effort || '';
+  // 档位按 engine+模型重建（动态下拉：模板显式传，不走按 id 的懒缓存），
+  // 重建完再落回成员自己的值。
+  return refreshNgEffort(row, p.effort.closest('label')).then(() => { p.effort.value = mb.effort || ''; });
+}
+async function openGroupMemberPanel(g, mb, anchor) {
+  const panel = $('#group-member-panel');
+  if (gmOpen && gmOpen.memberId === mb.id) { closeGroupMemberPanel(); return; }
+  closeGroupMemberPanel();
+  gmOpen = { gid: g.id, memberId: mb.id };
+  const row = panel.querySelector('.gm-profile');
+  const p = ngProfileParts(row);
+  panel.querySelector('.gm-title').textContent = `成员设置 · ${mb.name}`;
+  panel.classList.remove('hidden');
+  const rect = anchor.getBoundingClientRect();
+  const box = panel.getBoundingClientRect();
+  panel.style.left = Math.max(8, Math.min(rect.right + 4, window.innerWidth - box.width - 8)) + 'px';
+  panel.style.top = Math.max(8, Math.min(rect.top - 4, window.innerHeight - box.height - 8)) + 'px';
+  gmFillPanel(row, mb);
+  // 落库 + 按服务端返回的成员重建联动下拉。cascade 在「改了会连带别的下拉」的
+  // 情况下重拉它们（cli→provider→模型→档位），否则服务端已清掉的 model/effort
+  // 会留在下拉上。
+  const patch = async (body, cascade) => {
+    try {
+      const updated = await api(`/api/groups/${g.id}/members/${mb.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      const me = (updated.members || []).find((x) => x.id === mb.id);
+      if (!me) return;
+      mb = me; // 成功后才推进「当前值」，失败时 catch 里回滚到的仍是它
+      gmOpen = { gid: g.id, memberId: me.id };
+      state.currentGroup = updated;
+      renderGroupMembers(updated);
+      if (cascade) cascade(me);
+    } catch (e) {
+      alert('改成员配置失败：' + e.message);
+      gmFillPanel(row, mb); // 拨回服务端那份，别停在一个没生效的值上
+    }
+  };
+  p.cli.onchange = () => patch({ cli: p.cli.value }, (me) => {
+    fillProviderSelect(p.prov, me.provider, cliKind(me.cli));
+    fillModelSelect(p.model, me.provider, me.model, me.cli);
+    refreshNgEffort(row, p.effort.closest('label')).then(() => { p.effort.value = me.effort || ''; });
+  });
+  p.prov.onchange = () => patch({ provider: p.prov.value }, (me) => {
+    fillModelSelect(p.model, me.provider, me.model, me.cli);
+    refreshNgEffort(row, p.effort.closest('label')).then(() => { p.effort.value = me.effort || ''; });
+  });
+  p.model.onchange = () => patch({ model: p.model.value }, (me) => {
+    refreshNgEffort(row, p.effort.closest('label')).then(() => { p.effort.value = me.effort || ''; });
+  });
+  p.effort.onchange = () => patch({ effort: p.effort.value });
 }
 function updateGroupStatus(running) {
   $('#group-status').textContent = running ? '跑着…' : '';
   $('#group-status').classList.toggle('running', !!running);
   $('#btn-group-stop').classList.toggle('hidden', !running);
 }
-// 群时间线条目：复用对话气泡样式类（.msg/.msg-user/.bubble/role-tag），
-// 成员色用 --accent 边框区分（工具细节不在这里，去成员会话看）。
-function renderGroupEntry(e, box) {
-  box = box || $('#group-messages');
-  if (!e) return;
-  if (e.Kind === 'user' || e.kind === 'user') {
-    const text = e.Text || e.text || '';
-    const bubble = addMsg('msg-user', '你', box);
-    bubble.textContent = text;
-  } else if (e.Kind === 'member' || e.kind === 'member') {
-    const name = e.MemberName || e.member_name || '成员';
-    const text = e.Text || e.text || '';
-    if (!text.trim()) return;
-    const bubble = addMsg('msg-assistant group-member-msg', escapeHtml(name), box);
-    bubble.innerHTML = md(text);
+// 群成员竖线颜色：按成员在 meta.members 里的序号取色板（相邻序号冷暖交替，
+// 并排发言的两个成员一定不同色；名字本来就在 role-tag 里，颜色只是辅助）。
+// 写的是 var(--agent-N) 而不是具体色值——切深浅主题时 CSS 变量重新解析，
+// 不用重渲染 DOM。取不到该成员（如成员刚被删）就退回名字的哈希，稳定不随
+// 成员增删漂移。
+function applyMemberColor(bubble, memberID) {
+  const ms = (state.currentGroup && state.currentGroup.members) || [];
+  let idx = ms.findIndex((m) => m.id === memberID);
+  if (idx < 0) {
+    let h = 0;
+    const key = String(memberID || '');
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+    idx = h % 8;
   }
+  const row = bubble.closest('.msg') || bubble.parentElement;
+  if (row) row.style.setProperty('--agent-color', `var(--agent-${(idx % 8) + 1})`);
 }
 function gStatusLine(key, text) {
   const box = $('#group-messages');
@@ -5750,6 +5950,7 @@ function connectGroupEvents(gid) {
       let live = turn[d.member_id];
       if (!live) {
         const bubble = addMsg('msg-assistant group-member-msg', escapeHtml(d.member_name || '成员'), box);
+        applyMemberColor(bubble, d.member_id);
         live = turn[d.member_id] = { bubble, buf: '' };
       }
       live.buf += (live.buf ? '\n\n' : '') + (d.text || '');
@@ -5765,6 +5966,7 @@ function connectGroupEvents(gid) {
       } else if (d.ok && d.text) {
         // 重连/刷新错过直播：直接落正文（回放里也有，不会丢）
         const bubble = addMsg('msg-assistant group-member-msg', escapeHtml(d.member_name || '成员'), box);
+        applyMemberColor(bubble, d.member_id);
         bubble.innerHTML = md(d.text);
       }
       gClearStatus(`begin-${d.turn_id}-${d.member_id}`);
@@ -5792,28 +5994,78 @@ async function sendGroupMessage() {
   }
 }
 // ---------- 新建群聊弹窗 ----------
-let ngMemberIdx = 0;
+// 成员行 = 成员名 + CLI + Provider + 模型 + 推理档位（最后两列与单聊视图同一套
+// 下拉：模型随 provider 联动、档位随 engine+模型重建）。群视图的成员档案面板
+// 复用同一批 ng-* 类名，所以联动只有这一份。
+function ngProfileParts(row) {
+  return {
+    cli: row.querySelector('.ng-cli'),
+    prov: row.querySelector('.ng-prov'),
+    model: row.querySelector('.ng-model'),
+    effort: row.querySelector('.ng-effort'),
+  };
+}
+
+// cli 变了：provider 归位同 kind 首个，模型/档位跟着重建
+function ngResetProvider(row) {
+  const { cli, prov, model } = ngProfileParts(row);
+  fillProviderSelect(prov, '', cliKind(cli.value));
+  fillModelSelect(model, prov.value, '', cli.value);
+  return refreshNgEffort(row);
+}
+// provider 变了：模型列表重建，档位跟着重建
+function ngResetModel(row) {
+  const { prov, model, cli } = ngProfileParts(row);
+  fillModelSelect(model, prov.value, '', cli.value);
+  return refreshNgEffort(row);
+}
+
+// 成员行的推理档位：与 ns/新建/会话视图同一套 engine 分流（见 refreshNsEffort）。
+// wrap 是随下拉显隐的 label——建群弹窗里下拉是裸的，面板里包在 label 里。
+async function refreshNgEffort(row, wrap) {
+  const { cli, prov, model, effort } = ngProfileParts(row);
+  const cliName = cli.value;
+  const provName = prov.value;
+  const kind = cliKind(cliName);
+  const apply = (k, keys) => {
+    applyEffortOptions(effort, k, keys, wrap, EFFORT_CLAUDE_HTML);
+    // 该模型没有档位时下拉是隐藏的，留着的选中值会被当档位提交——
+    // 置空，让它回到继承。
+    if (effort.classList.contains('hidden')) effort.value = '';
+  };
+  if (kind === 'opencode') {
+    apply('opencode', variantKeysFor(await ocVariantsFor(cliName, provName), provName, model.value));
+    return;
+  }
+  if (kind === 'mcode') {
+    apply('mcode', mcodeEffortsFor(await mcodeCatalogFor(cliName, provName), provName, model.value));
+    return;
+  }
+  if (kind === 'qoder') {
+    apply('qoder', qoderEfforts(await qoderCatalogFor(cliName, provName)));
+    return;
+  }
+  apply('claude');
+}
 function ngMemberRow() {
-  const i = ngMemberIdx++;
   const row = document.createElement('div');
   row.className = 'ng-member';
   row.innerHTML =
     '<input class="ng-name" placeholder="成员名（@用，无空格）">' +
     '<select class="ng-cli"></select>' +
     '<select class="ng-prov"></select>' +
+    '<select class="ng-model"></select>' +
+    '<select class="ng-effort"></select>' +
     '<button class="icon-btn ng-del" title="删成员">✕</button>';
-  const cliSel = row.querySelector('.ng-cli');
-  const provSel = row.querySelector('.ng-prov');
-  cliSel.innerHTML = state.clis.map((c) => `<option value="${c.name}">${escapeHtml(c.name)}${kindOf(c) === 'claude' ? '' : ' · ' + c.kind}</option>`).join('');
-  const refill = () => {
-    const kind = cliKind(cliSel.value);
-    provSel.innerHTML = state.providers.filter((p) => (p.kind || 'claude') === kind)
-      .map((p) => `<option value="${p.name}">${escapeHtml(p.name)}</option>`).join('');
-  };
-  cliSel.onchange = refill;
-  refill();
+  const p = ngProfileParts(row);
+  p.effort.innerHTML = EFFORT_CLAUDE_HTML;
+  fillCLISelect(p.cli, '', null);
+  ngResetProvider(row);
+  p.cli.onchange = () => ngResetProvider(row);
+  p.prov.onchange = () => ngResetModel(row);
+  p.model.onchange = () => refreshNgEffort(row);
   row.querySelector('.ng-del').onclick = () => row.remove();
-  return { row, cliSel };
+  return { row, cliSel: p.cli };
 }
 // 工作区加号：单聊 / 群聊二选一（群聊预填该工作区）
 let wsAddCwd = '';
@@ -5833,7 +6085,11 @@ function openWsAddMenu(cwd, anchor) {
 }
 function closeWsAddMenu() { $('#ws-add-menu').classList.add('hidden'); }
 document.addEventListener('pointerdown', (e) => {
+  // 点在菜单/加号之外才关。反过来写成「点在菜单里就关」，菜单会在 pointerdown
+  // 就 display:none，mouseup 打不中按钮，click 被改派到 body——菜单项点了没反应。
   if (!e.target.closest('#ws-add-menu') && !e.target.closest('.group-add-btn')) closeWsAddMenu();
+  // 成员档案面板同 ws 菜单：点外面关
+  if (gmOpen && !e.target.closest('#group-member-panel') && !e.target.closest('.group-member-tune')) closeGroupMemberPanel();
 });
 $('#ws-add-menu').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-add-kind]');
@@ -5851,13 +6107,12 @@ function openNewGroupDialog(cwd) {
   $('#ng-cwd').value = cwd || (state.current && state.current.cwd) || state.home || '';
   const box = $('#ng-members');
   box.innerHTML = '';
-  ngMemberIdx = 0;
   // 默认两个成员位：名取前两个 cli，省手工
   for (let i = 0; i < 2; i++) {
     const { row, cliSel } = ngMemberRow();
     if (state.clis[i]) cliSel.value = state.clis[i].name;
-    cliSel.dispatchEvent(new Event('change'));
     row.querySelector('.ng-name').value = state.clis[i] ? state.clis[i].name : '';
+    ngResetProvider(row);
     box.appendChild(row);
   }
   openModal('#modal-new-group');

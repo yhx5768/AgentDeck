@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"cc-webui/internal/config"
+	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/runner"
 	"cc-webui/internal/store"
 )
@@ -16,6 +20,50 @@ import (
 // Group chat HTTP layer. Groups own shadow member sessions (store.GroupID,
 // hidden from the sidebar); dispatch/wait/log live in runner/group.go. This
 // file is validation, member lifecycle, @ routing and the group SSE stream.
+
+// resolveProfile resolves a cli/provider pair and rejects an engine mismatch.
+// A session (and therefore a group member, whose shadow session is one) binds
+// to a single engine — see AGENTS.md §8.
+func (s *Server) resolveProfile(cliName, provName string) (*config.CLI, *config.Provider, error) {
+	cli := s.cfg().CLIByName(cliName)
+	if cli == nil {
+		return nil, nil, fmt.Errorf("unknown cli: %s", cliName)
+	}
+	prov := s.cfg().ProviderByName(provName)
+	if prov == nil {
+		return nil, nil, fmt.Errorf("unknown provider: %s", provName)
+	}
+	if prov.Kind != cli.Kind {
+		return nil, nil, fmt.Errorf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind)
+	}
+	return cli, prov, nil
+}
+
+// validateEffort checks a reasoning level against the engine that will run it:
+// claude takes the fixed --effort set, opencode any well-formed --variant key,
+// qoder its own --reasoning-effort set, mcode a per-model short list read from
+// its runtime config (only the CLI itself knows those, and it would reject an
+// unknown one after the run started). model is the provider-relative override
+// ("" = provider default) and is only read for mcode.
+func (s *Server) validateEffort(cli *config.CLI, prov *config.Provider, model, effort string) error {
+	kind := config.KindClaude
+	if cli != nil {
+		kind = cli.Kind
+	}
+	if !effortOKFor(kind, effort) {
+		return fmt.Errorf("invalid effort: %s", effort)
+	}
+	if kind != config.KindMcode || prov == nil || effort == "" {
+		return nil
+	}
+	m := prov.EffectiveModel(model)
+	cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(m, prov.Name))
+	if mm := cat.Find(mcodehist.BareModelID(m)); err == nil && mm != nil && len(mm.Efforts) > 0 &&
+		!mcodehist.EffortOK(cat, mcodehist.BareModelID(m), effort) {
+		return fmt.Errorf("模型 %s 不支持推理档位 %q（可选：%s）", m, effort, strings.Join(mm.Efforts, ", "))
+	}
+	return nil
+}
 
 // groupView is the wire shape for a group.
 type groupView struct {
@@ -61,6 +109,7 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 			CLI      string `json:"cli"`
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
+			Effort   string `json:"effort"`
 		} `json:"members"`
 	}
 	if err := decode(r, &body); err != nil {
@@ -83,10 +132,11 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	seen := map[string]bool{}
 	type validated struct {
-		name string
-		cli  string
-		prov string
-		model string
+		name   string
+		cli    string
+		prov   string
+		model  string
+		effort string
 	}
 	var members []validated
 	for _, mb := range body.Members {
@@ -101,25 +151,20 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seen[key] = true
-		cli := s.cfg().CLIByName(mb.CLI)
-		if cli == nil {
-			writeErr(w, http.StatusBadRequest, "unknown cli: "+mb.CLI)
-			return
-		}
-		prov := s.cfg().ProviderByName(mb.Provider)
-		if prov == nil {
-			writeErr(w, http.StatusBadRequest, "unknown provider: "+mb.Provider)
-			return
-		}
-		if prov.Kind != cli.Kind {
-			writeErr(w, http.StatusBadRequest, "engine mismatch for member "+name)
+		cli, prov, err := s.resolveProfile(mb.CLI, mb.Provider)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if mb.Model != "" && !s.modelKnown(cli, prov, mb.Model) {
 			writeErr(w, http.StatusBadRequest, "unknown model for provider "+prov.Name+": "+mb.Model)
 			return
 		}
-		members = append(members, validated{name: name, cli: cli.Name, prov: prov.Name, model: mb.Model})
+		if err := s.validateEffort(cli, prov, mb.Model, mb.Effort); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		members = append(members, validated{name: name, cli: cli.Name, prov: prov.Name, model: mb.Model, effort: mb.Effort})
 	}
 	gid := newID()
 	now := time.Now()
@@ -139,7 +184,8 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		sess := &store.Session{
 			ID: newID(), Name: body.Name + "/" + mb.name,
 			CLI: mb.cli, Provider: mb.prov, ModelOverride: mb.model,
-			Cwd: resolvedCwd, GroupID: gid,
+			EffortOverride: mb.effort,
+			Cwd:            resolvedCwd, GroupID: gid,
 			CreatedAt: now, UpdatedAt: now,
 		}
 		if err := s.st.Upsert(sess, nil); err != nil {
@@ -149,7 +195,7 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		}
 		created = append(created, sess.ID)
 		meta.Members = append(meta.Members, runner.GroupMember{
-			ID: sess.ID, Name: mb.name, CLI: mb.cli, Provider: mb.prov, Model: mb.model,
+			ID: sess.ID, Name: mb.name, CLI: mb.cli, Provider: mb.prov, Model: mb.model, Effort: mb.effort,
 		})
 	}
 	if err := s.mgr.WriteGroupMeta(meta); err != nil {
@@ -176,6 +222,110 @@ func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 		log_ = []runner.GroupEntry{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"group": s.groupViewOf(meta), "transcript": log_})
+}
+
+// handlePatchGroupMember re-profiles one member at runtime: CLI, provider,
+// model and reasoning level. Two records carry the member's profile — the
+// shadow session (store.Session, what dispatch actually reads) and the group
+// meta member (what the group view renders) — so both are written here.
+//
+// The edit applies from the NEXT dispatch: a leg already in flight was spawned
+// with the old profile and is left alone (same rule as patching a running
+// single session's model). Nothing is blocked while the group is busy.
+func (s *Server) handlePatchGroupMember(w http.ResponseWriter, r *http.Request) {
+	meta, err := s.mgr.ReadGroupMeta(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "group not found")
+		return
+	}
+	memberID := r.PathValue("memberId")
+	idx := -1
+	for i := range meta.Members {
+		if meta.Members[i].ID == memberID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		writeErr(w, http.StatusNotFound, "member not found in group")
+		return
+	}
+	mb := &meta.Members[idx]
+
+	var body struct {
+		CLI      *string `json:"cli"`
+		Provider *string `json:"provider"`
+		Model    *string `json:"model"`
+		Effort   *string `json:"effort"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if body.CLI == nil && body.Provider == nil && body.Model == nil && body.Effort == nil {
+		writeErr(w, http.StatusBadRequest, "nothing to update")
+		return
+	}
+	cliName, provName, model, effort := mb.CLI, mb.Provider, mb.Model, mb.Effort
+	if body.CLI != nil {
+		cliName = strings.TrimSpace(*body.CLI)
+	}
+	if body.Provider != nil {
+		provName = strings.TrimSpace(*body.Provider)
+	}
+	if body.Effort != nil {
+		effort = *body.Effort
+	}
+	cli, prov, err := s.resolveProfile(cliName, provName)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Model != nil {
+		model = *body.Model
+	} else if body.Provider != nil && prov.ModelByName(model) == nil {
+		// Provider changed without a new model: the old override does not exist
+		// in the new provider, so fall back to its default model (same rule as
+		// patching a session's provider).
+		model = ""
+	}
+	if model != "" && !s.modelKnown(cli, prov, model) {
+		writeErr(w, http.StatusBadRequest, "unknown model for provider "+prov.Name+": "+model)
+		return
+	}
+	if err := s.validateEffort(cli, prov, model, effort); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	sess := s.st.Get(memberID)
+	if sess == nil || sess.GroupID != meta.ID {
+		// The shadow session is gone (or was never ours) — the meta copy alone
+		// would show a profile that never runs, so refuse instead of half-writing.
+		writeErr(w, http.StatusNotFound, "member session not found")
+		return
+	}
+	if err := s.st.Upsert(sess, func(cur *store.Session) {
+		cur.CLI = cli.Name
+		cur.Provider = prov.Name
+		cur.ModelOverride = model
+		cur.EffortOverride = effort
+		cur.UpdatedAt = time.Now()
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	mb.CLI, mb.Provider, mb.Model, mb.Effort = cli.Name, prov.Name, model, effort
+	meta.UpdatedAt = time.Now()
+	if err := s.mgr.WriteGroupMeta(meta); err != nil {
+		// The shadow session already carries the new profile, so the next
+		// dispatch is correct either way; only the group view's copy is stale
+		// after a restart. Say so instead of reporting a plain failure.
+		log.Printf("group %s member %s: write meta after profile patch: %v", meta.ID, mb.Name, err)
+		writeErr(w, http.StatusInternalServerError, "成员配置已更新，但群聊档案落盘失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.groupViewOf(meta))
 }
 
 func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {

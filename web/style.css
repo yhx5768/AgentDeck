@@ -29,6 +29,18 @@
   --tool-fg: #444c56;
   --dot-off: #c2c8d0;
   --thinking: #8250df;
+  /* 群成员竖线色板：按成员序号取（成员 1..8），相邻序号刻意在冷/暖之间交替，
+     所以并排发言的两个成员颜色一定拉得开。取色沿用 GitHub 那套色，深浅主题
+     各一份，保证在 --bg2 气泡底上都够对比。颜色只是辅助——名字就在 role-tag 里，
+     不靠颜色单独区分。 */
+  --agent-1: #0969da; /* 蓝 */
+  --agent-2: #9a6700; /* 琥珀 */
+  --agent-3: #1a7f37; /* 绿 */
+  --agent-4: #bf3989; /* 品红 */
+  --agent-5: #1b7c83; /* 青 */
+  --agent-6: #cf222e; /* 红 */
+  --agent-7: #8250df; /* 紫 */
+  --agent-8: #7a4f01; /* 金棕 */
   --code-bg: #f6f8fa;
   --danger-bg: rgba(207, 34, 46, .08);
   --danger-border: rgba(207, 34, 46, .4);
@@ -117,6 +129,15 @@
   --tool-fg: #b1bac4;
   --dot-off: #484f58;
   --thinking: #a371f7;
+  /* 群成员竖线色板（深色版，见 :root 的说明；同色相提亮以适配深底） */
+  --agent-1: #58a6ff;
+  --agent-2: #d29922;
+  --agent-3: #3fb950;
+  --agent-4: #f778ba;
+  --agent-5: #39c5cf;
+  --agent-6: #f85149;
+  --agent-7: #a371f7;
+  --agent-8: #e3b341;
   --code-bg: #161b22;
   --danger-bg: rgba(248, 81, 73, .12);
   --danger-border: rgba(248, 81, 73, .4);
@@ -2964,15 +2985,35 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 .group-members-hint { font-size: var(--fs-xs); color: var(--dim); }
 #group-msg-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #group-messages { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-4); padding-bottom: 24px; }
-.group-member-msg { border-left: 3px solid var(--accent); }
+/* 成员竖线：颜色由 JS 按成员序号写成 --agent-color（引用 var(--agent-N)，
+   所以切主题不用重渲染）。拿不到成员信息时退回 accent。 */
+.group-member-msg { border-left: 3px solid var(--agent-color, var(--accent)); }
 .group-error { color: var(--red); }
 #group-composer { padding: 0 var(--sp-4) var(--sp-3); }
 #group-composer .composer-card { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--bg2); }
 #group-input { width: 100%; box-sizing: border-box; resize: none; background: transparent; border: none; outline: none; color: var(--fg); font-size: var(--fs-md); }
-.ng-member { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); }
-.ng-member .ng-name { flex: 1; min-width: 0; }
-.ng-member select { max-width: 150px; }
+.ng-member { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); align-items: center; }
+/* 成员名只需放下 @用的短名：不给 flex:1，否则四个下拉被挤到换行 */
+.ng-member .ng-name { flex: 0 0 130px; width: 130px; min-width: 0; }
+.ng-member select { flex: 1 1 0; min-width: 0; max-width: 150px; }
+.ng-member .icon-btn { flex: none; }
+/* 表头与成员行同栅格：各列的 flex 必须与下面的输入框/下拉一致，否则标签挤在
+   左边一坨、和列对不上。末列对齐删除按钮的宽度。 */
+.ng-member.ng-head { font-size: var(--fs-xs); color: var(--dim); margin-bottom: var(--sp-1); }
+.ng-member.ng-head span { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ng-member.ng-head span:first-child { flex: 0 0 130px; }
+.ng-member.ng-head span:last-child { flex: 0 0 26px; }
 #ng-add-member { margin-bottom: var(--sp-2); }
+/* 群视图成员：名字点开成员会话，齿轮开档案面板 */
+.group-member-item { display: inline-flex; align-items: center; gap: 2px; }
+.group-member-tune { flex: none; width: 22px; height: 22px; }
+.group-member-tune svg { width: 13px; height: 13px; }
+#group-member-panel { width: 300px; }
+#group-member-panel .gm-title { font-size: var(--fs-sm); font-weight: 600; }
+#group-member-panel .gm-profile { display: flex; flex-direction: column; gap: var(--sp-2); }
+#group-member-panel .gm-profile label { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-xs); color: var(--dim); }
+#group-member-panel .gm-profile select { width: 100%; }
+#group-member-panel .gm-hint { font-size: var(--fs-xs); color: var(--dim); }
 .group-tag {
   flex: none;
   font-size: var(--fs-xs);

@@ -99,7 +99,8 @@ func TestParseHookTool(t *testing.T) {
 	}
 }
 
-func TestResolvePendingAllowance(t *testing.T) {	m := NewManager(config.NewManager(filepath.Join(t.TempDir(), "config.yaml"), &config.Config{DataDir: t.TempDir()}), nil)
+func TestResolvePendingAllowance(t *testing.T) {
+	m := NewManager(config.NewManager(filepath.Join(t.TempDir(), "config.yaml"), &config.Config{DataDir: t.TempDir()}), nil)
 	if m.permHookAllowed("s1", "Bash") {
 		t.Fatalf("no allowance yet")
 	}

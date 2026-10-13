@@ -40,6 +40,11 @@ type GroupMember struct {
 	CLI      string `json:"cli"`
 	Provider string `json:"provider"`
 	Model    string `json:"model,omitempty"`
+	// Effort is the shadow session's reasoning level; empty = inherit. Like
+	// Model it mirrors store.Session.EffortOverride — dispatch reads the store
+	// copy, this one is what the group view shows and what a runtime edit
+	// rewrites. Kept in sync by the server on create and on member PATCH.
+	Effort string `json:"effort,omitempty"`
 	// Cursor is the group-log length this member has consumed: the next
 	// dispatch injects entries[Cursor:] (minus its own, which live in its
 	// resume context already).

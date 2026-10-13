@@ -107,13 +107,13 @@ func TestParseClaudeCodeError(t *testing.T) {
 			wantMsgHas: "x",
 		},
 		{
-			name:   "plain stderr not recognized",
-			stderr: "something went wrong",
+			name:     "plain stderr not recognized",
+			stderr:   "something went wrong",
 			wantKind: "",
 		},
 		{
-			name:   "other claude-code kind not handled",
-			stderr: `[claude-code:rate_limit] {"retry_after":10}`,
+			name:     "other claude-code kind not handled",
+			stderr:   `[claude-code:rate_limit] {"retry_after":10}`,
 			wantKind: "",
 		},
 	}

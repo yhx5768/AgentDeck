@@ -224,6 +224,7 @@
         <div class="composer-card">
           <div id="perm-dock-group" class="hidden"></div>
           <div class="input-wrapper">
+            <div id="group-mention-popup" class="slash-popup hidden"></div>
             <textarea id="group-input" rows="1" placeholder="输入消息群发，@成员名 定向，@all 显式群发"></textarea>
           </div>
           <div class="composer-toolbar">
@@ -234,6 +235,19 @@
           </div>
         </div>
       </footer>
+
+      <!-- 成员档案面板：运行时改单个成员的 CLI/Provider/模型/推理档位。
+           下拉与建群弹窗的成员行共用 ng-* 类名，所以联动逻辑一份就够。 -->
+      <div id="group-member-panel" class="popover-panel hidden">
+        <div class="gm-title">成员设置</div>
+        <div class="gm-profile">
+          <label>CLI<select class="ng-cli"></select></label>
+          <label>Provider<select class="ng-prov"></select></label>
+          <label>模型<select class="ng-model"></select></label>
+          <label>推理<select class="ng-effort"></select></label>
+        </div>
+        <div class="gm-hint">改动从下一轮派发生效（正在跑的成员不受影响）。</div>
+      </div>
     </div>
 
     <!-- 新会话创作视图：大输入框 + 配置选择 -->
@@ -377,6 +391,9 @@
     <h3>新建群聊</h3>
     <label>群名 <input id="ng-name" placeholder="必填"></label>
     <label>工作目录 <input id="ng-cwd" placeholder="/path/to/project"></label>
+    <div class="ng-member ng-head">
+      <span>成员名</span><span>CLI</span><span>Provider</span><span>模型</span><span>推理</span><span></span>
+    </div>
     <div id="ng-members"></div>
     <button class="ghost-btn" id="ng-add-member" type="button">＋ 加成员</button>
     <div class="modal-actions">

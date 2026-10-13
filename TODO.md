@@ -263,6 +263,24 @@
 - 群视图只看正文（工具细节去成员会话）；members 8 上限；单群单 cwd；文本
   消息 only（图片/附件 400）；删群等轮停后级联删影子会话。实测：qoder 免费
   Flash 双成员并行/定向/第二轮增量/删除全通。
+- 成员档案（cli/provider/model/推理档位）：建群时每个成员行可选，建群后也可
+  运行时改（成员名旁齿轮开面板 → `PATCH /api/groups/{id}/members/{memberId}`）。
+  **档案存两份**——影子会话 `store.Session`（真正 spawn 用的）与
+  `runner.GroupMember`（群视图显示用的），改一处必须同改另一处，否则界面和实际
+  跑的会不一致；换 provider 不带新模型时旧 model override 自动退回该 provider
+  默认（与单聊 PATCH 同规则）。改动从下一轮派发生效，不打断在跑的成员。
+  建群/改档位都走 `validateEffort`（按 engine 分流：claude 固定集 / opencode
+  任意键 / qoder 固定集 / mcode 查它自己的模型目录），非法档位在 spawn 前 400。
+- `@成员` 自动补全：群 composer 打 `@` 弹列表（`@all` + 成员，右侧带模型提示），
+  ↑↓/Tab/Enter 键盘选中、鼠标点选亦可；按输入内容过滤。触发只在词首（开头/
+  空白/中文后），选中时前一个字非空白则补空格——服务端按空白切 token 要求
+  token 以 `@` 开头，不补就路由不到（中文「看下@小王」是常见写法）。
+- 群时间线只有一处渲染入口：SSE 回放。`openGroup` 不再用 REST 的 transcript
+  预渲染——回放会把同一批条目再发一遍而 `groupSeen` 刚清空拦不住，结果每条
+  消息显示两遍（刷新/重连必现）。断线重连走 `onopen → openGroup`，清空后由
+  新连接回放重建。
+- 群成员竖线按成员序号取色（`--agent-1..8`，冷暖交替保证并排发言者不同色，
+  深浅主题各一份）；名字始终在 role-tag 里，颜色只是辅助识别。
 
 ### 5.2 文件面板 + 终端面板
 
