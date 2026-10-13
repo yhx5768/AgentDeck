@@ -1513,15 +1513,17 @@ async function ocVariantsFor(cliName, providerName) {
   const key = `${cliName}/${providerName}`;
   const ent = state.ocVariants[key];
   if (ent && Date.now() - ent.ts < OC_VARIANTS_TTL) return ent.data;
-  let data = null;
   try {
-    data = await api(`/api/opencode-model-variants?cli=${encodeURIComponent(cliName)}&provider=${encodeURIComponent(providerName)}&fresh=1`);
+    const data = await api(`/api/opencode-model-variants?cli=${encodeURIComponent(cliName)}&provider=${encodeURIComponent(providerName)}&fresh=1`);
+    const models = (data && data.models) || null;
+    state.ocVariants[key] = { ts: Date.now(), data: models };
+    return models;
   } catch (_) {
-    // 拉取失败 = 无数据，effort 下拉保持隐藏，不打扰对话
+    // 拉取失败（典型：cc-webui 重启期间连接被拒）——只返回 null，不写缓存。
+    // 若把失败也存进去，一次启动窗口内的失败会把 effort 下拉整整藏 10 分钟，
+    // 服务早就起来了也不恢复；不缓存则下次 openSession / 换模型即重试。
+    return null;
   }
-  const models = (data && data.models) || null;
-  state.ocVariants[key] = { ts: Date.now(), data: models };
-  return models;
 }
 
 // 用 config 的 model 名从 variants 映射里取键。映射的键是 opencode CLI 打印的
