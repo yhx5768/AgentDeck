@@ -10,3 +10,9 @@ web/_*.html
 docs/_*.html
 # 占位截图，填真实图时用 git add -f 或删本行
 docs/screenshots/
+
+# macOS
+.DS_Store
+
+# opencode serve 探测时抓下来的 OpenAPI 快照（不入库，形状以运行中 /doc 为准）
+openapi.json

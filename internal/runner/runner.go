@@ -18,6 +18,7 @@ import (
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/config"
 	"cc-webui/internal/mcodehist"
+	"cc-webui/internal/opencodeapi"
 	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/store"
 )
@@ -105,10 +106,27 @@ type Manager struct {
 	procs map[string]*sessionRuntime
 	perm  *permissionState
 	grp   *groupState
+	// ocPool owns the `opencode serve` child processes shared by every
+	// opencode-kind session (see ocserve.go).
+	ocPool *opencodeServePool
+	// ocTurns tracks each session's live opencode turn so Stop() can
+	// interrupt it over HTTP.
+	ocTurns *ocTurnRegistry
 }
 
 func NewManager(cm *config.Manager, st *store.Store) *Manager {
-	return &Manager{cm: cm, st: st, procs: map[string]*sessionRuntime{}, perm: newPermissionState(), grp: newGroupState()}
+	m := &Manager{cm: cm, st: st, procs: map[string]*sessionRuntime{}, perm: newPermissionState(), grp: newGroupState()}
+	m.ocPool = newOpencodeServePool(m)
+	m.ocTurns = newOcTurnRegistry()
+	return m
+}
+
+// Close shuts down every child process the manager owns, including the shared
+// opencode serve processes (they hold provider credentials in memory).
+func (m *Manager) Close() {
+	if m.ocPool != nil {
+		m.ocPool.Close()
+	}
 }
 
 // cfg returns the live config (hot-reloadable via config.Manager.Watch).
@@ -394,8 +412,17 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	return nil
 }
 
-// Stop interrupts the currently running turn (kills the claude process tree).
+// Stop interrupts the currently running turn.
+//
+// For the opencode engine the turn lives in a long-lived `opencode serve`
+// process, so cancelling the request context is not enough — the POST would
+// return but the agent would keep working and keep writing parts. Ask
+// opencode to stop the turn first (POST /api/session/{id}/interrupt), then
+// cancel as the backstop. Every other engine keeps the process-kill path.
 func (m *Manager) Stop(sessionID string) {
+	if m.interruptOpenCodeTurn(sessionID) {
+		return
+	}
 	r := m.rt(sessionID)
 	r.mu.Lock()
 	cancel := r.cancel
@@ -675,9 +702,9 @@ func ResolveCwd(dir string) (string, error) {
 
 // runTurn dispatches one user message to the session's engine: claude- and
 // qoder-kind CLIs spawn a one-shot `-p --output-format stream-json` process
-// (runStreamJSONTurn, one argv dialect each), opencode-kind CLIs spawn
-// `opencode run --format json` (runOpenCodeTurn), mcode-kind CLIs spawn
-// `mcode exec` (runMcodeTurn).
+// (runStreamJSONTurn, one argv dialect each), opencode-kind CLIs drive a
+// shared `opencode serve` process over HTTP+SSE (runOpenCodeTurn), mcode-kind
+// CLIs spawn `mcode exec` (runMcodeTurn).
 func (m *Manager) runTurn(sessionID string, msg Message) {
 	sess := m.st.Get(sessionID)
 	if sess == nil {
@@ -983,162 +1010,153 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 	}
 }
 
-// runOpenCodeTurn runs one user message through the opencode engine
-// (`opencode run --format json`). Every stdout line is one JSON event whose
-// part is adapted to the canonical cc-webui stream shape and broadcast live
-// (opencodehist.AdaptPart — same mapping as the replay path). The session id
-// is captured from the first event line (every line carries it), replacing
-// claude's system/init capture. The transcript itself stays in opencode's own
-// store and is read via `opencode export` on later SSE connects.
+// runOpenCodeTurn runs one user message through the opencode engine over its
+// headless HTTP server (`opencode serve`), not the one-shot `opencode run`.
 //
-// No stdin channel: the message rides as a positional argument. Inline
-// images are not supported (rejected at the API layer) — images and files
-// both travel as opencode's official file attachments (`-f`, one flag per
-// file), which the model receives as expansion content; vision-capable
-// models see images that way. The positionals carry only the raw prompt
-// text (see the echo rule in Enqueue).
+// Why: `run` cannot carry an approval card or a user-question prompt. In
+// v1.18.35 it hardcodes a ruleset that DENIES the `question` / `plan_enter` /
+// `plan_exit` permissions and auto-replies to any surviving permission event
+// with `once` or `reject`; its `--format json` emitter never serializes
+// permission/question events at all. The serve surface exposes both, plus
+// interrupt and file-rewind, so this is what makes the approval card, the
+// AskUserQuestion card and rewind available on this engine.
+//
+// Flow: acquire a shared serve process for this (cli, provider, model) env,
+// create or resume the opencode session, POST the prompt, and drive the turn
+// from the /event SSE bus (the same canonical mapping as the replay path —
+// opencodehist.AdaptPart). The POST returns when the turn settles; pending
+// permission/question events that arrive meanwhile are turned into cc-webui
+// cards and answered back over the matching reply endpoints.
+//
+// The transcript stays in opencode's own store and is still read via
+// `opencode export` on later SSE connects.
 func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
-	args := []string{"run", "--format", "json"}
-	permMode := sess.PermissionMode
-	if permMode == "" {
-		permMode = cli.PermissionMode
-	}
-	// opencode has no headless permission prompt: anything but the default
-	// interactive mode maps to --auto (auto-approve). cc-webui's own config
-	// default is bypassPermissions, which lands here.
-	if permMode != "" && permMode != "default" {
-		args = append(args, "--auto")
-	}
 	model := prov.EffectiveModel(sess.ModelOverride)
-	if model != "" {
-		args = append(args, "-m", openCodeModelID(prov.Name, model))
+
+	srv, hub, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, resolvedCwd)
+	if err != nil {
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
+		m.setIdle(sessionID, err.Error())
+		return
 	}
-	// Reasoning depth rides opencode's --variant flag (per-model key set, e.g.
-	// low/high/max). Same Session.EffortOverride field as claude's --effort;
-	// the UI only offers keys the model metadata lists.
-	if sess.EffortOverride != "" {
-		args = append(args, "--variant", sess.EffortOverride)
-	}
-	if sess.ClaudeSessionID != "" {
-		args = append(args, "-s", sess.ClaudeSessionID)
-	} else if sess.Name != "" {
-		// New session: give opencode's own side a readable title.
-		args = append(args, "--title", sess.Name)
-	}
-	args = append(args, cli.Args...)
-	// Message positional must precede the -f flags: with `-f <path> <msg>`
-	// opencode's -f (an array flag) swallows the trailing positional.
-	if msg.Text != "" {
-		args = append(args, msg.Text)
-	}
-	for _, f := range msg.Files {
-		args = append(args, "-f", f.Path)
-	}
+	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.setRunning(sessionID, cancel)
 
-	cmd := exec.CommandContext(ctx, cli.Path, args...)
-	cmd.Dir = resolvedCwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-	envMap := buildEnvMap(cli.EffectiveEnv(prov, model))
-	cmd.Env = envMapToSlice(envMap)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
-		return
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
+	turn := newOpenCodeTurn(srv, hub, m, sessionID)
+	m.ocTurns.set(sessionID, turn)
+	defer m.ocTurns.clear(sessionID, turn)
 
-	if err := cmd.Start(); err != nil {
-		m.emit(sessionID, "status", map[string]string{"state": "error", "error": "start opencode: " + err.Error()})
-		return
+	// Create or adopt the opencode session before prompting. Permission mode
+	// rides the create call as a ruleset — this is where cc-webui's
+	// permission_mode finally gets a real landing point on this engine.
+	ocSID := sess.ClaudeSessionID
+	adopted := ocSID != ""
+	if !adopted {
+		created, err := turn.createSession(sess, cli, prov, model, resolvedCwd)
+		if err != nil {
+			cancel()
+			m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
+			m.setIdle(sessionID, err.Error())
+			return
+		}
+		ocSID = created
+		m.st.Upsert(sess, store.WithClaudeSID(ocSID))
+		sess.ClaudeSessionID = ocSID
 	}
+	turn.ocSessionID = ocSID
 
-	// Adapt stdout JSON events one by one. Every line carries the session id
-	// (unlike claude's init event), so capture it on first sight. Fatal
-	// failures arrive on stdout as {"type":"error",...} with empty stderr —
-	// they carry no "part", so record them here; otherwise the turn degrades
-	// to a bare "exit status 1" with no diagnostics anywhere.
-	tx := opencodehist.NewToolTx()
-	var stdoutErr string
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(strings.TrimSpace(string(line))) == 0 {
-			continue
-		}
-		var obj map[string]any
-		if err := json.Unmarshal(line, &obj); err != nil {
-			continue
-		}
-		if emsg, ok := opencodehist.StdoutError(obj); ok {
-			if stdoutErr == "" {
-				stdoutErr = emsg
-			}
-			continue
-		}
-		if sid, _ := obj["sessionID"].(string); sid != "" && sid != sess.ClaudeSessionID {
-			m.st.Upsert(sess, store.WithClaudeSID(sid))
-			sess.ClaudeSessionID = sid
-		}
-		part, _ := obj["part"].(map[string]any)
-		if part == nil {
-			continue
-		}
-		messageID, _ := part["messageID"].(string)
-		ts := time.UnixMilli(tsMillis(obj["timestamp"]))
-		for _, payload := range opencodehist.AdaptPart(messageID, part, ts, tx) {
-			m.emit(sessionID, "stream", payload)
+	// Adopted session: align opencode's model with the session's current
+	// cc-webui profile. opencode binds the model at creation time, so without
+	// this a hot-switched model / provider / effort would silently keep using
+	// the old one — the other three engines re-read sess.ModelOverride on
+	// every turn, and opencode would be the odd one out. A freshly created
+	// session already carries the right model from the create call above.
+	if adopted {
+		if _, err := turn.ensureModel(ctx, prov, model, sess.EffortOverride); err != nil {
+			cancel()
+			m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
+			m.setIdle(sessionID, err.Error())
+			return
 		}
 	}
 
-	waitErr := cmd.Wait()
+	// Subscribe before prompting so no event of this turn can slip through the
+	// gap between the POST starting and the stream being read.
+	events, unsub := hub.Subscribe(ocSID)
+	defer unsub()
+	go turn.consume(events)
+
+	// v1 prompt shape: {model, parts}. See opencodeapi.PromptInput for why the
+	// v2 envelope must not be used here.
+	prompt := opencodeapi.PromptInput{
+		Parts: []opencodeapi.PromptPart{{Type: "text", Text: msg.Text}},
+	}
+	if ref := openCodeModelV1(prov, model); ref != nil {
+		prompt.Model = ref
+	}
+	// Attachments ride as file parts. This is the channel the old
+	// `opencode run -f` path lacked: there, an uploaded image had to degrade
+	// into a path mention in the text; here a vision-capable model receives
+	// the image itself. A data: uri carries inline bytes, a file:// uri points
+	// at something already on disk.
+	for _, img := range msg.Images {
+		prompt.Parts = append(prompt.Parts, opencodeapi.PromptPart{
+			Type: "file",
+			Mime: img.MediaType,
+			Text: "data:" + img.MediaType + ";base64," + img.Data,
+		})
+	}
+	for _, f := range msg.Files {
+		prompt.Parts = append(prompt.Parts, opencodeapi.PromptPart{
+			Type:     "file",
+			Text:     "file://" + f.Path,
+			Filename: f.Name,
+		})
+	}
+
+	// The v1 prompt endpoint returns immediately; the turn runs asynchronously
+	// and closes on the session.status idle event. Wait for it here so the
+	// turn's lifecycle stays inside runOpenCodeTurn (status → idle → card
+	// cleanup), instead of letting a fired-and-forgotten POST decide when the
+	// session is free.
+	promptErr := srv.PromptAsync(ctx, ocSID, prompt)
+	if promptErr == nil {
+		turn.waitTurn(ctx)
+	} else {
+		turn.drain()
+	}
+
 	m.st.Upsert(sess, func(s *store.Session) { s.UpdatedAt = time.Now() })
 
 	switch {
-	case ctx.Err() != nil:
+	case ctx.Err() != nil || turn.interrupted:
 		m.emit(sessionID, "status", map[string]string{"state": "interrupted"})
 		m.setIdle(sessionID, "interrupted")
-	case waitErr != nil:
-		errMsg := strings.TrimSpace(stderr.String())
-		// Prefer the stdout error payload: opencode reports fatal run
-		// failures there with empty stderr (e.g. provider-side rejections
-		// before the loop starts). Keep stderr too when both are present.
-		if stdoutErr != "" {
-			if errMsg == "" {
-				errMsg = stdoutErr
-			} else {
-				errMsg = stdoutErr + "\n" + errMsg
-			}
-		}
-		if errMsg == "" {
-			errMsg = waitErr.Error()
-		}
-		// A bare "Unexpected server error" (stdout, empty stderr) names no
-		// cause. The most common one is a session whose original directory is
-		// gone (deleted/renamed/mistyped at creation): opencode pins the
-		// session to it and dies in system-prompt setup on every resumed turn.
-		// Diagnose that case so the user gets an actionable message instead
-		// of a ref code with nowhere to look.
-		errMsg = m.diagnoseOpenCodeRunError(sess, cli, errMsg)
-		log.Printf("opencode turn failed (session %s, opencode sid %s): %s", sessionID, sess.ClaudeSessionID, errMsg)
+	case turn.sessionErr != "":
+		errMsg := m.diagnoseOpenCodeRunError(sess, cli, turn.sessionErr)
+		log.Printf("opencode turn failed (session %s, opencode sid %s): %s", sessionID, ocSID, errMsg)
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": errMsg})
+		m.setIdle(sessionID, errMsg)
+	case promptErr != nil:
+		errMsg := m.diagnoseOpenCodeRunError(sess, cli, promptErr.Error())
+		log.Printf("opencode prompt failed (session %s, opencode sid %s): %s", sessionID, ocSID, errMsg)
 		m.emit(sessionID, "status", map[string]string{"state": "error", "error": errMsg})
 		m.setIdle(sessionID, errMsg)
 	default:
 		m.emit(sessionID, "status", map[string]string{"state": "turn_end"})
 		m.setIdle(sessionID, "")
 	}
-	// No captureCheckpoint here: opencode has no file-rewind surface, and its
-	// step snapshots live in its own store without a CLI rollback command.
+	// Every pending card for this session dies with the turn: opencode's
+	// question/permission Deferreds would otherwise stay blocked forever and
+	// the frontend would show a card the agent can no longer act on.
+	turn.failPendingCards()
+	// Stamp the opencode message id onto this turn's user event so the
+	// rewind button has a target (the opencode counterpart of
+	// captureCheckpoint).
+	m.captureOpenCodeCheckpoint(sessionID, turn)
+	cancel()
 }
 
 // runMcodeTurn runs one user message through the MiniMax Code engine
@@ -1320,34 +1338,6 @@ func enrichOpenCodeError(errMsg, sessionDir string, dirMissing bool) string {
 		return errMsg
 	}
 	return fmt.Sprintf("%s\n（诊断：该 opencode 会话创建时的目录 %s 已不存在（被删除、改名或创建时填错），此会话无法继续运行，只能查看历史。请用正确的目录新建会话继续。）", errMsg, sessionDir)
-}
-
-// openCodeModelID composes the -m argument for the opencode CLI: models are
-// addressed as <providerID>/<modelID>. A model name that already contains a
-// slash is passed through verbatim.
-func openCodeModelID(providerName, modelName string) string {
-	if strings.Contains(modelName, "/") {
-		return modelName
-	}
-	if providerName == "" {
-		return modelName
-	}
-	return providerName + "/" + modelName
-}
-
-// tsMillis converts an opencode event timestamp (ms since epoch, possibly
-// float from JSON) to milliseconds; 0/unset yields 0.
-func tsMillis(v any) int64 {
-	switch n := v.(type) {
-	case float64:
-		return int64(n)
-	case int64:
-		return n
-	case json.Number:
-		i, _ := n.Int64()
-		return i
-	}
-	return 0
 }
 
 // claudeCodeError is a parsed [claude-code:<kind>] line from CLI stderr.

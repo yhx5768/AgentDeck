@@ -63,10 +63,13 @@ func effectivePermissionMode(sessPerm, cliPerm string) string {
 // PermissionRequest hook (interactive approval card).
 //
 // Only the stream-json dialects (claude + qoder, both Claude Code protocol)
-// have a headless approval surface: the PermissionRequest hook via --settings.
-//   - opencode has no headless permission prompt (--auto is auto-approve).
+// inject the hook: the PermissionRequest hook via --settings.
+//   - opencode does not use it: its engine drives `opencode serve` and answers
+//     opencode's own permission.asked / question.asked events directly (see
+//     octurn.go).
 //   - mcode's "ask" needs an interactive TUI/ACP client; headless runs only
 //     know smart/full.
+//
 // Bypass/dontAsk never prompt, so they need no hook either.
 func permissionHookWanted(cli *config.CLI, sessPerm string) bool {
 	if cli == nil {

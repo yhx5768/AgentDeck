@@ -113,6 +113,8 @@ const state = {
   groupLive: null,    // turnID -> {memberID -> {bubble, buf}} streaming member bubbles
   subagentCards: {},  // parent_tool_use_id -> 子代理卡片 {summary, body, count, label}
   agentToolMeta: {},  // Agent tool_use_id -> {title, type}（实时侧卡片标题来源）
+  // opencode token 级流式：当前累积中的 part 气泡（按 partID 归属）
+  ocPartID: '', ocBuf: '', ocBubble: null,
   ocVariants: {},     // "cli/provider" -> {ts, data:{model:[--variant 键]}|null}（带 TTL，见 ocVariantsFor）
   mcodeCatalog: {},   // "cli/provider" -> {ts, data:{provider_id,models:[…],default_model}|null}（带 TTL，见 mcodeCatalogFor）
   qoderCatalog: {},   // "cli/provider" -> {ts, data:{models:[…],efforts:[…]}|null}（带 TTL，见 qoderCatalogFor）
@@ -1270,6 +1272,9 @@ async function openSession(id) {
   state.histRenderedFrom = 0;
   state.replaying = true;
   state.live = null;
+  // opencode 流式气泡不属于 state.live，切会话/重连时单独收尾。
+  if (state.ocBubble) { liveFinalizeBlock(state.ocBubble); state.ocBubble = null; }
+  state.ocPartID = ''; state.ocBuf = '';
   taskFoldReset();
   state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
   updateStatsUI();
@@ -1409,7 +1414,7 @@ const provKind = (name) => kindOf(state.providers.find((p) => p.name === name));
 // 都走 --input-format stream-json 的多模态载荷。
 // opencode 走 `opencode serve` 的 prompt file part，同样原样内嵌。
 // 只有 mcode 没有内嵌通道，图片降级成文件附件（见 attachFiles / nsAttachFiles）。
-const engineTakesImages = (kind) => kind === 'claude' || kind === 'qoder';
+const engineTakesImages = (kind) => kind === 'claude' || kind === 'qoder' || kind === 'opencode';
 
 function fillCLISelect(sel, value, kind) {
   fillSelect(sel, kind ? state.clis.filter((c) => kindOf(c) === kind) : state.clis, value,
@@ -1867,6 +1872,9 @@ function resetChatForReplay() {
   state.histRenderedFrom = 0;
   state.replaying = true;
   state.live = null;
+  // opencode 流式气泡不属于 state.live，切会话/重连时单独收尾。
+  if (state.ocBubble) { liveFinalizeBlock(state.ocBubble); state.ocBubble = null; }
+  state.ocPartID = ''; state.ocBuf = '';
   taskFoldReset();
   state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
   trajReset();
@@ -2847,10 +2855,12 @@ function markPeerSendFailed(details) {
   st.appendChild(m);
 }
 
-// ---------- 权限审批卡（PermissionRequest hook） ----------
-// 后端在非 bypass 的 claude/qoder 会话里注入 PermissionRequest hook，工具调用
-// 前 CLI 起 helper 问服务端，服务端经 SSE 下发 permission_request，前端渲染此卡。
-// opencode（--auto 自动放行）与 mcode（smart/full，无 headless 审批面）不走这里。
+// ---------- 权限审批卡（claude/qoder hook；opencode serve；mcode 无） ----------
+// 三条引擎路径，同一套卡片：
+//   claude/qoder — 后端注入 PermissionRequest hook，工具调用前 CLI 起 helper
+//                  问服务端；opencode — 引擎走 `opencode serve`，把 SSE 的
+//                  permission.asked / question.asked 直接映射成本事件；
+//   mcode — 无 headless 审批面，不走这里。
 // 三档：允许本次 / 本次会话都允许（同名工具后续免问）/ 拒绝（可附理由回传模型）。
 // 55s 无人审批自动拒绝。
 // AskUserQuestion 不是"放不放行"，是模型在问你问题：答案要以问题原文为 key、
@@ -3409,6 +3419,39 @@ function renderStreamEvent(d, box, ts) {
 
 // box defaults to the live message list; history pages render into a
 // DocumentFragment which is then inserted at the top.
+// opencode 的 token 级增量：后端把 message.part.delta 原样透出（只有
+// field+delta，没有完整 part）。按 partID 聚进同一个气泡——同一 part 的
+// 多次 delta 追加到同一处，换 part 则新起气泡。随后到达的完整
+// message.part.updated（canonical assistant text block）会 liveTake 掉这个
+// 气泡并用全文替换，因此流式与最终内容不会重复。
+function renderOcTextDelta(d, box, ts) {
+  const partId = d.partID || d.messageID;
+  const text = d.delta || '';
+  if (!partId || !text) return;
+  if (state.ocPartID === partId && state.ocBubble) {
+    state.ocBuf += text;
+    const b = state.ocBubble;
+    b.buf = state.ocBuf;
+    liveSchedulePaint(b);
+    return;
+  }
+  // 新 part：固化上一个气泡
+  if (state.ocBubble) {
+    liveFinalizeBlock(state.ocBubble);
+    state.ocBubble = null;
+  }
+  const bubble = addMsg('msg-assistant', 'claude', box, ts);
+  bubble.classList.add('streaming');
+  const b = {
+    kind: 'text', el: bubble.parentElement, bodyEl: bubble,
+    buf: text, done: false, taken: false, raf: null,
+  };
+  state.ocPartID = partId;
+  state.ocBuf = text;
+  state.ocBubble = b;
+  liveSchedulePaint(b);
+}
+
 function renderEvent(ev, box) {
   box = box || $('#messages');
   const d = ev.data;
@@ -3460,6 +3503,18 @@ function renderEvent(ev, box) {
           if (!block.text || !block.text.trim()) continue;
           const lb = liveTake('text');
           if (lb) lb.el.remove(); // 完整版替换 live 气泡，避免重复
+          // opencode 流式：完整 part 的 id 与正在累积的 partID 相同时，复用那个
+          // 气泡（原文替换流式缓冲），否则会在正文上方留一个重复气泡。
+          if (state.ocBubble && block.id && state.ocPartID === block.id) {
+            const b = state.ocBubble;
+            b.buf = block.text;
+            liveFinalizeBlock(b);
+            b.bodyEl.innerHTML = md(block.text);
+            state.ocBubble = null;
+            state.ocPartID = '';
+            state.ocBuf = '';
+            break;
+          }
           const bubble = addMsg('msg-assistant', 'claude', box, ev.ts);
           bubble.innerHTML = md(block.text);
         } else if (block.type === 'tool_use') {
@@ -3483,6 +3538,8 @@ function renderEvent(ev, box) {
           }
         }
       }
+    } else if (d.type === 'oc_text_delta') {
+      renderOcTextDelta(d, box, ev.ts);
     } else if (d.type === 'stream_event') {
       renderStreamEvent(d, box, ev.ts);
     } else if (d.type === 'user' && d.origin && d.origin.kind === 'peer') {
@@ -3838,10 +3895,11 @@ input.addEventListener('drop', async (e) => {
 });
 
 async function attachFiles(files) {
-  // opencode 与 mcode 引擎都没有内嵌图片（base64）通道（服务端 400）；图片降级
-  // 为文件附件上传，runner 以引擎自己的官方附件参数（opencode 的 -f、mcode 的
-  // --file）传给模型——视觉模型直接可见，文本模型也能用工具读取。
-  // claude 与 qoder 走 --input-format stream-json 的多模态载荷，图片原样内嵌。
+  // mcode 引擎没有内嵌图片（base64）通道（服务端 400）；图片降级为文件附件
+  // 上传，runner 以引擎自己的官方附件参数（mcode 的 --file）传给模型——视觉
+  // 模型直接可见，文本模型也能用工具读取。
+  // claude 与 qoder 走 --input-format stream-json 的多模态载荷，图片原样内嵌；
+  // opencode 走 `opencode serve` 的 prompt file part，图片同样原样内嵌。
   const noInlineImages = state.current && !engineTakesImages(state.current.engine || 'claude');
   for (const f of files) {
     if (ALLOWED_MIME.includes(f.type) && !noInlineImages) {

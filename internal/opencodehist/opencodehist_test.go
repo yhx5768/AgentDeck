@@ -313,73 +313,46 @@ func eventKinds(evs []*store.Event) string {
 	return out
 }
 
-func TestStdoutError(t *testing.T) {
-	// Real shape captured from a failing `opencode run --format json`
-	// (stderr empty, exit 1 — previously surfaced as bare "exit status 1").
-	mustObj := func(raw string) map[string]any {
-		t.Helper()
-		var m map[string]any
-		if err := json.Unmarshal([]byte(raw), &m); err != nil {
-			t.Fatalf("unmarshal fixture: %v", err)
-		}
-		return m
+// Regression: opencode's first tool part arrives as status=pending with
+// state.input == {}, and the arguments only land on the next tick. Emitting the
+// tool_use block there produced a card with the tool name and no arguments,
+// and ToolTx marked the call as sent so it was never re-emitted.
+func TestAdaptToolWaitsForInput(t *testing.T) {
+	tx := NewToolTx()
+
+	// pending, no arguments: must emit nothing.
+	pending := map[string]any{
+		"type": "tool", "tool": "bash", "callID": "c1",
+		"state": map[string]any{"status": "pending", "input": map[string]any{}},
 	}
-	cases := []struct {
-		name       string
-		obj        map[string]any
-		wantOK     bool
-		wantMsgHas string
-	}{
-		{
-			name: "full error shape with ref",
-			obj: mustObj(`{"type":"error","timestamp":1788854035991,"sessionID":"ses_x",` +
-				`"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_98e3619e"}}}`),
-			wantOK:     true,
-			wantMsgHas: "Unexpected server error",
-		},
-		{
-			name:       "ref appended",
-			obj:        mustObj(`{"type":"error","error":{"name":"UnknownError","data":{"message":"boom","ref":"err_1"}}}`),
-			wantOK:     true,
-			wantMsgHas: "err_1",
-		},
-		{
-			name:       "error as plain string",
-			obj:        mustObj(`{"type":"error","error":"Session not found"}`),
-			wantOK:     true,
-			wantMsgHas: "Session not found",
-		},
-		{
-			name:       "name only falls back to name",
-			obj:        mustObj(`{"type":"error","error":{"name":"RateLimited"}}`),
-			wantOK:     true,
-			wantMsgHas: "RateLimited",
-		},
-		{
-			name:   "step line is not an error",
-			obj:    mustObj(`{"type":"step_start","part":{"type":"step-start"}}`),
-			wantOK: false,
-		},
-		{
-			name:   "text line is not an error",
-			obj:    mustObj(`{"type":"text","part":{"type":"text","text":"hi"}}`),
-			wantOK: false,
-		},
-		{
-			name:   "nil obj",
-			obj:    nil,
-			wantOK: false,
+	if got := AdaptPart("m1", pending, time.Now(), tx); len(got) != 0 {
+		t.Fatalf("pending tool emitted %d events, want 0", len(got))
+	}
+
+	// running WITH arguments: now the block carries the command.
+	running := map[string]any{
+		"type": "tool", "tool": "bash", "callID": "c1",
+		"state": map[string]any{
+			"status": "running",
+			"input":  map[string]any{"command": "ls -la"},
 		},
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			msg, ok := StdoutError(c.obj)
-			if ok != c.wantOK {
-				t.Fatalf("ok = %v, want %v (msg %q)", ok, c.wantOK, msg)
-			}
-			if c.wantOK && !strings.Contains(msg, c.wantMsgHas) {
-				t.Fatalf("msg = %q, want it to contain %q", msg, c.wantMsgHas)
-			}
-		})
+	got := AdaptPart("m1", running, time.Now(), tx)
+	if len(got) != 1 {
+		t.Fatalf("running tool emitted %d events, want 1", len(got))
+	}
+	msg := got[0].(map[string]any)["message"].(map[string]any)
+	blk := msg["content"].([]any)[0].(map[string]any)
+	if blk["type"] != "tool_use" {
+		t.Fatalf("block type = %v", blk["type"])
+	}
+	in, _ := blk["input"].(map[string]any)
+	if in == nil || in["command"] != "ls -la" {
+		t.Fatalf("tool_use input = %v, want the bash command", blk["input"])
+	}
+
+	// Later ticks must not duplicate the block.
+	if got := AdaptPart("m1", running, time.Now(), tx); len(got) != 0 {
+		t.Fatalf("repeat running emitted %d events, want 0", len(got))
 	}
 }

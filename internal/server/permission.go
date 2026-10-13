@@ -19,9 +19,15 @@ import (
 // the card on later same-tool calls. Timeout (hook budget 60s, we wait 55s)
 // auto-denies.
 //
-// Only claude/qoder engines reach this path: opencode (--auto) and mcode
-// (smart/full) have no headless approval surface, so permissionHookWanted is
-// false for them and no hook is ever injected (see runner/permission.go).
+// This HTTP helper path serves claude and qoder: their spawns carry the
+// PermissionRequest hook, which runs this binary as `cc-webui -perm-helper`.
+//
+// opencode does not use the helper — its engine drives `opencode serve` and
+// answers opencode's permission.asked / question.asked events itself — but it
+// still routes through the same pending registry, the same transient SSE
+// events and this same resolve endpoint, so the frontend needs no engine
+// branch. mcode (smart/full, no headless approver) is the only engine that
+// never reaches this path at all.
 
 func (s *Server) handlePermissionRequest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -31,9 +37,9 @@ func (s *Server) handlePermissionRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var body struct {
-		Tool     string         `json:"tool"`
-		Input    map[string]any `json:"input"`
-		ToolUseID string        `json:"tool_use_id"`
+		Tool      string         `json:"tool"`
+		Input     map[string]any `json:"input"`
+		ToolUseID string         `json:"tool_use_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body.Tool == "" {

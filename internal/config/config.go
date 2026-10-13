@@ -14,7 +14,7 @@ import (
 // cli, and cli/provider pairs must share a kind (validated on create/patch/
 // import). kind "claude" covers Claude Code and compatible CLIs (stream-json
 // stdout + ~/.claude jsonl transcript); kind "opencode" is the opencode
-// engine (run --format json stdout + `opencode export` transcript); kind
+// engine (`opencode serve` events + `opencode export` transcript); kind
 // "mcode" is MiniMax Code (exec --output-format stream-json stdout +
 // ~/.minimax messages.jsonl transcript); kind "qoder" is Qoder CLI CN, a
 // Claude Code fork that speaks the same stream-json protocol and writes the

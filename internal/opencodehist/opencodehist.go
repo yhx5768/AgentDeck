@@ -15,9 +15,10 @@
 // Parts of one assistant step share a message id; each part becomes its own
 // event carrying that id, mirroring Claude Code's split-line layout which the
 // frontend (trajectory byMsgId merge, per-block chat rendering) already
-// handles. Reasoning is skipped on purpose: `run --format json` does not
-// emit reasoning parts live (only export has them), so replaying them would
-// make "refresh after reload" differ from the live view.
+// handles. Reasoning is skipped on purpose: the live engine (opencode serve,
+// see internal/opencodeapi) does not stream reasoning parts, only export has
+// them, so replaying them would make "refresh after reload" differ from the
+// live view.
 package opencodehist
 
 import (
@@ -457,69 +458,6 @@ func partType(p map[string]any) string {
 	return t
 }
 
-// ---- stdout error lines (live `run --format json` failures) ----
-
-// StdoutError extracts a human-readable message from one parsed
-// `opencode run --format json` stdout line. Fatal live failures are reported
-// on stdout (not stderr) as:
-//
-//	{"type":"error","timestamp":...,"sessionID":"ses_...",
-//	 "error":{"name":"UnknownError","data":{"message":"...","ref":"..."}}}
-//
-// Callers must check every stdout line with this before looking at "part":
-// error lines carry no part, so part-based adaptation silently drops them and
-// the turn degrades to a bare "exit status 1" with empty stderr. ok is false
-// for any non-error line.
-func StdoutError(obj map[string]any) (msg string, ok bool) {
-	if obj == nil || obj["type"] != "error" {
-		return "", false
-	}
-	errVal, hasErr := obj["error"]
-	if !hasErr || errVal == nil {
-		if m, _ := obj["message"].(string); m != "" {
-			return m, true
-		}
-		return "opencode 运行失败（无详细信息）", true
-	}
-	if s, ok := errVal.(string); ok {
-		if strings.TrimSpace(s) == "" {
-			return "opencode 运行失败（无详细信息）", true
-		}
-		return s, true
-	}
-	errMap, ok := errVal.(map[string]any)
-	if !ok {
-		raw, jerr := json.Marshal(errVal)
-		if jerr != nil || len(raw) == 0 {
-			return "opencode 运行失败（无详细信息）", true
-		}
-		return string(raw), true
-	}
-	name, _ := errMap["name"].(string)
-	var message, ref string
-	if data, ok := errMap["data"].(map[string]any); ok {
-		message, _ = data["message"].(string)
-		ref, _ = data["ref"].(string)
-	}
-	if message == "" {
-		message, _ = errMap["message"].(string)
-	}
-	if message == "" {
-		message = name
-	}
-	if message == "" {
-		raw, jerr := json.Marshal(errMap)
-		if jerr != nil || len(raw) == 0 {
-			return "opencode 运行失败（无详细信息）", true
-		}
-		return string(raw), true
-	}
-	if ref != "" {
-		message += "（ref " + ref + "）"
-	}
-	return message, true
-}
-
 // ---- canonical part adaptation (shared by replay and live stream) ----
 
 // outEvent is one cc-webui event derived from a single part.
@@ -588,15 +526,27 @@ func adaptTool(part map[string]any, messageID string, ts time.Time, tx *ToolTx) 
 	status, _ := state["status"].(string)
 
 	var out []outEvent
+	// Wait for the arguments before emitting the tool_use block.
+	//
+	// opencode streams a tool part through pending → running → completed, and
+	// the FIRST of those arrives with state.input == {} — the arguments are
+	// only filled in a tick later. Emitting there produced a card with the tool
+	// name and no arguments, and because ToolTx marks the call as sent it was
+	// never re-emitted. Holding the block until input is non-empty restores the
+	// arguments; the tool_result still gates on completion, so the card appears
+	// milliseconds later than before but complete.
 	if !tx.assistantSent[callID] {
+		input, _ := state["input"].(map[string]any)
+		if len(input) == 0 {
+			// pending with no arguments yet — remember nothing and wait.
+			return nil
+		}
 		tx.assistantSent[callID] = true
 		block := map[string]any{"type": "tool_use", "id": callID}
 		if name != "" {
 			block["name"] = name
 		}
-		if input, ok := state["input"].(map[string]any); ok && len(input) > 0 {
-			block["input"] = input
-		}
+		block["input"] = input
 		out = append(out, assistantEvent(messageID, ts, block))
 	}
 	if (status == "completed" || status == "error") && !tx.resultSent[callID] {

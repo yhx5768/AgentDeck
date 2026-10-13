@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"flag"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"cc-webui/internal/config"
@@ -55,6 +58,9 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	mgr := runner.NewManager(cm, st)
+	// Owns the shared `opencode serve` child processes (they hold provider
+	// credentials in memory), so they are killed on shutdown.
+	defer mgr.Close()
 
 	static, err := fs.Sub(webFS, "web")
 	if err != nil {
@@ -80,7 +86,38 @@ func main() {
 	if cfg.TokenGenerated {
 		fmt.Printf("  GATEWAY_TOKEN (generated, set your own in config/env to persist):\n    %s\n", cfg.GatewayToken)
 	}
-	if err := srv.Run(); err != nil && err != http.ErrServerClosed {
+	// Graceful shutdown must be wired BEFORE Run blocks: Run only returns when
+	// the server stops, so a handler registered after it never runs.
+	//
+	// This matters most under a supervisor like screen/tmux, where Ctrl-C sends
+	// SIGINT to the foreground process group. Without a handler the default
+	// disposition kills cc-webui outright, every pooled `opencode serve` child is
+	// reparented to launchd and keeps running — orphans holding provider
+	// credentials in memory, re-accumulating on every restart.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		sig := <-sigs
+		log.Printf("收到 %s，正在关闭（回收 opencode serve 子进程）", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("http shutdown: %v", err)
+		}
+	}()
+
+	if err = srv.Run(); err != nil && err != http.ErrServerClosed {
+		// Died on its own (port in use, listener failure) — no shutdown
+		// goroutine will close shutdownDone, so don't block on it.
 		log.Fatal(err)
+	}
+	// Run returned because Shutdown closed the listener. Wait (bounded) for the
+	// shutdown goroutine so the deferred mgr.Close() only reaps serve children
+	// after the HTTP server stopped handing out new turns.
+	select {
+	case <-shutdownDone:
+	case <-time.After(2 * time.Second):
 	}
 }

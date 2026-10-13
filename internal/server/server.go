@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -106,6 +107,10 @@ type Server struct {
 	// the user runs `opencode models --refresh`, so a slow TTL suffices.
 	variantsMu    sync.Mutex
 	variantsCache map[string]variantsEntry
+
+	// httpSrv is set by Run and used by Shutdown for a graceful stop.
+	httpMu  sync.Mutex
+	httpSrv *http.Server
 }
 
 type variantsEntry struct {
@@ -168,6 +173,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/groups", s.auth(s.handleListGroups))
 	s.mux.Handle("POST /api/groups", s.auth(s.handleCreateGroup))
 	s.mux.Handle("GET /api/groups/{id}", s.auth(s.handleGetGroup))
+	s.mux.Handle("PATCH /api/groups/{id}/members/{memberId}", s.auth(s.handlePatchGroupMember))
 	s.mux.Handle("DELETE /api/groups/{id}", s.auth(s.handleDeleteGroup))
 	s.mux.Handle("POST /api/groups/{id}/messages", s.auth(s.handleGroupMessage))
 	s.mux.Handle("POST /api/groups/{id}/stop", s.auth(s.handleGroupStop))
@@ -682,7 +688,9 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// The cli and provider of a session must share an engine kind.
+	// The cli and provider of a session must share an engine kind. Either may
+	// be nil after a config hot reload dropped it — an unknown name is not
+	// this patch's business, so only compare when both still resolve.
 	cliName := sess.CLI
 	if body.CLI != nil {
 		cliName = *body.CLI
@@ -699,33 +707,15 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Effort levels are engine-specific: fixed --effort set for claude, any
 	// well-formed --variant key for opencode (validated against the final cli
-	// kind after possible cli/provider switches above).
+	// kind after possible cli/provider switches above), mcode's per-model list.
 	if body.Effort != nil {
-		kind := config.KindClaude
-		if cli != nil {
-			kind = cli.Kind
+		effModel := sess.ModelOverride
+		if body.Model != nil {
+			effModel = *body.Model
 		}
-		if !effortOKFor(kind, *body.Effort) {
-			writeErr(w, http.StatusBadRequest, "invalid effort: "+*body.Effort)
+		if err := s.validateEffort(cli, prov, effModel, *body.Effort); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
-		}
-		// mcode's --effort levels are per-model and short (default/low/…/max,
-		// none-thinking/thinking, or none at all) — the shape check above
-		// cannot tell a valid level from a typo, and the CLI only rejects an
-		// unknown one after the run has started. Validate against the model
-		// catalog here so a bad level is a 400 instead of a dead turn.
-		if kind == config.KindMcode && prov != nil && *body.Effort != "" {
-			model := prov.EffectiveModel(sess.ModelOverride)
-			if body.Model != nil {
-				model = prov.EffectiveModel(*body.Model)
-			}
-			cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(model, prov.Name))
-			if m := cat.Find(mcodehist.BareModelID(model)); err == nil && m != nil && len(m.Efforts) > 0 &&
-				!mcodehist.EffortOK(cat, mcodehist.BareModelID(model), *body.Effort) {
-				writeErr(w, http.StatusBadRequest,
-					fmt.Sprintf("模型 %s 不支持推理档位 %q（可选：%s）", model, *body.Effort, strings.Join(m.Efforts, ", ")))
-				return
-			}
 		}
 	}
 	// Resident/peer messaging is a Claude Code protocol feature; no other engine
@@ -933,12 +923,16 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "empty message")
 		return
 	}
-	// The opencode and mcode headless runs have no inline-multimodal channel:
-	// image blocks would be silently dropped, so refuse them up front. File
-	// uploads still work (they ride as path mentions in the text, plus the
-	// engine's own attachment flag, and a vision model reads them that way).
+	// The mcode headless run has no inline-multimodal channel: image blocks
+	// would be silently dropped, so refuse them up front. File uploads still
+	// work (they ride as path mentions in the text, plus the engine's own
+	// attachment flag, and a vision model reads them that way).
+	//
+	// opencode no longer belongs here: its engine drives `opencode serve`,
+	// whose prompt API takes file parts directly, so images travel on the
+	// real multimodal channel instead of degrading to a path mention.
 	if len(body.Images) > 0 {
-		if eng := s.engineOf(sess); eng == config.KindOpenCode || eng == config.KindMcode {
+		if eng := s.engineOf(sess); eng == config.KindMcode {
 			writeErr(w, http.StatusBadRequest, eng+" 引擎暂不支持图片消息（文件附件可用）")
 			return
 		}
@@ -1870,15 +1864,22 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 
 // ---- rewind (conversation + files) ----
 
-// handleRewind rolls a session back to a user message: files are restored by
-// the claude CLI (--rewind-files), then both claude's jsonl transcript and
-// cc-webui's event log are truncated before that message. The rolled-back
-// message text is returned as a draft to refill the composer. Requires no
-// running/queued turn and a checkpoint uuid on the target user event.
+// handleRewind rolls a session back to a user message, then truncates the
+// conversation so the rolled-back text can be re-sent. Requires no
+// running/queued turn.
 //
-// claude-only: --rewind-files (the file half) exists on no other engine, and
-// only the claude dialect captures a checkpoint uuid in the first place, so
-// every other engine is refused up front rather than failing mid-operation.
+// Two engines support it, each with its own file-rewind mechanism:
+//
+//	claude   — files restored by the CLI itself (--rewind-files); the
+//	           checkpoint uuid is attached to each turn's user event by the
+//	           runner, and claude's own jsonl transcript is truncated too.
+//	opencode — files restored by opencode's revert surface (stage + commit
+//	           against the session's own snapshots); the target is addressed
+//	           by the opencode message id. There is no cc-webui-side
+//	           transcript to truncate: the replay path reads opencode's store,
+//	           and opencode's own revert is what rolls that store back.
+//
+// Every other engine is refused up front rather than failing mid-operation.
 func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess := s.st.Get(id)
@@ -1886,8 +1887,13 @@ func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return
 	}
-	if eng := s.engineOf(sess); eng != config.KindClaude {
-		writeErr(w, http.StatusBadRequest, eng+" 引擎不支持 rewind（文件回滚仅 claude 会话具备）")
+	switch eng := s.engineOf(sess); eng {
+	case config.KindClaude:
+	case config.KindOpenCode:
+		s.handleOpenCodeRewind(w, r, id, sess)
+		return
+	default:
+		writeErr(w, http.StatusBadRequest, eng+" 引擎不支持 rewind（文件回滚仅 claude / opencode 会话具备）")
 		return
 	}
 	var body struct {
@@ -1901,18 +1907,11 @@ func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "checkpoint is required")
 		return
 	}
-	// Atomically refuse if a turn is running/queued and mark the session busy
-	// for the duration of the rewind, so a message sent mid-rewind can't start
-	// a worker that races the truncation.
 	if !s.mgr.LockForRewind(id) {
 		writeErr(w, http.StatusConflict, "session is running")
 		return
 	}
 	defer s.mgr.UnlockFromRewind(id)
-	// A resident process holds the conversation in memory and re-appends
-	// cached metadata on writes — never truncate the transcript under one.
-	// The lock above guarantees the worker can't start a turn while we tear
-	// it down; the next queued message respawns it over the truncated file.
 	s.mgr.TeardownResident(id)
 	if sess.ClaudeSessionID == "" {
 		writeErr(w, http.StatusBadRequest, "session has no claude session id yet")
@@ -2058,7 +2057,36 @@ func (s *Server) serveStatic() http.Handler {
 }
 
 // Run starts the HTTP server.
+// Run serves until Shutdown is called (or the listener fails).
 func (s *Server) Run() error {
 	log.Printf("cc-webui listening on %s", s.cfg().Listen)
-	return http.ListenAndServe(s.cfg().Listen, s.mux)
+	srv := &http.Server{Addr: s.cfg().Listen, Handler: s.mux}
+	s.setHTTPServer(srv)
+	err := srv.ListenAndServe()
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// Shutdown stops accepting connections and waits for in-flight requests, so
+// the caller can then close the pooled `opencode serve` children cleanly.
+func (s *Server) Shutdown(ctx context.Context) error {
+	srv := s.httpServer()
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
+}
+
+func (s *Server) setHTTPServer(srv *http.Server) {
+	s.httpMu.Lock()
+	s.httpSrv = srv
+	s.httpMu.Unlock()
+}
+
+func (s *Server) httpServer() *http.Server {
+	s.httpMu.Lock()
+	defer s.httpMu.Unlock()
+	return s.httpSrv
 }
