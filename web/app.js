@@ -106,6 +106,7 @@ const state = {
   toolBlocks: {},     // tool_use_id -> details element
   toolTimers: {},     // tool_use_id -> {timer, start} live elapsed ticker
   permCards: {},      // permission id -> {wrap, card, locked} outstanding approval cards
+  toasts: {},         // toast id -> {el, timers[]} 页内浮层（待回答提问），见「强提示」段
   groups: [],         // group list
   currentGroup: null, // open group object {id, name, cwd, members}
   groupEs: null,
@@ -342,7 +343,8 @@ function showBannerNotify(title, body, sessionId) {
   } catch (_) {}
 }
 
-// 提示音用 Web Audio 合成，无需音频文件。完成 = 上行双音；出错 = 下行双音。
+// 提示音用 Web Audio 合成，无需音频文件。完成 = 上行双音；出错 = 下行双音；
+// 待回答提问 = 三声「叮咚」强调（低频双音在忙碌的会话里太轻）。
 let audioCtx = null;
 function getAudioCtx() {
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -351,23 +353,28 @@ function getAudioCtx() {
   if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   return audioCtx;
 }
-function playNotifySound(isError) {
+function playTones(notes, gap = 0.18) {
   const ctx = getAudioCtx();
   if (!ctx) return;
-  const notes = isError ? [440, 330] : [659.25, 880];
   notes.forEach((freq, i) => {
-    const t0 = ctx.currentTime + i * 0.18;
+    const t0 = ctx.currentTime + i * gap;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
     osc.frequency.value = freq;
     gain.gain.setValueAtTime(0, t0);
     gain.gain.linearRampToValueAtTime(0.18, t0 + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + gap - 0.02);
     osc.connect(gain).connect(ctx.destination);
     osc.start(t0);
-    osc.stop(t0 + 0.18);
+    osc.stop(t0 + gap);
   });
+}
+function playNotifySound(isError) {
+  playTones(isError ? [440, 330] : [659.25, 880]);
+}
+function playAskSound() {
+  playTones([880, 1174.66, 880], 0.14);
 }
 
 // autoplay 策略：AudioContext 与通知权限请求都要求用户手势上下文。
@@ -383,6 +390,187 @@ document.addEventListener('pointerdown', () => {
   }
 }, { capture: true });
 
+// ---------- 待回答提问的强提示（页内浮层 + 侧栏徽标 + 一键跳转） ----------
+// 为什么不用系统横幅：横幅要先授权、点了还得把窗口拉到前台，而提问有 55s
+// 硬超时（helper 到点自动拒绝；AskUserQuestion 那档让模型稍后重问）。所以必须
+// 有一个「没授权也在、不聚焦窗口也在、点一下直接落到卡片上」的页内浮层。
+//
+// 触发源有三条，按提问 id 去重，谁先到谁弹：
+//   1. SSE permission_request —— 当前打开的会话；群视图里是成员转发来的卡
+//   2. loadSessions() 轮询 diff —— 覆盖所有会话 + 群。SSE 只订阅当前会话，
+//      「别的会话在提问」只有轮询看得见（5s 一跳，55s 窗口内绰绰有余）
+//   3. fetchPendingPermissions —— 刷新/重连后补回的未决卡
+const ASK_TOAST_KEY = (id) => 'ask:' + id;
+const ASK_TOAST_MAX = 3;
+const ASK_TOAST_GONE = 4200; // 超时后浮层再停留多久才自己退场
+
+function toastLayer() {
+  let el = $('#toast-layer');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast-layer';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+// 幂等：同一个 id 再触发只刷新内容，不叠加第二条。定时器挂在 rec 上，
+// dropToast 一并清掉——浮层被挤掉、撤下或超时时都不留后台 tick。
+// 退场走 .leaving 动画再摘节点，所以「还在淡出」的条目不计入占位（见 pushToast）。
+function dropToast(id) {
+  const rec = state.toasts[id];
+  if (!rec) return;
+  delete state.toasts[id];
+  (rec.timers || []).forEach((t) => { clearTimeout(t); clearInterval(t); });
+  rec.el.classList.add('leaving');
+  setTimeout(() => rec.el.remove(), 180);
+}
+
+function fillToast(rec, t) {
+  const el = rec.el;
+  el.querySelector('.toast-title').textContent = t.title || '';
+  el.querySelector('.toast-body').textContent = t.body || '';
+  const acts = el.querySelector('.toast-actions');
+  acts.innerHTML = '';
+  for (const a of t.actions || []) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'toast-btn' + (a.primary ? ' primary' : '');
+    b.textContent = a.label;
+    b.onclick = (e) => { e.stopPropagation(); a.onClick(); };
+    acts.appendChild(b);
+  }
+  el.classList.toggle('clickable', !!t.onClick);
+  el.onclick = t.onClick || null;
+}
+
+function pushToast(t) {
+  const layer = toastLayer();
+  const exist = state.toasts[t.id];
+  if (exist) { fillToast(exist, t); return exist; }
+  // 超量时挤掉最早的一条（连它的定时器一起）。正在淡出的条目已从 state.toasts
+  // 摘掉、节点 180ms 后才消失，所以只数「还在场上」的，否则会误挤。
+  const alive = () => [...layer.children].filter((c) => !c.classList.contains('leaving'));
+  while (alive().length >= ASK_TOAST_MAX) {
+    const old = alive()[0];
+    let dropped = false;
+    for (const id of Object.keys(state.toasts)) {
+      if (state.toasts[id].el === old) { dropToast(id); dropped = true; break; }
+    }
+    if (!dropped) old.remove();
+  }
+  const el = document.createElement('div');
+  el.className = 'toast' + (t.kind ? ' toast-' + t.kind : '');
+  el.innerHTML =
+    '<div class="toast-icon"><i data-lucide="message-circle-question"></i></div>' +
+    '<div class="toast-main"><div class="toast-title"></div><div class="toast-body"></div></div>' +
+    '<div class="toast-side"><span class="toast-timer"></span>' +
+    '<button class="toast-x" type="button" title="关闭"><i data-lucide="x"></i></button></div>' +
+    '<div class="toast-actions"></div>';
+  el.querySelector('.toast-x').onclick = (e) => { e.stopPropagation(); dropToast(t.id); };
+  layer.appendChild(el);
+  const rec = { el, timers: [] };
+  state.toasts[t.id] = rec;
+  fillToast(rec, t);
+  renderIcons(el);
+  return rec;
+}
+
+// raiseAskToast：一条未决提问 → 常驻浮层（倒计时 + 「去回答」）。同一 id 只弹一次。
+function raiseAskToast(ask, ctx) {
+  if (!ask || !ask.id) return null;
+  const key = ASK_TOAST_KEY(ask.id);
+  if (state.toasts[key]) return state.toasts[key];
+  const rec = pushToast({
+    id: key,
+    kind: 'ask',
+    title: '模型在提问 · ' + (ctx.where || '会话'),
+    body: ask.question || ask.header || '（模型在等你回答）',
+    onClick: () => gotoAsk(ask, ctx),
+    actions: [{ label: '去回答', primary: true, onClick: () => gotoAsk(ask, ctx) }],
+  });
+  // 倒计时按服务端给的创建时间算，刷新页面后也和 55s 硬超时对齐
+  const deadline = (ask.ts || Date.now()) + PERM_TIMEOUT_S * 1000;
+  const timerEl = rec.el.querySelector('.toast-timer');
+  const paint = () => {
+    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    timerEl.textContent = left > 0 ? left + 's' : '已超时';
+    rec.el.classList.toggle('urgent', left > 0 && left <= 15);
+    return left;
+  };
+  const timer = setInterval(() => {
+    if (paint() > 0) return;
+    clearInterval(timer);
+    // 超时后卡片已作废（模型会重问），留几秒说明白再退场，别留一条点不动的僵尸提示
+    rec.el.classList.add('expired');
+    rec.timers.push(setTimeout(() => dropToast(key), ASK_TOAST_GONE));
+  }, 500);
+  rec.timers.push(timer);
+  paint();
+  if (notifyPrefs().sound) playAskSound();
+  return rec;
+}
+
+// gotoAsk：从浮层跳到那张卡。跨会话要开一次会话、群成员卡要开一次群视图；
+// 两处的「补未决卡」都是异步 fire-and-forget，所以定位靠轮询等它出现。
+async function gotoAsk(ask, ctx) {
+  dropToast(ASK_TOAST_KEY(ask.id));
+  try {
+    if (ctx.gid && !(state.currentGroup && state.currentGroup.id === ctx.gid)) {
+      await openGroup(ctx.gid);
+    } else if (ctx.sid && !(state.current && state.current.id === ctx.sid)) {
+      await openSession(ctx.sid);
+    }
+  } catch (_) { /* 跳不过去也要把提示撤了，别留着误导 */ }
+  await focusAskCard(ask.id);
+}
+
+async function focusAskCard(askId) {
+  for (let i = 0; i < 25; i++) {
+    const e = state.permCards[askId];
+    if (e && e.wrap && !e.locked) {
+      e.card.classList.remove('ask-flash');
+      void e.card.offsetWidth; // 强制重排，让闪烁动画能重播
+      e.card.classList.add('ask-flash');
+      const first = e.card.querySelector('.perm-opt') || e.card.querySelector('.perm-btn');
+      if (first) first.focus({ preventScroll: true });
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
+// 轮询 diff：把「谁在提问」的全集和上一拍比一次。SSE 只覆盖当前打开的会话，
+// 别的会话只有这条 5s 轮询能看见——也顺带兜住刷新后仍在等的那张卡。
+function diffPendingAsks() {
+  const live = new Set();
+  const fresh = [];
+  const collect = (asks, ctx) => {
+    for (const a of asks || []) {
+      live.add(a.id);
+      fresh.push({ ask: a, ctx });
+    }
+  };
+  for (const s of state.sessions) {
+    collect(s.pending_asks, { sid: s.id, where: s.name || '未命名会话' });
+  }
+  for (const g of state.groups || []) {
+    for (const a of g.pending_asks || []) {
+      collect([a], {
+        gid: g.id,
+        where: (a.member_name ? a.member_name + '（' : '') + (g.name || '群聊') + (a.member_name ? '）' : ''),
+      });
+    }
+  }
+  for (const { ask, ctx } of fresh) raiseAskToast(ask, ctx);
+  // 已回答/已超时的提问下一拍就从列表里消失：提示随之撤掉（不必等 resolve 事件，
+  // 那一路只覆盖当前会话，跨会话时只有这里能撤）
+  for (const id of Object.keys(state.toasts)) {
+    if (id.startsWith('ask:') && !live.has(id.slice(4))) dropToast(id);
+  }
+}
+
 // ---------- sessions list ----------
 async function loadSessions() {
   const [active2, archived] = await Promise.all([
@@ -392,6 +580,7 @@ async function loadSessions() {
   state.sessions = active2;
   state.archived = archived;
   diffRunningSessions(active2);
+  diffPendingAsks();
   renderSessionList();
   renderArchiveList();
   renderWsActivity();
@@ -399,6 +588,8 @@ async function loadSessions() {
 }
 
 function statusDot(s) {
+  // 待回答的提问压过一切运行态：它有 55s 硬超时，红点脉冲是唯一「现在就得动」
+  if ((s.pending_asks || []).length) return 'dot ask';
   if (s.status.running) return 'dot running';
   if (s.status.queued > 0) return 'dot queued';
   if (s.status.last_error && s.status.last_error !== 'interrupted') return 'dot error';
@@ -448,20 +639,35 @@ function sessionItemHTML(s, opts = {}) {
     : `<span class="${statusDot(s)}"></span>`;
   return `
     <button class="icon-btn menu-btn" title="更多操作" data-menu-for="${s.id}"><i data-lucide="more-horizontal"></i></button>
-    <div class="name">${mark}<span class="name-text"></span></div>
+    <div class="name">${mark}<span class="name-text"></span>${askFlagHTML(s.pending_asks)}</div>
     <div class="meta">
       <span class="profile-tag"></span>
       <span class="time">${timeAgo(s.updated_at)}</span>
     </div>`;
 }
+// 「待回答」行内标签：提问不进消息流、只停在输入框上方的 dock，人不在这个会话
+// 时侧栏这行是唯一的线索，所以给它一个和状态点同级的常驻标签。
+function askFlagHTML(asks) {
+  const n = (asks || []).length;
+  if (!n) return '';
+  return `<span class="ask-flag">待回答${n > 1 ? ' ' + n : ''}</span>`;
+}
+function askTip(asks) {
+  const list = asks || [];
+  if (!list.length) return '';
+  return '⚠ 待回答：\n' + list.map((a) => (a.header ? a.header + '：' : '') + (a.question || '')).join('\n');
+}
 
 function bindSessionItem(item, s, isArchived = false) {
+  // 待回答提问：整行底色脉动（光靠状态点太弱，扫侧栏时几乎看不见）
+  item.classList.toggle('has-ask', (s.pending_asks || []).length > 0);
   item.querySelector('.name-text').textContent = s.name;
   item.querySelector('.profile-tag').textContent = s.provider || s.cli;
   const tip = `${s.cli} / ${s.provider} · ${s.cwd}`;
   // 引擎侧 session id（claude transcript / 文件锁 / opencode ses_…）挂在 tooltip 上，
   // 便于从文件名里的 sid 反查对应会话时核对。
-  item.title = s.claude_session_id ? `${tip} · ${s.claude_session_id}` : tip;
+  const ask = askTip(s.pending_asks);
+  item.title = [ask, tip, s.claude_session_id].filter(Boolean).join('\n');
   item.onclick = (e) => {
     if (e.target.closest('.menu-btn')) return; // let menu-btn handle its own
     openSession(s.id);
@@ -478,17 +684,31 @@ function bindSessionItem(item, s, isArchived = false) {
 function renderWsActivity() {
   const el = $('#ws-activity');
   if (!el) return;
-  let running = 0, unread = 0, todo = 0;
+  let running = 0, unread = 0, todo = 0, asking = 0;
   for (const s of state.sessions) {
     const st = s.status || {};
     if (st.running || st.queued > 0) running++;
     if (s.unread) unread++;
     if (s.todo) todo++;
+    if ((s.pending_asks || []).length) asking++;
+  }
+  // 群聊同样算：成员的提问卡只在群视图里，不进单聊列表
+  for (const g of state.groups || []) {
+    if ((g.pending_asks || []).length) asking++;
   }
   // 已删除的会话不再出现在 state.sessions，徽标随之自然消失，无需本地清理。
   el.innerHTML = '';
-  if (!running && !unread && !todo) { el.classList.add('hidden'); return; }
+  if (!running && !unread && !todo && !asking) { el.classList.add('hidden'); return; }
   el.classList.remove('hidden');
+  if (asking) {
+    const b = document.createElement('span');
+    b.className = 'ws-badge';
+    b.dataset.kind = 'pending';
+    b.title = `${asking} 个会话/群在等你回答，点击查看`;
+    b.innerHTML = `<span class="dot ask"></span>待回答 ${asking}`;
+    bindWsBadge(b, 'pending');
+    el.appendChild(b);
+  }
   if (running) {
     const b = document.createElement('span');
     b.className = 'ws-badge';
@@ -583,6 +803,8 @@ function renderWsPop() {
   pop.innerHTML = '';
   if (!wsPopKind) return;
   const byNewest = (a, b) => new Date(b.updated_at) - new Date(a.updated_at);
+  // 「待回答」不从 state.sessions 里筛：单聊一条、群一条，条目自带跳转目标
+  if (wsPopKind === 'pending') return renderWsPopPending();
   let list;
   if (wsPopKind === 'running') {
     list = state.sessions.filter((s) => s.status && (s.status.running || s.status.queued > 0));
@@ -629,6 +851,47 @@ function renderWsPop() {
     item.onclick = () => {
       closeWsPop();
       openSession(s.id);
+    };
+    pop.appendChild(item);
+  }
+}
+
+// 「待回答」popover：一个待回答的会话/群一条（不是一张卡一条），条目直接带上
+// 最老那张卡的跳转目标——最早提问的离 55s 超时最近，该先答它。
+function renderWsPopPending() {
+  const pop = $('#ws-pop');
+  const rows = [];
+  for (const s of state.sessions) {
+    if ((s.pending_asks || []).length) {
+      rows.push({ name: s.name || '未命名会话', asks: s.pending_asks, ctx: { sid: s.id } });
+    }
+  }
+  for (const g of state.groups || []) {
+    if ((g.pending_asks || []).length) rows.push({ name: g.name || '群聊', asks: g.pending_asks, ctx: { gid: g.id } });
+  }
+  rows.sort((a, b) => (a.asks[0].ts || 0) - (b.asks[0].ts || 0));
+  const title = document.createElement('div');
+  title.className = 'ws-pop-title';
+  title.textContent = `待回答（${rows.length}）`;
+  pop.appendChild(title);
+  for (const r of rows) {
+    const ask = r.asks[0];
+    const item = document.createElement('button');
+    item.className = 'ws-pop-item';
+    const dot = document.createElement('span');
+    dot.className = 'dot ask';
+    const name = document.createElement('span');
+    name.className = 'name-text';
+    name.textContent = r.name;
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    const left = Math.max(0, Math.ceil(((ask.ts || Date.now()) + PERM_TIMEOUT_S * 1000 - Date.now()) / 1000));
+    meta.textContent = left > 0 ? `${left}s 后超时${r.asks.length > 1 ? ` · ${r.asks.length} 张` : ''}` : '已超时';
+    item.append(dot, name, meta);
+    item.title = ask.question || '';
+    item.onclick = () => {
+      closeWsPop();
+      gotoAsk(ask, r.ctx);
     };
     pop.appendChild(item);
   }
@@ -3058,6 +3321,24 @@ function buildAskUserCard(card, d, questions, box, wrap) {
   permDock().appendChild(wrap);
   syncPermDock();
   state.permCards[d.id] = { wrap, card, locked: false, timer };
+  // 提问卡和工具审批卡的紧迫度不一样：55s 到点作废、模型还得重问一遍。弹一条
+  // 常驻浮层 + 侧栏徽标，保证人不在这个会话时也能看见，并能直接跳过来作答。
+  raiseAskToast(askOf(d), permToastCtx(d));
+}
+// 提问摘要：从权限事件本身现取，给 SSE 这条路径当场起浮层用；形状与后端
+// sessionView.pending_asks 一致（轮询那条路径直接用后端给的）。
+function askOf(d) {
+  const qs = parsePermQuestions(d && d.input);
+  return {
+    id: d && d.id,
+    header: qs[0] ? qs[0].header : '',
+    question: qs[0] ? qs[0].question : '',
+    ts: (d && d.ts) || Date.now(),
+  };
+}
+function permToastCtx(d) {
+  if (d && d.member_id) return { gid: d.group_id, sid: d.member_id, where: (d.member_name || '群成员') + '（群聊）' };
+  return { sid: (state.current && state.current.id) || '', where: (state.current && state.current.name) || '会话' };
 }
 function renderPermissionCard(d, box) {
   box = box || $('#messages');
@@ -3163,6 +3444,8 @@ function lockPermCard(card, behavior, label) {
 }
 function resolvePermissionCard(d) {
   if (!d || !d.id) return;
+  // 卡锁了就作废，对应浮层立刻撤（跨会话时 resolve 事件收不到，由轮询 diff 兜）
+  dropToast(ASK_TOAST_KEY(d.id));
   const permLabel = (card, behavior, timeout, auto) => {
     const isAsk = card && card.dataset && card.dataset.tool === 'AskUserQuestion';
     if (timeout) return isAsk ? '已超时，模型会重问' : '已超时自动拒绝';
@@ -5623,15 +5906,21 @@ async function loadGroups() {
     state.groups = [];
   }
   renderSessionList(); // 群与单聊合并渲染（按工作区分组，群挂群聊小标签）
+  renderWsActivity(); // 群也可能有待回答提问（成员卡只在群视图里），徽标得跟着刷
 }
 // 群条目：与会话同行，挂「群聊」小标签，点开进群视图
 function appendGroupItem(box, g) {
   const el = document.createElement('div');
-  el.className = 'session-item group-item' + (state.currentGroup && state.currentGroup.id === g.id ? ' active' : '');
-  el.innerHTML = '<span class="dot"></span><span class="sess-name"></span><span class="group-tag">群聊</span><span class="sess-meta"></span>';
+  const asking = (g.pending_asks || []).length > 0;
+  el.className = 'session-item group-item' + (state.currentGroup && state.currentGroup.id === g.id ? ' active' : '') +
+    (asking ? ' has-ask' : '');
+  el.innerHTML = '<span class="dot"></span><span class="sess-name"></span><span class="group-tag">群聊</span>' +
+    askFlagHTML(g.pending_asks) + '<span class="sess-meta"></span>';
   el.querySelector('.sess-name').textContent = g.name;
   el.querySelector('.sess-meta').textContent = `${(g.members || []).length} 成员${g.running ? ' · 跑着' : ''}`;
-  el.querySelector('.dot').className = 'dot' + (g.running ? ' running' : '');
+  // 成员提问只在群视图里有卡，所以群条目也得自己标出来（成员影子会话不进侧栏）
+  el.querySelector('.dot').className = asking ? 'dot ask' : 'dot' + (g.running ? ' running' : '');
+  el.title = [askTip(g.pending_asks), g.cwd].filter(Boolean).join('\n');
   el.onclick = () => openGroup(g.id);
   box.appendChild(el);
 }
@@ -5674,6 +5963,7 @@ async function openGroup(gid) {
       for (const p of (r && r.pending) || []) {
         p.member_id = mb.id;
         p.member_name = mb.name;
+        p.group_id = gid; // 提示的「去回答」据此留在群视图里，而不是跳去成员影子会话
         renderPermissionCard(p);
       }
     } catch (_) {}

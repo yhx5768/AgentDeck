@@ -227,6 +227,9 @@ func (m *Manager) forwardGroupPermission(gid string, mb *GroupMember, ev *store.
 	}
 	payload["member_id"] = mb.ID
 	payload["member_name"] = mb.Name
+	// 群 id 让前端的「去回答」能重新打开本群视图定位到这张卡（提示可能是在
+	// 用户已经关掉群视图之后弹的）
+	payload["group_id"] = gid
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return

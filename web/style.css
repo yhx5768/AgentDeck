@@ -747,6 +747,8 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   display: flex; align-items: center; gap: var(--sp-2);
   font-size: var(--fs-md);
 }
+/* 名字自己吃掉剩余宽度，末端的「待回答」标签才不会被 ellipsis 挤掉 */
+.session-item .name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item .meta {
   color: var(--dim);
   font-size: var(--fs-xs);
@@ -765,7 +767,36 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 .dot.error { background: var(--red); }
 .dot.unread { background: var(--accent); }
 .dot.todo { background: var(--todo); }
+/* 待回答提问：55s 硬超时，红点比运行态更急（运行态可以等，提问不能） */
+.dot.ask { background: var(--red); animation: pulse .7s infinite; }
 @keyframes pulse { 50% { opacity: .4; } }
+
+/* 「待回答」行内标签：提问卡停在输入框上方，人不在该会话时侧栏这行是唯一线索 */
+.ask-flag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 45%, transparent);
+  border-radius: var(--r-2xl);
+  padding: 0 5px;
+  white-space: nowrap;
+}
+/* 待回答提问：整行底色脉动。光靠状态点太弱——侧栏一屏几十行，扫过去根本不会
+   注意到一个 8px 的点；整行的底色一亮，扫视时立刻跳出来。 */
+.session-item.has-ask {
+  background: color-mix(in srgb, var(--red) 9%, transparent);
+  border-color: color-mix(in srgb, var(--red) 32%, transparent);
+  animation: ask-row 1.5s ease-in-out infinite;
+}
+@keyframes ask-row {
+  50% {
+    background: color-mix(in srgb, var(--red) 18%, transparent);
+    border-color: color-mix(in srgb, var(--red) 60%, transparent);
+  }
+}
 
 .profile-tag {
   font-size: var(--fs-xs);
@@ -2845,6 +2876,12 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
    若写成 `margin: var(--sp-3) 0` 会把 auto 清掉，卡落到左边缘、与其他
    消息对不齐（“歪了”）。停靠输入框上方的 dock 另有 `margin: 0`。 */
 .msg-perm { margin-top: var(--sp-3); margin-bottom: var(--sp-3); }
+/* 从浮层/侧栏跳过来时闪一下，确认「就是这张卡」 */
+.perm-card.ask-flash { animation: ask-flash 1.1s ease-out 2; }
+@keyframes ask-flash {
+  0%, 100% { box-shadow: none; }
+  40% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 55%, transparent); }
+}
 .perm-card {
   border: 1px solid var(--orange);
   border-left: 3px solid var(--orange);
@@ -3027,3 +3064,119 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   line-height: 1.5;
 }
 .session-item.group-item .sess-name { color: var(--accent); font-weight: 600; }
+
+/* ---------- 待回答提问通知（居中横幅，iPad 来通知那种） ----------
+   不依赖系统通知授权、不依赖窗口聚焦：模型提问只有 55s 硬超时，所以提示必须
+   一直挂在页面上，且整条可点（= 跳到那张卡片上作答）。
+
+   位置为什么是「顶部居中」：这是要人立刻做决定的一次性事件，藏在右下角等于
+   没有——扫一眼看不到。顶部居中 + 横幅形态 = 视线落点，不用找。
+   为什么不在底部：#composer 是 max-width 880px 居中浮在底部的，待回答的卡片就
+   停在它正上方的 dock 里，浮层压那儿等于挡住要作答的地方。
+   z-index 150 在弹窗（200）之下：设置类弹窗开着时不抢它的层级。 */
+#toast-layer {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 150;
+  display: flex;
+  flex-direction: column-reverse; /* 新的排最上面 */
+  align-items: center;
+  gap: var(--sp-2);
+  width: min(460px, calc(100vw - 2 * var(--sp-4)));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: "icon main side" ". actions actions";
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--border));
+  border-radius: var(--r-2xl, 14px);
+  background: var(--bg);
+  box-shadow: var(--shadow-md), 0 12px 32px rgba(0, 0, 0, .18);
+  animation: toast-in .22s cubic-bezier(.2, .9, .3, 1.2);
+}
+.toast.clickable { cursor: pointer; }
+.toast.clickable:hover { border-color: var(--red); }
+.toast.leaving { animation: toast-out .18s var(--ease) forwards; }
+/* 剩 15s 内再压一次：只剩红边还不够，得让人意识到「不答就白等」 */
+.toast.urgent { animation: toast-in .22s cubic-bezier(.2, .9, .3, 1.2), ask-breathe 1s ease-in-out infinite; }
+@keyframes ask-breathe { 50% { opacity: .55; } }
+.toast.expired { opacity: .6; }
+.toast.expired .toast-icon { background: var(--bg3); color: var(--dim); }
+.toast.expired .toast-title { color: var(--dim); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-20px) scale(.96); } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(-14px) scale(.97); } }
+.toast-icon {
+  grid-area: icon;
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border-radius: var(--r-full);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  color: var(--red);
+}
+.toast-icon svg { width: 19px; height: 19px; }
+.toast-main { grid-area: main; min-width: 0; }
+.toast-title {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--red);
+  margin-bottom: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.toast-body {
+  font-size: var(--fs-md);
+  color: var(--fg);
+  font-weight: 500;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.toast-side { grid-area: side; display: flex; align-items: center; gap: var(--sp-2); }
+.toast-timer {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  border-radius: var(--r-full);
+  padding: 1px 7px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.toast.expired .toast-timer { color: var(--dim); background: var(--bg3); }
+.toast-x {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--dim); padding: 0; display: flex; align-items: center;
+}
+.toast-x:hover { color: var(--fg); }
+.toast-x svg { width: 15px; height: 15px; }
+.toast-actions { grid-area: actions; display: flex; gap: var(--sp-2); justify-content: flex-end; margin-top: var(--sp-1); }
+.toast-btn {
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--fg);
+  cursor: pointer;
+}
+.toast-btn:hover { background: var(--bg3); }
+.toast-btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+.toast-btn.primary:hover { filter: brightness(1.08); }
+@media (max-width: 640px) {
+  #toast-layer { top: 8px; width: calc(100vw - 2 * var(--sp-2)); }
+}

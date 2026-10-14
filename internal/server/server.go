@@ -394,10 +394,94 @@ type sessionView struct {
 	Engine        string        `json:"engine"` // cli kind: claude | opencode | mcode | qoder
 	Status        runner.Status `json:"status"`
 	ResumeCommand string        `json:"resume_command,omitempty"`
+	// PendingAsks summarizes outstanding AskUserQuestion prompts. The approval
+	// card only ever lives in the composer dock of the session that is open
+	// right now, and SSE is per-session — so a prompt raised anywhere else is
+	// invisible until it times out. This rides the session list (and the group
+	// list) so the sidebar can flag it and the toast layer can offer a jump.
+	PendingAsks []pendingAskView `json:"pending_asks"`
 }
 
 func (s *Server) view(sess *store.Session) sessionView {
-	return sessionView{Session: sess, Engine: s.engineOf(sess), Status: s.mgr.GetStatus(sess.ID), ResumeCommand: s.resumeCommand(sess)}
+	return sessionView{
+		Session:       sess,
+		Engine:        s.engineOf(sess),
+		Status:        s.mgr.GetStatus(sess.ID),
+		ResumeCommand: s.resumeCommand(sess),
+		PendingAsks:   s.pendingAsksOf(sess.ID),
+	}
+}
+
+// askToolName is the tool name every engine funnels a model question through:
+// claude/qoder AskUserQuestion via the PermissionRequest hook, opencode's
+// question.asked rewritten to the same shape (see runner/octurn.go).
+const askToolName = "AskUserQuestion"
+
+// pendingAskView is the compact form of one outstanding question prompt — just
+// enough for a badge, a tooltip, a toast body and a jump target. The full
+// input payload stays on the per-session pending endpoint.
+type pendingAskView struct {
+	ID       string `json:"id"`
+	Header   string `json:"header,omitempty"`
+	Question string `json:"question,omitempty"`
+	TS       int64  `json:"ts"`
+	// MemberID/MemberName are set only on group rows: the prompt belongs to a
+	// shadow member session, so the toast needs to know which group to jump to.
+	MemberID   string `json:"member_id,omitempty"`
+	MemberName string `json:"member_name,omitempty"`
+}
+
+// pendingAsksOf lists one session's outstanding question prompts, oldest first
+// (oldest = closest to its 55s hook timeout, so it is the one to answer first).
+// Never nil: the UI indexes into it unguarded.
+func (s *Server) pendingAsksOf(sessionID string) []pendingAskView {
+	return pendingAsksOf(s.mgr.PermissionPending(sessionID))
+}
+
+// groupPendingAsksOf aggregates a group's members' question prompts so a group
+// row can flag "someone in here is asking you something" the same way a session
+// row does. Each entry keeps its owning member so the UI can jump back to the
+// group view (the member's shadow session is not in the sidebar).
+func (s *Server) groupPendingAsksOf(members []runner.GroupMember) []pendingAskView {
+	out := []pendingAskView{}
+	for _, mb := range members {
+		for _, v := range pendingAsksOf(s.mgr.PermissionPending(mb.ID)) {
+			v.MemberID = mb.ID
+			v.MemberName = mb.Name
+			out = append(out, v)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].TS < out[j].TS })
+	return out
+}
+
+func pendingAsksOf(prs []*runner.PermissionRequest) []pendingAskView {
+	out := []pendingAskView{}
+	for _, pr := range prs {
+		if pr == nil || pr.Tool != askToolName {
+			continue
+		}
+		v := pendingAskView{ID: pr.ID, TS: pr.CreatedAt.UnixMilli()}
+		// claude/qoder prompts come from JSON decoding ([]any of map[string]any),
+		// opencode builds []map[string]any in process — accept both.
+		switch qs := pr.Input["questions"].(type) {
+		case []any:
+			if len(qs) > 0 {
+				if q, ok := qs[0].(map[string]any); ok {
+					v.Header, _ = q["header"].(string)
+					v.Question, _ = q["question"].(string)
+				}
+			}
+		case []map[string]any:
+			if len(qs) > 0 {
+				v.Header, _ = qs[0]["header"].(string)
+				v.Question, _ = qs[0]["question"].(string)
+			}
+		}
+		out = append(out, v)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].TS < out[j].TS })
+	return out
 }
 
 // engineOf resolves a session's engine kind from its cli config entry

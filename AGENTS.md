@@ -165,6 +165,28 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **成员竖线配色**：`--agent-1..8` 在 `:root` 与 `[data-theme="dark"]` 各定义一份（沿用 GitHub 那套色，深色版同色相提亮）。**顺序刻意冷暖交替**（蓝→琥珀→绿→品红→青→红→紫→金棕），并排发言的两个成员（成员 1 和 2）一定不同色；`applyMemberColor` 按成员在 `meta.members` 里的**序号**取色，写的是 `var(--agent-N)` 字符串而非色值，所以切主题靠 CSS 变量重解析、不用重渲染。成员增删会让后面成员换色，认人仍以 role-tag 的名字为准，颜色只是辅助。
 - **@成员补全**：群 composer 打 `@` 弹 `#group-mention-popup`（`@all` 固定第一项 + 本群成员，右侧带模型/后端提示），↑↓/Tab/Enter 选中、鼠标点选用 `mousedown`+`preventDefault`（先于 blur 的延时关闭，否则 click 会被抢掉）。触发条件要和服务端对齐：`parseGroupRecipients` 按空白切 token 且要求 token 以 `@` 开头，所以 `currentMentionToken` 只认词首的 `@`（开头/空白/中文后），选中时若前一个字不是空白**补一个空格**——中文里「看下@小王」这种写法不补就切不出 token，这条 @ 白发。邮箱/URL 里的 `@` 不弹。
 
+### 11. 待回答提问的强提示（AskUserQuestion）
+
+模型的提问（AskUserQuestion / opencode 的 `question.asked`）有 **55s 硬超时**——helper 到点自动拒绝，AskUserQuestion 那档回传「请稍后重新提问」让模型重问。原来的呈现只有一处：卡片停在**当前打开会话**的 composer 上方 dock 里。后果是致命的两个盲区：
+
+- **SSE 只订阅当前会话**（§3 每连接一套事件），换个会话就收不到那条 `permission_request`；
+- 卡片不进消息流，不刷新就永远看不见。
+
+于是「模型在提问」变成了纯静默事件，用户往往等到超时后模型重问才发现。三层提示都建立在同一个事实上——服务端内存里的 pending 注册表（`runner.permissionState.pending`）本来就知道「谁在提问」，只是没人把它铺到界面上：
+
+1. **数据面**：`sessionView.PendingAsks` / `groupView.PendingAsks` 随列表下发（见「前端结构」段的条目）。走会话/群列表而不是新开接口，是因为 5s 轮询本来就在拉这两个列表，零额外往返。
+2. **触发面**：三条源（当前会话 SSE、刷新补卡、轮询 diff）按提问 id 去重，`raiseAskToast` 幂等。**轮询那条是唯一跨会话的通道**，别删。
+3. **呈现面**：**顶部居中的横幅通知**（iPad 来通知那种形态，整条可点 = `gotoAsk` 跳到那张卡；跨会话开会话、群卡开群视图，定位靠 `focusAskCard` 轮询等异步补卡出现）+ 侧栏**整行底色脉动**（`.session-item.has-ask`，红点只作补充）+ 工作区栏 `#ws-activity` 的「待回答 N」徽标 + `renderWsPopPending` 列表。**别只做浮层**——人往往在别的标签页/会话，侧栏那一条才是回来第一眼看到的。
+
+踩过的坑：
+
+- **浮层放底部等于没做，藏角落也等于没做**（两种都实测过）：composer 是 `position: absolute` + `max-width: 880px` 居中浮在底部，待回答的卡片就在它正上方的 dock 里——浮层压那儿等于挡住要作答的地方；而右上角一个 360px 的小卡片在真实使用中根本不会被注意到。最后定**顶部居中横幅**：要立刻做决定的一次性事件，视线落点就在那儿，不用找。
+- **侧栏只改状态点太弱**：一屏几十行会话，8px 红点在扫视里等于不存在，必须让**整行底色**脉动才跳得出来（`bindSessionItem`/`appendGroupItem` 两处都要加 class）。
+- **退场动画会和「挤掉旧提示」打架**：`dropToast` 改成先加 `.leaving`、延迟摘节点之后，`layer.children.length` 就不再等于在场条数，`pushToast` 的挤占循环必须改成只数非 leaving 的，否则死循环。
+- **不用系统横幅**：要授权、要窗口聚焦，而这是 55s 的一次性窗口。页内浮层不依赖任何授权；提示音仍走既有的 `notifyPrefs()` 开关（`playAskSound` 是从 `playNotifySound` 拆出来的 `playTones`）。
+- **跳转要能等**：`openSession`/`openGroup` 里的「补未决卡」是 fire-and-forget，所以 `focusAskCard` 轮询等卡片出现再闪烁+聚焦，不能同步取。
+- 群成员的卡只在群视图里，转发事件带 `group_id`（`forwardGroupPermission`）才能「去回答」时回到群视图而不是跳去成员影子会话。
+
 ## 后端包职责（`internal/`）
 
 | 包 | 职责 | 关键点 |
@@ -188,6 +210,10 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - `trajectory.js`(~665 行) — 轨迹视图：把 `state.historyBuf` 投影成按轮(turn)分组的台账，`traj` 对象管理 `byMsgId`(assistant 去重)/`byCallId`(tool 配对)/折叠/筛选/搜索/详情面板。
 - **engine gating**：`openSession` 按 `s.engine` 走 `setEngineUI`（隐藏 📡 常驻按钮）+ `fillCLISelect/ProviderSelect(sel, value, engine)` kind 过滤（opencode cli 带 `· opencode` 后缀标签）；侧栏会话菜单 fork 项按目标会话 engine 隐藏（`syncMenuForEngine`）；新建会话视图/provider/quick-create 弹窗切 cli 时 provider 归位同 kind 首个（`applyNsEngineUI`/`applyNewEngineUI`），opencode 下拒收内嵌图片（主 composer 自动降级为文件附件）。effort/推理深度下拉不按引擎一刀切——`refreshSessionEffort` 等按模型 variants 动态填充（见 section 8）。
 - **导入弹窗**：cc 与 opencode 共用列表/预览 UI，`#import-tabs` 页签把 `#import-cli` 切到该 kind 首个 cli；`scanImport`/`selectImportPreview` 按所选 cli 的 kind 路由 `/api/claude-sessions` 或 `/api/opencode-sessions?cli=`（cwd 框对 claude/qoder/opencode 都是选桶条件，留空则列全部项目——opencode 的跨项目枚举见 §9）。
+- **待回答提问的强提示**（AskUserQuestion 专用，见 §11）：提问卡只停在**当前会话** composer 上方的 dock 里，而 SSE 只订阅当前会话（§3），所以换个会话这提问就彻底静默、只剩 55s 超时。三层提示因此都由「谁在提问」这个全局事实驱动：
+  - **数据面**：`server.sessionView.PendingAsks`（`pendingAsksOf`）与 `server.groupView.PendingAsks`（`groupPendingAsksOf`，额外带 `member_id`/`member_name`——成员影子会话不在侧栏里，跳转得靠群 id）随会话/群列表一起下发，最老的一条在前（最接近超时）。`input["questions"]` 两种形状都要认：claude/qoder 是 JSON 解出来的 `[]any`，opencode 是进程内造的 `[]map[string]any`（`ask_test.go` 守住这条）。**列表空时也返回 `[]` 不是 null**，前端无条件索引。
+  - **触发面**：三条源按提问 id 去重（`raiseAskToast` 幂等）——SSE `permission_request`（当前会话/群转发）、`fetchPendingPermissions`（刷新后补卡）、`diffPendingAsks()`（`loadSessions` 5s 轮询 diff，**唯一能看见别的会话在提问的通道**）。`resolvePermissionCard` 立即撤对应浮层，跨会话时由下一轮轮询兜。
+  - **呈现面**：`#toast-layer` 顶部居中横幅（iPad 来通知形态，**不是右下角小卡片**——见 §11 踩过的坑），整条可点 = `gotoAsk` 跳到那张卡（跨会话开会话、群卡开群视图，定位靠 `focusAskCard` 轮询等异步补卡出现）。侧栏另有：整行底色脉动 `.session-item.has-ask` + `.dot.ask`（压过 running）+ 行内 `待回答` 标签、工作区栏 `#ws-activity` 的「待回答 N」徽标 + `renderWsPopPending` 列表。**别只做浮层**——人往往在别的标签页/会话，侧栏那一条才是回来第一眼看到的。
 - `style.css` — 全部样式，`[data-theme]` 深浅主题。
 - `vendor/` — marked / DOMPurify / highlight.js / lucide / 主题 css，均已 vendored。
 - `go:embed all:web` → `fs.Sub(webFS, "web")` → `http.FileServerFS`。

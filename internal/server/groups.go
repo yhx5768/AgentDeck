@@ -73,10 +73,18 @@ type groupView struct {
 	Members   []runner.GroupMember `json:"members"`
 	Running   bool                 `json:"running"`
 	UpdatedAt time.Time            `json:"updated_at"`
+	// PendingAsks aggregates the members' outstanding AskUserQuestion prompts —
+	// a member's card only shows in the group view, so without this the group
+	// row would be as silent as an unopened session row.
+	PendingAsks []pendingAskView `json:"pending_asks"`
 }
 
 func (s *Server) groupViewOf(meta *runner.GroupMeta) groupView {
-	return groupView{ID: meta.ID, Name: meta.Name, Cwd: meta.Cwd, Members: meta.Members, Running: s.mgr.GroupBusy(meta.ID), UpdatedAt: meta.UpdatedAt}
+	return groupView{
+		ID: meta.ID, Name: meta.Name, Cwd: meta.Cwd, Members: meta.Members,
+		Running: s.mgr.GroupBusy(meta.ID), UpdatedAt: meta.UpdatedAt,
+		PendingAsks: s.groupPendingAsksOf(meta.Members),
+	}
 }
 
 func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
