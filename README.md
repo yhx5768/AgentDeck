@@ -196,6 +196,8 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 | GET | `/api/sessions/{id}/events` | SSE：历史回放 + 实时事件 |
 | GET | `/api/claude-sessions?cwd=` | 扫描本机 `~/.claude/projects` |
 | GET | `/api/qoder-sessions?cwd=` | 扫描本机 `~/.qoder-cn/projects` |
+| GET | `/api/opencode-models?cli=&provider=` | opencode 可用模型 + 输入模态（`opencode models <provider> --verbose`，10 分钟缓存，后台刷新） |
+| GET | `/api/opencode-model-variants?cli=&provider=` | opencode 每个模型可用的 `--variant` 档位（与上一项共用同一次 CLI 调用与缓存） |
 | GET | `/api/qoder-models?cli=&provider=` | qoder 可用模型 + 推理档位（`qoderclicn --list-models`，10 分钟缓存） |
 | POST | `/api/sessions/import` | 导入已有 session（按 cli 的 kind 决定读哪个引擎的历史） |
 | GET | `/api/files?path=` | 读取本地文件（限会话工作区内） |

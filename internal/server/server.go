@@ -102,26 +102,42 @@ type Server struct {
 	static fs.FS
 	mux    *http.ServeMux
 
-	// variantsCache memoizes `opencode models --verbose` per cli+provider.
-	// The metadata (reasoning-effort variant keys per model) is static until
-	// the user runs `opencode models --refresh`, so a slow TTL suffices.
-	variantsMu    sync.Mutex
-	variantsCache map[string]variantsEntry
+	// ocCatalog memoizes `opencode models --verbose` per cli+provider. One
+	// entry answers both the model dropdown and the effort dropdown, so the
+	// CLI runs at most once per key per TTL no matter how many endpoints or
+	// browsers ask.
+	ocCatalogMu sync.Mutex
+	ocCatalog   map[string]ocCatalogEntry
+	// ocRefreshing marks keys with a background --refresh already in flight,
+	// so a burst of requests cannot stampede the CLI or models.dev.
+	ocRefreshing map[string]bool
 
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
 	httpSrv *http.Server
 }
 
-type variantsEntry struct {
-	ts   time.Time
-	data map[string][]string // model id -> --variant keys
+type ocCatalogEntry struct {
+	ts  time.Time
+	cat *opencodehist.Catalog
+	err error
 }
 
+// variantsTTL bounds how stale a served catalog may be. It matches the
+// frontend's own cache window for the opencode catalog and the mcode/qoder
+// catalogs, so a newly published model shows up within one window of the
+// picker being opened without anyone hard-refreshing.
+//
+// Expiry does not block: the stale entry is returned immediately and the
+// refresh runs behind it (see opencodeCatalog).
 const variantsTTL = 10 * time.Minute
 
 func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS) *Server {
-	s := &Server{cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux(), variantsCache: map[string]variantsEntry{}}
+	s := &Server{
+		cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux(),
+		ocCatalog:    map[string]ocCatalogEntry{},
+		ocRefreshing: map[string]bool{},
+	}
 	s.routes()
 	return s
 }
@@ -154,6 +170,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/claude-sessions/preview", s.auth(s.handleClaudeSessionPreview))
 	s.mux.Handle("GET /api/opencode-sessions", s.auth(s.handleOpenCodeSessions))
 	s.mux.Handle("GET /api/opencode-sessions/preview", s.auth(s.handleOpenCodeSessionPreview))
+	s.mux.Handle("GET /api/opencode-models", s.auth(s.handleOpenCodeModels))
 	s.mux.Handle("GET /api/opencode-model-variants", s.auth(s.handleOpenCodeModelVariants))
 	s.mux.Handle("GET /api/mcode-models", s.auth(s.handleMcodeModels))
 	s.mux.Handle("GET /api/mcode-sessions", s.auth(s.handleMcodeSessions))
@@ -310,9 +327,10 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		// Pre-initialize to an empty slice, not nil: a nil slice marshals to
 		// JSON `null`, and the frontend indexes into this list unguarded
 		// (provider.models[0], provider.models.find). A provider with no
-		// models in config is normal for the mcode engine — its model list
-		// is resolved by the CLI at run time and fetched from
-		// /api/mcode-models instead — so an empty `models: []` in config
+		// models in config is normal for the opencode, mcode and qoder
+		// engines — their model lists are resolved by the CLI at run time and
+		// fetched from /api/opencode-models, /api/mcode-models or
+		// /api/qoder-models instead — so an empty `models: []` in config
 		// would otherwise hand the UI a null and blank the whole chat view on
 		// open.
 		item := prov{Name: p.Name, Kind: p.Kind, Models: []model{}}
@@ -1613,38 +1631,154 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.view(sess))
 }
 
-// handleOpenCodeModelVariants reports the --variant (reasoning effort) keys
-// opencode accepts per model of one provider (`opencode models <provider>
-// --verbose`, memoized). The effort dropdowns query this so an opencode
-// session only ever offers the variant keys its model really supports.
-// ?fresh=1 bypasses the memo, which would otherwise keep a model list from
-// before a new model appeared for up to variantsTTL.
-func (s *Server) handleOpenCodeModelVariants(w http.ResponseWriter, r *http.Request) {
+// opencodeCatalog returns one provider's model catalog, memoized per
+// cli+provider, and keeps it fresh without ever making a picker wait.
+//
+// The cost split comes from the CLI itself: a plain `opencode models <p>` is
+// served from the on-disk cache at ~/.cache/opencode/models.json and returns
+// in ~2.5s, while --refresh re-reads models.dev over the network. So:
+//
+//   - cold (nothing memoized yet): fetch without --refresh. One slow call is
+//     unavoidable, but it is the cached read, not the network one.
+//   - fresh (< variantsTTL): return the memo, touch nothing.
+//   - stale: return the memo IMMEDIATELY and refresh behind the caller's back,
+//     so the picker opens at the same speed whether or not the entry expired.
+//     The refresh result lands for the next reader.
+//
+// A refresh failure never disturbs a good entry: it is logged and the previous
+// catalog keeps serving, which is the whole point of serving stale.
+func (s *Server) opencodeCatalog(cli *config.CLI, prov *config.Provider, force bool) (*opencodehist.Catalog, error) {
+	key := cli.Name + "\x00" + prov.Name
+	s.ocCatalogMu.Lock()
+	e, ok := s.ocCatalog[key]
+	cold := !ok || e.cat == nil
+	// force is ?fresh=1: the caller re-polled on its own schedule and does not
+	// want an entry it may already have served itself. It buys the same thing
+	// as natural expiry — serve now, refresh behind — never a blocking fetch.
+	expired := ok && (force || time.Since(e.ts) >= variantsTTL)
+	if cold {
+		delete(s.ocCatalog, key)
+	} else if expired && !s.ocRefreshing[key] {
+		s.ocRefreshing[key] = true
+		go s.refreshOpenCodeCatalog(cli.Path, prov.Name, key)
+	}
+	s.ocCatalogMu.Unlock()
+	if cold {
+		// Nothing to serve yet: one blocking read is unavoidable, so make it
+		// the cheap one (the CLI's own on-disk cache, no network).
+		return s.fetchOpenCodeCatalog(cli.Path, prov.Name, key, false)
+	}
+	// Fresh or merely stale — either way the caller gets the entry it already
+	// have right now. The refresh kicked above lands for the next reader.
+	return e.cat, nil
+}
+
+// refreshOpenCodeCatalog runs the network-refreshing read off the request path.
+func (s *Server) refreshOpenCodeCatalog(cliPath, providerID, key string) {
+	defer func() {
+		s.ocCatalogMu.Lock()
+		delete(s.ocRefreshing, key)
+		s.ocCatalogMu.Unlock()
+	}()
+	cat, err := opencodehist.ProviderCatalog(cliPath, providerID, true)
+	s.ocCatalogMu.Lock()
+	defer s.ocCatalogMu.Unlock()
+	if err != nil {
+		// Keep whatever was there: a models.dev outage must not empty a picker
+		// that was working a minute ago.
+		log.Printf("opencode catalog refresh for %q failed, keeping the previous one: %v", providerID, err)
+		return
+	}
+	s.ocCatalog[key] = ocCatalogEntry{ts: time.Now(), cat: cat}
+	log.Printf("opencode catalog refreshed: %s", cat)
+}
+
+// fetchOpenCodeCatalog is the blocking half of opencodeCatalog: it runs the
+// CLI, stores the result, and remembers the failure so a broken provider is
+// not re-invoked on every request.
+func (s *Server) fetchOpenCodeCatalog(cliPath, providerID, key string, refresh bool) (*opencodehist.Catalog, error) {
+	cat, err := opencodehist.ProviderCatalog(cliPath, providerID, refresh)
+	s.ocCatalogMu.Lock()
+	defer s.ocCatalogMu.Unlock()
+	if err != nil {
+		// Do not cache the failure timestamp: the entry stays absent so the
+		// next request retries, and a provider that comes back needs no
+		// restart to start working again.
+		log.Printf("opencode catalog unavailable for %q: %v", providerID, err)
+		return nil, err
+	}
+	s.ocCatalog[key] = ocCatalogEntry{ts: time.Now(), cat: cat}
+	return cat, nil
+}
+
+// openCodePair resolves the cli+provider pair an opencode catalog request
+// names. The two are validated separately so a caller can tell "you asked for
+// the wrong thing" (400) from "the catalog could not be read" (500).
+func (s *Server) openCodePair(r *http.Request) (*config.CLI, *config.Provider, error) {
 	q := r.URL.Query()
 	cli := s.cfg().CLIByName(strings.TrimSpace(q.Get("cli")))
 	if cli == nil || !cli.IsOpenCode() {
-		writeErr(w, http.StatusBadRequest, "an opencode kind cli is required")
-		return
+		return nil, nil, errors.New("an opencode kind cli is required")
 	}
 	prov := s.cfg().ProviderByName(strings.TrimSpace(q.Get("provider")))
 	if prov == nil || !prov.IsOpenCode() {
-		writeErr(w, http.StatusBadRequest, "an opencode kind provider is required")
-		return
+		return nil, nil, errors.New("an opencode kind provider is required")
 	}
-	key := cli.Name + "\x00" + prov.Name
-	s.variantsMu.Lock()
-	defer s.variantsMu.Unlock()
-	if e, ok := s.variantsCache[key]; ok && time.Since(e.ts) < variantsTTL && q.Get("fresh") != "1" {
-		writeJSON(w, http.StatusOK, map[string]any{"models": e.data})
-		return
+	return cli, prov, nil
+}
+
+// catalogForRequest is openCodePair plus the memoized read, mapping the two
+// failure kinds onto their status codes.
+func (s *Server) catalogForRequest(w http.ResponseWriter, r *http.Request) *opencodehist.Catalog {
+	cli, prov, err := s.openCodePair(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return nil
 	}
-	data, err := opencodehist.ModelVariants(cli.Path, prov.Name)
+	cat, err := s.opencodeCatalog(cli, prov, r.URL.Query().Get("fresh") == "1")
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
+		return nil
+	}
+	return cat
+}
+
+// handleOpenCodeModels serves a provider's runtime model catalog: the ids
+// cc-webui must address opencode with, plus their declared input modalities.
+//
+// This is why an opencode provider's `models:` in config.yaml is left empty.
+// The usable set is decided by the CLI's own registry and moves on its own —
+// opencode adds and retires models, and the account's plan changes which ones
+// answer — so a config-declared list would be a snapshot that goes stale on
+// its own. An empty list is not "no models": modelKnown checks the catalog
+// instead, and a catalog that cannot be read skips the check rather than
+// blocking session creation (the CLI reports a bad model itself, on turn one).
+func (s *Server) handleOpenCodeModels(w http.ResponseWriter, r *http.Request) {
+	cat := s.catalogForRequest(w, r)
+	if cat == nil {
 		return
 	}
-	s.variantsCache[key] = variantsEntry{ts: time.Now(), data: data}
-	writeJSON(w, http.StatusOK, map[string]any{"models": data})
+	models := make([]config.Model, 0, len(cat.Models))
+	for _, m := range cat.Models {
+		models = append(models, config.Model{Name: m.ID, Input: m.Input})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// handleOpenCodeModelVariants reports the --variant (reasoning effort) keys
+// opencode accepts per model of one provider. The effort dropdowns query this
+// so an opencode session only ever offers the variant keys its model really
+// supports.
+//
+// It reads the same memo as /api/opencode-models — both answers come from one
+// `opencode models --verbose` call, so opening a session costs no extra CLI
+// run for the effort keys.
+func (s *Server) handleOpenCodeModelVariants(w http.ResponseWriter, r *http.Request) {
+	cat := s.catalogForRequest(w, r)
+	if cat == nil {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": cat.Variants})
 }
 
 // handleOpenCodeSessions lists sessions from the opencode engine's own store,
@@ -1783,17 +1917,21 @@ func (s *Server) handleMcodeModels(w http.ResponseWriter, r *http.Request) {
 
 // modelKnown reports whether a model id is selectable on this provider.
 //
-// claude and opencode providers declare their models in config.yaml, so
-// membership in that list is the whole answer. mcode and qoder are different:
-// their usable set is resolved at run time by the CLI (mcode from its own
-// catalog, qoder from `qoderclicn --list-models`) and is deliberately NOT
-// written into config — it would go stale on the next CLI update or account
-// change — so a config-declared list is normally empty and membership would
-// reject every real model. Those models are checked against the CLI's own list
-// instead; when that list cannot be read (CLI not installed, not logged in) the
-// check is skipped rather than blocking a session — a bad model name surfaces
-// immediately as the CLI's own error on the first turn, which is a better
-// failure than refusing to create the session at all.
+// Only the claude engine declares its models in config.yaml, so membership in
+// that list is the whole answer there. The other three are different: their
+// usable set is resolved at run time by the CLI (mcode from its own catalog,
+// qoder from `qoderclicn --list-models`, opencode from
+// `opencode models <provider> --verbose`) and is deliberately NOT written into
+// config — it would go stale on the next CLI update, registry refresh or
+// account change — so a config-declared list is normally empty and membership
+// would reject every real model. Those models are checked against the CLI's
+// own list instead; when that list cannot be read (CLI not installed, not
+// logged in) the check is skipped rather than blocking a session — a bad
+// model name surfaces immediately as the CLI's own error on the first turn,
+// which is a better failure than refusing to create the session at all.
+//
+// A config-declared list still wins where one exists, so an existing config
+// keeps working unchanged while it is being migrated.
 func (s *Server) modelKnown(cli *config.CLI, prov *config.Provider, model string) bool {
 	if prov.ModelByName(model) != nil {
 		return true
@@ -1802,6 +1940,15 @@ func (s *Server) modelKnown(cli *config.CLI, prov *config.Provider, model string
 		return false
 	}
 	switch {
+	case cli.IsOpenCode():
+		cat, err := s.opencodeCatalog(cli, prov, false)
+		if err != nil {
+			log.Printf("opencode model catalog unavailable, skipping model check for %q: %v", model, err)
+			return true
+		}
+		// The catalog was readable, so an unknown id is a real "this model
+		// does not exist" rather than "we cannot tell".
+		return cat.Find(model)
 	case cli.IsMcode():
 		bare := mcodehist.BareModelID(model)
 		cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(model, prov.Name))

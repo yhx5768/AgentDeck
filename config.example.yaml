@@ -27,9 +27,10 @@ default_cwd: "~"
 #                 kind: mcode 的凭据走 mcode 自己的登录态，env 同样不生效；
 #                 kind: qoder 的凭据走 `qoderclicn login` 的登录态，env 不生效）
 #   providers[].models[] - 该后端可选的模型（每个模型可带自己的 env）。
-#                 kind: mcode / qoder 的这一层可以留空：可用模型是动态的，
-#                 前端下拉由服务端读 CLI 自己那份清单（mcode 读
-#                 ~/.minimax/config.yaml 经 /api/mcode-models；qoder 跑
+#                 kind: opencode / mcode / qoder 的这一层可以留空：可用模型是
+#                 动态的，前端下拉由服务端读 CLI 自己那份清单（opencode 跑
+#                 `opencode models <provider> --verbose` 经 /api/opencode-models；
+#                 mcode 读 ~/.minimax/config.yaml 经 /api/mcode-models；qoder 跑
 #                 `qoderclicn --list-models` 经 /api/qoder-models），
 #                 写死在这里只会过期。
 # 生效 env：cli.env → provider.env → model.env（后者覆盖前者）
@@ -105,17 +106,20 @@ providers:
     models:
       - name: "MiniMax-M3[1m]"
 
-  # opencode 引擎镜像示例：provider 名必须等于 opencode CLI 的 providerID
-  # （`opencode models` 可查全量），model 名 = modelID，运行时拼成
-  # `opencode run -m <provider>/<model>`。env 置空——凭据在 opencode 自己的
+  # opencode 引擎示例：provider 名必须等于 opencode CLI 的 providerID
+  # （`opencode models` 可查全量）。env 置空——凭据在 opencode 自己的
   # auth.json。本组 provider 只能配 kind: opencode 的 cli，勿与 claude/ducc
   # 混选（env 为空会直连官方端点报模型未知）。
+  #
+  # models 留空：可用模型由 opencode 的注册表决定，服务端跑
+  # `opencode models <provider> --verbose` 读出来经 /api/opencode-models 下发，
+  # 写死只会过期（模型上下线、套餐变化都由上游决定）。留空不是"没有模型"：
+  # 模型校验改查那份目录，新会话默认用清单里的第一个。
+  # 想手工确认当前清单：`opencode models <provider> --refresh`。
   - name: "kimi-for-coding"
     kind: "opencode"
     env: {}
-    models:
-      - name: "k3"
-      - name: "k3-256k"
+    models: []
 
   # mcode 引擎示例：provider 名只需在 cc-webui 内唯一，不必等于 mcode 自己的
   # provider id（后者由服务端从 mcode 配置里解析，模型下拉会自动带上

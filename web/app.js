@@ -117,6 +117,7 @@ const state = {
   // opencode token 级流式：当前累积中的 part 气泡（按 partID 归属）
   ocPartID: '', ocBuf: '', ocBubble: null,
   ocVariants: {},     // "cli/provider" -> {ts, data:{model:[--variant 键]}|null}（带 TTL，见 ocVariantsFor）
+  ocModels: {},       // "cli/provider" -> {ts, data:{models:[{name,input}]}|null}（带 TTL，见 ocModelsFor）
   mcodeCatalog: {},   // "cli/provider" -> {ts, data:{provider_id,models:[…],default_model}|null}（带 TTL，见 mcodeCatalogFor）
   qoderCatalog: {},   // "cli/provider" -> {ts, data:{models:[…],efforts:[…]}|null}（带 TTL，见 qoderCatalogFor）
   nearBottom: true,
@@ -1646,13 +1647,29 @@ function syncMenuForEngine(s) {
 function applyAttachGate() {
   if (!state.current) return;
   const prov = state.providers.find((p) => p.name === state.current.provider);
-  const m = providerModels(state.current.provider).find((x) => x.name === state.current.model_override);
-  const allow = !!(prov && m);
-  const btn = $('#btn-attach');
-  btn.disabled = !allow || $('#input').disabled;
-  btn.title = allow
-    ? '添加图片或文件（可粘贴/拖拽）'
-    : '当前模型未声明能力；如需附件请检查模型配置';
+  // opencode 的模型列表在 CLI 目录里，config 是空的，所以判定也得走目录。
+  // 先用已缓存的（模型下拉刚拉过，命中率高）同步判一次；没命中再异步拉，拉到
+  // 后回调里重判——否则首屏在目录回来之前按钮一直是禁用的。
+  const cached = ocModelsCached(state.current.cli, state.current.provider);
+  const gate = (models) => {
+    const m = models.find((x) => x.name === state.current.model_override);
+    const allow = !!(prov && m);
+    const btn = $('#btn-attach');
+    btn.disabled = !allow || $('#input').disabled;
+    btn.title = allow
+      ? '添加图片或文件（可粘贴/拖拽）'
+      : '当前模型未声明能力；如需附件请检查模型配置';
+  };
+  gate(cached.length ? cached : providerModels(state.current.provider));
+  if (!cached.length && provKind(state.current.provider) === 'opencode' && state.current.cli) {
+    const cli = state.current.cli;
+    const provider = state.current.provider;
+    ocModelsFor(cli, provider).then((cat) => {
+      // 期间可能已经切了会话/provider，判定必须落在当前这一组上。
+      if (!state.current || state.current.cli !== cli || state.current.provider !== provider) return;
+      gate(Array.isArray(cat && cat.models) && cat.models.length ? cat.models : providerModels(provider));
+    });
+  }
 }
 
 function fillSelect(sel, items, value, formatter) {
@@ -1685,10 +1702,10 @@ function fillCLISelect(sel, value, kind) {
 }
 
 // provider 的 models 一律经此取，永远返回数组。服务端已保证空列表序列化成
-// [] 而非 null，但前端不能依赖这一点：mcode 的 provider 正常就是 models 为空
-// （模型由 CLI 运行时解析、经 /api/mcode-models 取），一旦某条路径拿到 null，
-// `prov.models[0]` 会抛 TypeError 并中断 openSession 的后续渲染——表现为整个
-// 对话区空白，连刚发的 user prompt 都不显示。
+// [] 而非 null，但前端不能依赖这一点：opencode / mcode / qoder 的 provider
+// 正常就是 models 为空（模型由 CLI 运行时解析、经 /api/opencode-models 等取），
+// 一旦某条路径拿到 null，`prov.models[0]` 会抛 TypeError 并中断 openSession
+// 的后续渲染——表现为整个对话区空白，连刚发的 user prompt 都不显示。
 function providerModels(providerName) {
   const p = state.providers.find((x) => x.name === providerName);
   return (p && Array.isArray(p.models)) ? p.models : [];
@@ -1832,6 +1849,35 @@ function mcodeEffortsFor(catalog, providerName, modelName) {
   return (m && m.efforts) || [];
 }
 
+// ---- opencode 模型目录 ----
+// opencode 的可用模型不在 config 里静态声明，而是 CLI 自己的注册表
+// （`opencode models <provider> --verbose`）：模型上下线、套餐变化都由上游决定，
+// 写死必然过期。下拉改取这份目录（见 ocModelsFor），effort 下拉取同一份目录里的
+// variants（ocVariantsFor）——服务端两个端点共用一个 memo，所以一次拉取两样都有。
+// 缓存策略与 mcode / qoder 目录一致（10 分钟 TTL）。
+const OC_MODELS_TTL = 10 * 60 * 1000;
+async function ocModelsFor(cliName, providerName) {
+  const key = `${cliName}/${providerName}`;
+  const ent = state.ocModels[key];
+  if (ent && Date.now() - ent.ts < OC_MODELS_TTL) return ent.data;
+  let data = null;
+  try {
+    data = await api(`/api/opencode-models?cli=${encodeURIComponent(cliName)}&provider=${encodeURIComponent(providerName)}&fresh=1`);
+  } catch (_) {
+    // 目录读不到 = CLI 没装/没登录或 providerID 不对。保持 null，让调用方退回
+    // config 的静态列表（旧配置还没清空 models 时仍然可用），而不是显示空下拉。
+  }
+  state.ocModels[key] = { ts: Date.now(), data: data || null };
+  return data;
+}
+
+// 同步取已缓存的 opencode 模型列表（不触发请求）：applyAttachGate 这类需要在
+// 当前调用栈里立刻判定的路径用。缓存未命中返回 []，调用方据此退回 config。
+function ocModelsCached(cliName, providerName) {
+  const ent = state.ocModels[`${cliName}/${providerName}`];
+  return (ent && ent.data && Array.isArray(ent.data.models)) ? ent.data.models : [];
+}
+
 // ---- qoder 模型目录 ----
 // qoder（Qoder CLI CN）的可用模型由账号决定，CLI 自己知道：`qoderclicn
 // --list-models`。写死进 config.yaml 必然过期（换套餐/CLI 升级就变），所以模型
@@ -1858,7 +1904,8 @@ function qoderEfforts(catalog) {
   return (catalog && Array.isArray(catalog.efforts)) ? catalog.efforts : [];
 }
 
-// 某 provider 的模型列表：mcode / qoder 走 CLI 侧目录，其余走 config 静态列表。
+// 某 provider 的模型列表：opencode / mcode / qoder 走 CLI 侧目录，其余走 config
+// 静态列表。
 //
 // mcode 的模型名带 provider 前缀（"<providerId>/<modelId>"）而不是裸 id：
 // runner 的 mcodeModelID 见到斜杠就原样透传，spawn 的 --model 才是 mcode
@@ -1866,6 +1913,12 @@ function qoderEfforts(catalog) {
 // provider 名——两者不必同名（config 里的 provider 名只需在本项目内唯一）。
 async function modelsForProvider(providerName, cliName) {
   const kind = provKind(providerName);
+  if (kind === 'opencode' && cliName) {
+    const cat = await ocModelsFor(cliName, providerName);
+    if (cat && Array.isArray(cat.models) && cat.models.length) {
+      return cat.models;
+    }
+  }
   if (kind === 'mcode' && cliName) {
     const cat = await mcodeCatalogFor(cliName, providerName);
     if (cat && Array.isArray(cat.models) && cat.models.length) {
@@ -1895,7 +1948,10 @@ async function refreshSessionEffort() {
   const sheet = $('#sheet-effort');
   const sheetWrap = sheet.closest('label');
   if (engine === 'opencode') {
-    const ms = providerModels(s.provider);
+    // 模型列表来自 CLI 目录而非 config（见 ocModelsFor），所以「默认 = 首个模型」
+    // 也得从目录取，否则 model_override 为空时拿不到任何模型名，effort 下拉会
+    // 因为无从判断变体而整个隐藏。
+    const ms = await modelsForProvider(s.provider, s.cli);
     const model = s.model_override || (ms[0] && ms[0].name) || '';
     const keys = model
       ? variantKeysFor(await ocVariantsFor(s.cli, s.provider), s.provider, model)
@@ -1991,7 +2047,7 @@ function renderModelList(sel, models, value, defaultLabel) {
 // provider 时，先发的请求后到也不能把下拉覆盖成上一个 provider 的模型。
 function fillModelSelect(sel, providerName, value, cliName, defaultLabel) {
   const kind = provKind(providerName);
-  if ((kind === 'mcode' || kind === 'qoder') && cliName) {
+  if ((kind === 'opencode' || kind === 'mcode' || kind === 'qoder') && cliName) {
     sel.dataset.provider = providerName;
     modelsForProvider(providerName, cliName).then((models) => {
       if (sel.dataset.provider !== providerName) return;
@@ -2014,6 +2070,7 @@ async function refreshProfiles() {
     state.clis = clis;
     state.providers = providers;
     state.ocVariants = {}; // 模型列表变了 → variants 映射可能过期，重建下拉时重拉
+    state.ocModels = {};   // 同理：opencode 目录按 cli/provider 缓存，改名/新增后失效
     state.mcodeCatalog = {}; // 同理：mcode provider 改名/新增后旧目录对不上
     state.qoderCatalog = {}; // 同理：qoder 目录按 cli/provider 缓存，改名后失效
     rerenderProfileSelects();
@@ -5548,10 +5605,10 @@ function dropNsImages(msg) {
   alert(msg);
 }
 function renderModelOptions(sel, providerName) {
-  // mcode / qoder 的模型不在 config 里静态声明（可用集合由 CLI 自己决定），
-  // 异步拉目录后重建；dataset.provider 防止连点切换时旧请求覆盖新结果。
+  // opencode / mcode / qoder 的模型不在 config 里静态声明（可用集合由 CLI 自己
+  // 决定），异步拉目录后重建；dataset.provider 防止连点切换时旧请求覆盖新结果。
   const kind = provKind(providerName);
-  if (kind === 'mcode' || kind === 'qoder') {
+  if (kind === 'opencode' || kind === 'mcode' || kind === 'qoder') {
     const cliName = $('#ns-cli').value;
     sel.dataset.provider = providerName;
     modelsForProvider(providerName, cliName).then((models) => {
