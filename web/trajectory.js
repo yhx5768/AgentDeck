@@ -422,7 +422,7 @@ function trajDetailSummary(r) {
       sec.innerHTML = '<div class="traj-sec-label">回复</div>';
       const mdEl = document.createElement('div');
       mdEl.className = 'traj-md';
-      mdEl.innerHTML = md(r.text);
+      mdEl.innerHTML = md(r.text, { artifacts: false });
       sec.appendChild(mdEl);
       det.appendChild(sec);
     }
@@ -439,7 +439,7 @@ function trajDetailSummary(r) {
     sec.appendChild(label);
     const mdEl = document.createElement('div');
     mdEl.className = 'traj-md';
-    mdEl.innerHTML = md(r.body || ''); // body 走 marked + DOMPurify 已在 md() 里处理
+    mdEl.innerHTML = md(r.body || '', { artifacts: false }); // body 走 marked + DOMPurify 已在 md() 里处理
     sec.appendChild(mdEl);
     det.appendChild(sec);
   } else if (r.kind === 'system' && r.detail) {
@@ -468,7 +468,7 @@ function trajDetailPreview(r) {
       sec.innerHTML = '<div class="traj-sec-label">回复</div>';
       const mdEl = document.createElement('div');
       mdEl.className = 'traj-md';
-      mdEl.innerHTML = md(r.text);
+      mdEl.innerHTML = md(r.text, { artifacts: false });
       sec.appendChild(mdEl);
       det.appendChild(sec);
     } else {
@@ -483,7 +483,7 @@ function trajDetailPreview(r) {
     sec.innerHTML = '<div class="traj-sec-label">内容</div>';
     const mdEl = document.createElement('div');
     mdEl.className = 'traj-md';
-    mdEl.innerHTML = md(r.text || '');
+    mdEl.innerHTML = md(r.text || '', { artifacts: false });
     sec.appendChild(mdEl);
     det.appendChild(sec);
   } else {
