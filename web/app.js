@@ -59,7 +59,7 @@ function guardSingleTilde(text) {
   }
   return parts.join('');
 }
-const md = (text) => {
+const md = (text, opts) => {
   const tpl = document.createElement('template');
   tpl.innerHTML = DOMPurify.sanitize(marked.parse(guardSingleTilde(text || '')));
   fixCjkAutolink(tpl);
@@ -78,7 +78,11 @@ const md = (text) => {
   });
   // 代码块：包一层 .code-block 容器，右上角悬浮复制按钮（点击走全局委托）。
   // 按钮放在 pre 外面而不是里面：pre 横向滚动时按钮不跟着内容跑。
+  // ```html 围栏额外升级成沙箱渲染容器（默认仍显示代码，点「渲染」才挂 iframe）。
   tpl.content.querySelectorAll('pre').forEach((pre) => {
+    const code = pre.querySelector('code');
+    const lang = code ? (code.className.match(/language-([\w+-]+)/) || [])[1] || '' : '';
+    const isArtifact = !opts || opts.artifacts !== false;
     const wrap = document.createElement('div');
     wrap.className = 'code-block';
     const btn = document.createElement('button');
@@ -87,10 +91,140 @@ const md = (text) => {
     btn.title = '复制代码';
     btn.innerHTML = CODE_COPY_ICON;
     pre.replaceWith(wrap);
-    wrap.append(btn, pre);
+    if (!isArtifact || lang.toLowerCase() !== 'html') {
+      wrap.append(btn, pre);
+      return;
+    }
+    wrap.classList.add('code-block-artifact');
+    const art = document.createElement('div');
+    art.className = 'html-artifact';
+    const bar = document.createElement('div');
+    bar.className = 'html-artifact-bar';
+    const tag = document.createElement('span');
+    tag.className = 'html-artifact-tag';
+    tag.textContent = 'HTML';
+    const toggle = document.createElement('button');
+    toggle.className = 'html-artifact-toggle';
+    toggle.type = 'button';
+    toggle.textContent = '渲染';
+    toggle.title = '在沙箱 iframe 里渲染这段 HTML';
+    const box = document.createElement('div');
+    box.className = 'html-frame-box';
+    bar.append(tag, toggle);
+    art.append(bar, box, pre);
+    wrap.append(btn, art);
   });
   return tpl.innerHTML;
 };
+
+// ---------- HTML 沙箱渲染 ----------
+// 模型用 ```html 围栏交一整页文档/图表/可视化。默认仍按代码块显示，
+// 用户点「渲染」才挂一个 iframe —— 这么设计有两个原因：
+//   1. 模型只是想举一段 HTML 例子时不该被自动展开；
+//   2. md() 在流式时每帧重跑（livePaint），自动建 iframe 会每帧重建、
+//      脚本状态全丢还会闪屏。点开才建则天然躲开。
+// 安全边界：sandbox 只给 allow-scripts，不给 allow-same-origin —— 页面拿到
+// opaque origin，碰不到我们的 localStorage / DOM / 带 cookie 的同源接口。
+// 反过来绝不能为了方便补上 allow-same-origin：MDN 明确警告同源文档同时拿到
+// allow-scripts + allow-same-origin 时能自己摘掉 sandbox 属性，等于没有沙箱。
+// 由于 opaque origin 的 origin 是 "null"，postMessage 只能发 '*'，所以宿主侧
+// 用「消息来源是否等于自己挂载的 frame 的 contentWindow」来认领发送方。
+const HTML_FRAME_MIN_H = 48;
+const HTML_FRAME_MAX_H = 20000;
+const htmlFrames = new Set();
+
+// 页面内 bootstrap：插在 <head> 最前，页面自己的样式随后才加载（可覆盖主题）。
+// 负责三件事：上报真实高度、把 a[href] 的 http(s) 点击转交宿主打开、接收主题切换。
+const HTML_FRAME_BOOTSTRAP =
+  '(function(){' +
+  'var last=-1;' +
+  'function post(m){try{parent.postMessage(m,"*");}catch(e){}}' +
+  'function report(){' +
+  'var d=document,h=Math.max(d.body?d.body.scrollHeight:0,d.documentElement.scrollHeight);' +
+  'h=Math.max(' + HTML_FRAME_MIN_H + ',Math.min(' + HTML_FRAME_MAX_H + ',Math.ceil(h)));' +
+  'if(h!==last){last=h;post({type:"ccgw:htmlframe:size",height:h});}' +
+  '}' +
+  // sandbox 不给 allow-popups，target=_blank 会静默失败，所以链接一律转交宿主
+  'document.addEventListener("click",function(e){' +
+  'var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a)return;' +
+  'var u;try{u=new URL(a.getAttribute("href"),document.baseURI);}catch(x){return;}' +
+  'if(u.protocol!=="http:"&&u.protocol!=="https:")return;' +
+  'e.preventDefault();post({type:"ccgw:htmlframe:link",url:u.href});},true);' +
+  'if(window.ResizeObserver){try{new ResizeObserver(report).observe(document.documentElement);}catch(x){}}' +
+  'window.addEventListener("resize",report);' +
+  'window.addEventListener("load",report);' +
+  'report();' +
+  'window.addEventListener("message",function(e){' +
+  'if(e.source!==parent)return;var d=e.data;' +
+  'if(!d||d.type!=="ccgw:htmlframe:theme"||typeof d.css!=="string")return;' +
+  'var el=document.getElementById("__ccgw_theme");if(!el){el=document.createElement("style");' +
+  'el.id="__ccgw_theme";document.head.appendChild(el);}' +
+  'el.textContent=d.css;last=-1;report();});' +
+  '})()';
+
+// 把 app 当前主题的取值导出成页面能用的 CSS 变量，页面靠这些跟明暗主题对齐。
+function htmlFrameThemeCss() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (n) => cs.getPropertyValue(n).trim();
+  return ':root{color-scheme:' +
+    (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light') +
+    ';--background:' + v('--bg') + ';--surface:' + v('--bg2') +
+    ';--border:' + v('--border') + ';--foreground:' + v('--fg') +
+    ';--muted:' + v('--dim') + ';--accent:' + v('--accent') +
+    ';--code-bg:' + v('--code-bg') + '}';
+}
+
+function buildHtmlFrameDoc(src) {
+  // </script> 写成拼接形式：本文件是独立 <script src> 加载的，但 srcdoc 里
+  // 这段 bootstrap 会被当作真实 <script> 解析，闭合标签不能提前出现。
+  const closeScript = '<' + '/script>';
+  return '<!doctype html><html><head><meta charset="utf-8">' +
+    '<style id="__ccgw_theme">' + htmlFrameThemeCss() + '</style>' +
+    '<script>' + HTML_FRAME_BOOTSTRAP + closeScript +
+    '</head><body>' + src + '</body></html>';
+}
+
+function mountHtmlFrame(wrap) {
+  const pre = wrap.querySelector('pre');
+  const box = wrap.querySelector('.html-frame-box');
+  if (!pre || !box) return;
+  const src = pre.textContent || '';
+  if (!src.trim()) return;
+  box.textContent = '';
+  const frame = document.createElement('iframe');
+  frame.className = 'html-frame';
+  // 只给 allow-scripts。给 allow-same-origin 等于把我们的 origin 交出去（见上）。
+  frame.setAttribute('sandbox', 'allow-scripts');
+  frame.setAttribute('referrerpolicy', 'no-referrer');
+  frame.setAttribute('title', 'HTML 沙箱渲染');
+  frame.style.height = HTML_FRAME_MIN_H + 'px';
+  frame.srcdoc = buildHtmlFrameDoc(src);
+  box.appendChild(frame);
+  htmlFrames.add(frame);
+  wrap.classList.add('rendered');
+  const toggle = wrap.querySelector('.html-artifact-toggle');
+  if (toggle) toggle.textContent = '源码';
+}
+
+function unmountHtmlFrame(wrap) {
+  const box = wrap.querySelector('.html-frame-box');
+  if (!box) return;
+  // 拆掉而不是隐藏：iframe 常驻会一直占着内存和 rAF，页面里的定时器也不停。
+  box.querySelectorAll('iframe').forEach((f) => htmlFrames.delete(f));
+  box.textContent = '';
+  wrap.classList.remove('rendered');
+  const toggle = wrap.querySelector('.html-artifact-toggle');
+  if (toggle) toggle.textContent = '渲染';
+}
+
+function syncHtmlFrameThemes() {
+  const css = htmlFrameThemeCss();
+  for (const frame of [...htmlFrames]) {
+    if (!frame.isConnected) { htmlFrames.delete(frame); continue; }
+    try { frame.contentWindow.postMessage({ type: 'ccgw:htmlframe:theme', css }, '*'); } catch (_) {}
+  }
+}
+
 
 const $ = (sel) => document.querySelector(sel);
 const state = {
@@ -165,6 +299,9 @@ function applyTheme(t, persist) {
   const btn = $('#btn-theme');
   if (btn) btn.innerHTML = `<i data-lucide="${t === 'dark' ? 'sun' : 'moon'}"></i>`;
   renderIcons(btn);
+  // 已挂载的沙箱 iframe 是 opaque origin，变量得由宿主推过去（重建 iframe 会
+  // 丢掉页面内状态，所以不拆了重挂）
+  syncHtmlFrameThemes();
   if (persist) localStorage.setItem('cc-webui-theme', t);
 }
 $('#btn-theme').onclick = () => {
@@ -3619,7 +3756,40 @@ document.addEventListener('click', async (e) => {
     flashCheck(btn, btn.innerHTML);
   } catch (_) {}
 });
+
+// HTML 沙箱渲染的开关按钮（md() 注入）。已渲染则拆掉 iframe 回到源码，
+// 未渲染则挂 iframe —— 切换即销毁/重建，不留上一页面的脚本和定时器。
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.html-artifact-toggle');
+  if (!btn) return;
+  const wrap = btn.closest('.code-block-artifact');
+  if (!wrap) return;
+  if (wrap.classList.contains('rendered')) unmountHtmlFrame(wrap);
+  else mountHtmlFrame(wrap);
+});
+
+// 沙箱页面的 postMessage 入口。opaque origin 只能发 '*'，所以唯一的信任依据是
+// 「发送方是不是某个我们自己挂载的 frame」——别的窗口冒名发什么都不认。
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (!d || typeof d !== 'object') return;
+  let frame = null;
+  for (const f of htmlFrames) {
+    if (e.source === f.contentWindow) { frame = f; break; }
+  }
+  if (!frame) return;
+  if (d.type === 'ccgw:htmlframe:size') {
+    const h = Number(d.height);
+    if (!Number.isFinite(h)) return;
+    frame.style.height = Math.max(HTML_FRAME_MIN_H, Math.min(HTML_FRAME_MAX_H, Math.ceil(h))) + 'px';
+  } else if (d.type === 'ccgw:htmlframe:link') {
+    // frame 侧已经按协议筛过，这里再挡一道，只放 http(s)。
+    if (/^https?:\/\//i.test(d.url || '')) window.open(d.url, '_blank', 'noopener,noreferrer');
+  }
+});
+
 $('#fv-close').onclick = closeFileViewer;
+
 $('#fv-copy').onclick = async (e) => {
   const btn = e.currentTarget;
   try {
