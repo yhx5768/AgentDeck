@@ -97,6 +97,13 @@ type sessionRuntime struct {
 	streamSeq     int64         // counter for synthetic (non-persisted) seqs
 	streamSeqBase int64         // base: max(persisted seq) + 1, set lazily
 	resident      *residentProc // live resident process (nil in one-shot mode)
+
+	// Session Goal bookkeeping (see goal.go). goalAwait marks the injected
+	// evaluation turn; goalVerdict/goalTail hold what the model said about it.
+	// Guarded by mu like everything else here.
+	goalAwait   bool
+	goalVerdict string
+	goalTail    string
 }
 
 // Manager spawns claude processes and fans out stream events.
@@ -263,6 +270,9 @@ func (m *Manager) Subscribe(sessionID string) (<-chan *store.Event, func()) {
 // up in cc-webui after a reconnect.
 func (m *Manager) emit(sessionID, kind string, data any) {
 	if kind == "stream" {
+		// Stream events are never persisted, so the goal loop reads its verdict
+		// off this path instead of the event log.
+		m.noteGoalOutput(sessionID, assistantTextOf(data))
 		m.broadcast(sessionID, kind, data)
 		return
 	}
@@ -364,6 +374,13 @@ func (m *Manager) setIdle(sessionID string, lastErr string) {
 			log.Printf("set unread for %s: %v", sessionID, err)
 		}
 	}
+	// A Session Goal feeds itself another turn here. Only on a clean end: an
+	// error or an interrupt means the round produced nothing to judge, and
+	// auto-continuing would paper over a broken turn (or race the user's own
+	// stop). advanceGoal is a no-op without an active goal.
+	if lastErr == "" {
+		go m.advanceGoal(sessionID)
+	}
 }
 
 // Enqueue queues a user message and starts the worker if needed.
@@ -421,6 +438,9 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 // opencode to stop the turn first (POST /api/session/{id}/interrupt), then
 // cancel as the backstop. Every other engine keeps the process-kill path.
 func (m *Manager) Stop(sessionID string) {
+	// Stopping a turn also stops the automation behind it: leaving the goal
+	// active would queue another round the moment the interrupted turn ends.
+	m.StopGoal(sessionID)
 	if m.interruptOpenCodeTurn(sessionID) {
 		return
 	}
@@ -446,6 +466,7 @@ func (m *Manager) work(sessionID string) {
 		r.queue = r.queue[1:]
 		r.notifyStatus()
 		r.mu.Unlock()
+		m.resetGoalTurn(sessionID)
 		// Resident sessions run turns on their long-lived streaming-input
 		// process; everyone else spawns a one-shot process per turn.
 		if sess := m.st.Get(sessionID); sess != nil && sess.Resident {

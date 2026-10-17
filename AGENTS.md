@@ -190,6 +190,20 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **跳转要能等**：`openSession`/`openGroup` 里的「补未决卡」是 fire-and-forget，所以 `focusAskCard` 轮询等卡片出现再闪烁+聚焦，不能同步取。
 - 群成员的卡只在群视图里，转发事件带 `group_id`（`forwardGroupPermission`）才能「去回答」时回到群视图而不是跳去成员影子会话。
 
+### 12. Session Goals（自动续跑到达成条件）
+
+会话上可挂一条「一直干到这条条件成立为止」的契约。每轮**干净**结束后，runner 向模型注入一轮自评；模型判定未达成就自动再排一轮，直到达标或触发熔断。实现见 `internal/runner/goal.go`，存储挂在 `store.Session.Goal`。
+
+- **判定者是模型自己**，没有独立裁判——这是刻意的取舍。代价是模型可能把半成品说成完成，所以条件写得越可验证越稳（`go test ./... 全绿 且 ./build 退出码为 0` 这种，远好过「功能完成」）。熔断的作用就是让一次误判最多浪费一轮。
+- **熔断**：`max_turns`（默认 20，上限 200）+ `max_hours`（默认 4h，上限 48h），两者都必须有值——一个永远达不成的目标若无上限会无限自转。触发后落 `exhausted` 并记 `last_reason`，UI 直接显示。
+- **判定信号**是模型正文最后一行里的 `<!--goal:met-->` / `<!--goal:unmet ... -->`。注释形式是刻意的：DOMPurify 会把它整条剥掉（已实测），用户看不见，而服务端按纯文本就能解析。
+- **marker 从广播流读，不从事件日志读**：stream 事件不落盘（见 `emit`），所以 `emit` 里顺手调 `noteGoalOutput`，在 runtime 上留一条 256 字节的滚动尾巴——**marker 会被流式 delta 切开**，只扫最后一块会漏。
+- **`setIdle` 里起 `go m.advanceGoal(...)`，且只在 `lastErr == ""` 时起**：出错或被打断的那轮没有可判定的产物，自动续跑只会掩盖问题、或者跟用户自己的 stop 抢。
+- **坑（踩过）**：`advanceGoal` 判断「用户是否排了消息」必须看 `len(r.queue)`，**不能用 `Busy()`**。`setIdle` 是 `work()` 在 worker 内部调的，此刻 `r.working` 仍为 true，`Busy()` 恒为真，会让整个功能静默失效——单测全绿也照样漏，只有真跑一轮才暴露。
+- **终止语义**：用户按 stop（`StopGoal`）→ 落 `stopped`，因为被打断的那轮结束瞬间会再触发一次 `advanceGoal`，不主动停就会自己复活；rewind（`InvalidateGoal`）→ 直接清空，因为回滚掉的正是目标在追的那部分工作，旧目标对着回滚后的 transcript 没有意义。
+- **不做的**：不在客户端做任何判定逻辑，目标状态一律回读服务端（`applySession` + `renderGoalBar`）。前端和服务端各算一套轮数必然对不上。
+- UI：会话 ⋯ 菜单「自动续跑目标…」设目标，当前会话 composer 顶部一条 `.goal-bar` 显示条件/轮次/终态并提供停止。
+
 ## 后端包职责（`internal/`）
 
 | 包 | 职责 | 关键点 |
@@ -217,7 +231,7 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
   - **数据面**：`server.sessionView.PendingAsks`（`pendingAsksOf`）与 `server.groupView.PendingAsks`（`groupPendingAsksOf`，额外带 `member_id`/`member_name`——成员影子会话不在侧栏里，跳转得靠群 id）随会话/群列表一起下发，最老的一条在前（最接近超时）。`input["questions"]` 两种形状都要认：claude/qoder 是 JSON 解出来的 `[]any`，opencode 是进程内造的 `[]map[string]any`（`ask_test.go` 守住这条）。**列表空时也返回 `[]` 不是 null**，前端无条件索引。
   - **触发面**：三条源按提问 id 去重（`raiseAskToast` 幂等）——SSE `permission_request`（当前会话/群转发）、`fetchPendingPermissions`（刷新后补卡）、`diffPendingAsks()`（`loadSessions` 5s 轮询 diff，**唯一能看见别的会话在提问的通道**）。`resolvePermissionCard` 立即撤对应浮层，跨会话时由下一轮轮询兜。
   - **呈现面**：`#toast-layer` 顶部居中横幅（iPad 来通知形态，**不是右下角小卡片**——见 §11 踩过的坑），整条可点 = `gotoAsk` 跳到那张卡（跨会话开会话、群卡开群视图，定位靠 `focusAskCard` 轮询等异步补卡出现）。侧栏另有：整行底色脉动 `.session-item.has-ask` + `.dot.ask`（压过 running）+ 行内 `待回答` 标签、工作区栏 `#ws-activity` 的「待回答 N」徽标 + `renderWsPopPending` 列表。**别只做浮层**——人往往在别的标签页/会话，侧栏那一条才是回来第一眼看到的。
-- `style.css` — 全部样式，`[data-theme]` 深浅主题。
+- `style.css` — 全部样式，`[data-theme]` 深浅主题；`.goal-bar` 是 Session Goals 的 composer 顶部条（§12）。
 - `vendor/` — marked / DOMPurify / highlight.js / lucide / 主题 css，均已 vendored。
 - `go:embed all:web` → `fs.Sub(webFS, "web")` → `http.FileServerFS`。
 

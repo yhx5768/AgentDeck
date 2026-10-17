@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -55,9 +56,111 @@ type Session struct {
 	// revisit. Cleared automatically when the user sends a follow-up message,
 	// signalling the revisit happened.
 	Todo      bool      `json:"todo"`
+	// Goal is a session-scoped "keep working until this is true" contract. See
+	// the Goal type. Nil when the session has none. Copied by Get/List so a
+	// caller holding a *Session can never write through to the stored goal.
+	Goal      *Goal     `json:"goal,omitempty"`
 	SortOrder int       `json:"sort_order"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Goal is a "keep turning until X holds" contract on one session.
+//
+// After every clean turn the runner asks the model to judge the condition; a
+// "not met" verdict queues another turn. MaxTurns and MaxHours are the circuit
+// breaker — without them a goal that can never be satisfied would spin forever,
+// so an exhausted goal always stops and says why.
+type Goal struct {
+	// Text is the termination condition, written by the user and judged by the
+	// model. Kept verbatim so the runner can quote it back every round.
+	Text string `json:"text"`
+	// MaxTurns caps continuation rounds; MaxHours caps wall-clock span. Zero
+	// means "no limit of that kind".
+	MaxTurns int     `json:"max_turns"`
+	MaxHours float64 `json:"max_hours"`
+	// Rounds counts continuation rounds already spent.
+	Rounds int `json:"rounds"`
+	// Status: active | met | stopped | exhausted. See the Goal* constants.
+	Status string `json:"status"`
+	// LastReason carries the unmet reason or the stop cause, for the UI.
+	LastReason string    `json:"last_reason,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// Goal statuses.
+const (
+	GoalActive    = "active"    // running; the runner will keep feeding it turns
+	GoalMet       = "met"       // the model reported the condition satisfied
+	GoalStopped   = "stopped"   // the user stopped it
+	GoalExhausted = "exhausted" // circuit breaker fired (rounds or wall clock)
+)
+
+// Circuit-breaker defaults, used when a caller sets none.
+const (
+	DefaultGoalMaxTurns = 20
+	DefaultGoalMaxHours = 4.0
+)
+
+// Validate fills in the default limits and rejects an empty condition.
+func (g *Goal) Validate() error {
+	g.Text = strings.TrimSpace(g.Text)
+	if g.Text == "" {
+		return fmt.Errorf("goal text required")
+	}
+	if g.MaxTurns <= 0 {
+		g.MaxTurns = DefaultGoalMaxTurns
+	}
+	if g.MaxHours <= 0 {
+		g.MaxHours = DefaultGoalMaxHours
+	}
+	if g.Status == "" {
+		g.Status = GoalActive
+	}
+	return nil
+}
+
+// Active reports whether the runner should keep feeding this goal turns.
+func (g *Goal) Active() bool { return g != nil && g.Status == GoalActive }
+
+// Exhausted reports whether the circuit breaker has fired for this goal.
+func (g *Goal) Exhausted(now time.Time) bool {
+	if g == nil {
+		return false
+	}
+	if g.MaxTurns > 0 && g.Rounds >= g.MaxTurns {
+		return true
+	}
+	if g.MaxHours > 0 && !g.CreatedAt.IsZero() &&
+		now.After(g.CreatedAt.Add(time.Duration(g.MaxHours * float64(time.Hour)))) {
+		return true
+	}
+	return false
+}
+
+// StopReason names the limit that fired, for the UI to show.
+func (g *Goal) StopReason(now time.Time) string {
+	if g == nil {
+		return ""
+	}
+	if g.MaxTurns > 0 && g.Rounds >= g.MaxTurns {
+		return fmt.Sprintf("达到最大轮数 %d", g.MaxTurns)
+	}
+	if g.MaxHours > 0 && !g.CreatedAt.IsZero() &&
+		now.After(g.CreatedAt.Add(time.Duration(g.MaxHours * float64(time.Hour)))) {
+		return fmt.Sprintf("超过最长时限 %g 小时", g.MaxHours)
+	}
+	return ""
+}
+
+// cloneGoal deep-copies a goal so stored state can't be aliased out by Get/List.
+func cloneGoal(g *Goal) *Goal {
+	if g == nil {
+		return nil
+	}
+	cp := *g
+	return &cp
 }
 
 // WithClaudeSID returns a Store mutator (for Upsert) that swaps the engine
@@ -152,6 +255,7 @@ func (s *Store) List() []*Session {
 	out := make([]*Session, 0, len(s.sessions))
 	for _, sess := range s.sessions {
 		cp := *sess
+		cp.Goal = cloneGoal(sess.Goal)
 		out = append(out, &cp)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -171,6 +275,7 @@ func (s *Store) Get(id string) *Session {
 	defer s.mu.Unlock()
 	if sess, ok := s.sessions[id]; ok {
 		cp := *sess
+		cp.Goal = cloneGoal(sess.Goal)
 		return &cp
 	}
 	return nil
@@ -227,6 +332,39 @@ func (s *Store) SetFlags(id string, unread, todo *bool) error {
 			cur.Todo = *todo
 		}
 	})
+}
+
+// SetGoal replaces (or clears, when g is nil) a session's goal under lock and
+// rewrites db.json. Like setFlag it leaves UpdatedAt alone: a goal ticking from
+// round to round is internal bookkeeping and must not reorder the session list.
+// A nil / non-active goal is never resurrected, matching setFlag's reasoning.
+func (s *Store) SetGoal(id string, g *Goal) error {
+	return s.setFlag(id, func(cur *Session) {
+		if g == nil {
+			cur.Goal = nil
+			return
+		}
+		cp := *g
+		cur.Goal = &cp
+	})
+}
+
+// MutateGoal applies mutate to the session's current goal under lock and rewrites
+// db.json, returning the updated copy. A no-op when the session is gone or has no
+// goal — the runner uses it to bump Rounds and flip status, and neither should
+// create a goal that was never set.
+func (s *Store) MutateGoal(id string, mutate func(*Goal)) (*Goal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.sessions[id]
+	if !ok || cur.Goal == nil {
+		return nil, nil
+	}
+	cp := *cur.Goal
+	mutate(&cp)
+	cp.UpdatedAt = time.Now()
+	cur.Goal = &cp
+	return &cp, s.saveLocked()
 }
 
 func (s *Store) Delete(id string) error {
