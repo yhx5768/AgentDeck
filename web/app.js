@@ -82,40 +82,61 @@ const md = (text, opts) => {
   tpl.content.querySelectorAll('pre').forEach((pre) => {
     const code = pre.querySelector('code');
     const lang = code ? (code.className.match(/language-([\w+-]+)/) || [])[1] || '' : '';
-    const isArtifact = !opts || opts.artifacts !== false;
-    const wrap = document.createElement('div');
-    wrap.className = 'code-block';
-    const btn = document.createElement('button');
-    btn.className = 'code-copy-btn';
-    btn.type = 'button';
-    btn.title = '复制代码';
-    btn.innerHTML = CODE_COPY_ICON;
-    pre.replaceWith(wrap);
-    if (!isArtifact || lang.toLowerCase() !== 'html') {
-      wrap.append(btn, pre);
-      return;
-    }
-    wrap.classList.add('code-block-artifact');
-    const art = document.createElement('div');
-    art.className = 'html-artifact';
-    const bar = document.createElement('div');
-    bar.className = 'html-artifact-bar';
-    const tag = document.createElement('span');
-    tag.className = 'html-artifact-tag';
-    tag.textContent = 'HTML';
-    const toggle = document.createElement('button');
-    toggle.className = 'html-artifact-toggle';
-    toggle.type = 'button';
-    toggle.textContent = '渲染';
-    toggle.title = '在沙箱 iframe 里渲染这段 HTML';
-    const box = document.createElement('div');
-    box.className = 'html-frame-box';
-    bar.append(tag, toggle);
-    art.append(bar, box, pre);
-    wrap.append(btn, art);
+    const wantArtifact = (!opts || opts.artifacts !== false) && lang.toLowerCase() === 'html';
+    // 先把 pre 从树上摘下来再交给构造器：构造器会把 pre 收进新节点里，
+    // 若此时 pre 还挂在原位，replaceWith 会因为它已无父节点而抛异常。
+    const parent = pre.parentNode;
+    const anchor = pre.nextSibling;
+    parent.removeChild(pre);
+    const node = wantArtifact ? buildHtmlArtifactNode(pre) : buildCodeBlockNode(pre);
+    parent.insertBefore(node, anchor);
   });
   return tpl.innerHTML;
 };
+
+// 普通代码块壳：.code-block 定位复制按钮，按钮放 pre 外面所以横向滚动时不跟内容跑。
+function buildCodeBlockNode(pre) {
+  const wrap = document.createElement('div');
+  wrap.className = 'code-block';
+  const btn = document.createElement('button');
+  btn.className = 'code-copy-btn';
+  btn.type = 'button';
+  btn.title = '复制代码';
+  btn.innerHTML = CODE_COPY_ICON;
+  wrap.append(btn, pre);
+  return wrap;
+}
+
+// 沙箱渲染壳：源码留在 pre 里，点「渲染」才挂 iframe。
+// md() 的 ```html 围栏和 MCP 的 render_html 工具共用这一份 DOM，安全边界
+// （sandbox 不给 allow-same-origin）完全一致。
+function buildHtmlArtifactNode(pre) {
+  const btn = document.createElement('button');
+  btn.className = 'code-copy-btn';
+  btn.type = 'button';
+  btn.title = '复制代码';
+  btn.innerHTML = CODE_COPY_ICON;
+  const toggle = document.createElement('button');
+  toggle.className = 'html-artifact-toggle';
+  toggle.type = 'button';
+  toggle.textContent = '渲染';
+  toggle.title = '在沙箱 iframe 里渲染这段 HTML';
+  const tag = document.createElement('span');
+  tag.className = 'html-artifact-tag';
+  tag.textContent = 'HTML';
+  const bar = document.createElement('div');
+  bar.className = 'html-artifact-bar';
+  bar.append(tag, toggle);
+  const box = document.createElement('div');
+  box.className = 'html-frame-box';
+  const art = document.createElement('div');
+  art.className = 'html-artifact';
+  art.append(bar, box, pre);
+  const wrap = document.createElement('div');
+  wrap.className = 'code-block code-block-artifact';
+  wrap.append(btn, art);
+  return wrap;
+}
 
 // ---------- HTML 沙箱渲染 ----------
 // 模型用 ```html 围栏交一整页文档/图表/可视化。默认仍按代码块显示，
@@ -2857,6 +2878,8 @@ $('#rewind-submit').onclick = async () => {
 
 function toolSummary(input) {
   if (!input || typeof input !== 'object') return '';
+  // MCP render_html：摘要行别把整页 HTML 摊开成一坨 JSON
+  if (typeof input.html === 'string') return `一页 HTML 文档 · ${input.html.length} 字符`;
   if (Array.isArray(input.todos)) {
     const done = input.todos.filter((t) => t && t.status === 'completed').length;
     return `${done}/${input.todos.length} 完成`;
@@ -2924,6 +2947,23 @@ function renderToolUse(block, box, ts, raw) {
 function buildToolView(block, details, body) {
   const input = block.input;
   const name = (block.name || '').toLowerCase();
+  // MCP 的 render_html：工具名是 mcp__<server>__<tool>（stream-json 里就这个形状）。
+  // 工具真被调用时 html 已经完整落定，不像正文会流式重绘，所以直接展开。
+  if (/^mcp__[\w.-]+__render_html$/.test(name) && input && typeof input.html === 'string') {
+    details.classList.add('tool-htmlframe');
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.className = 'language-html';
+    code.textContent = input.html; // textContent：绝不用 innerHTML，模型产物不进我们的 DOM
+    pre.appendChild(code);
+    const node = buildHtmlArtifactNode(pre);
+    body.appendChild(node);
+    if (input.html.trim()) {
+      mountHtmlFrame(node);
+      details.open = true;
+    }
+    return true;
+  }
   if (name === 'todowrite' && input && Array.isArray(input.todos)) {
     details.classList.add('tool-todo');
     body.classList.add('todo-body');
