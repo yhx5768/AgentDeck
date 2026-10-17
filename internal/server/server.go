@@ -2202,6 +2202,8 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+	// 刻意不复制 Goal：fork 是一条新分支，继承原会话的「自动续跑到 X」契约会
+	// 让分叉出来的会话自己开始续跑，多半不是用户想要的。别"顺手"把它带上。
 	if err := s.st.Upsert(sess, nil); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

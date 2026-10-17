@@ -230,6 +230,29 @@ section('[9] 封顶与不误伤常见页面');
   ok('iframe 上限仍然是硬兜底', src.includes('HTML_FRAME_MAX_H = 20000'));
 }
 
+section('[10] rewind 作废目标（前端同步）');
+{
+  // 服务端 handleRewind 会 InvalidateGoal，前端必须在 applyRewindInUI 里跟着清，
+  // 否则目标条会一直显示一条服务端已经删掉的目标。这条走 SSE 也一样会触发。
+  const fn = src.indexOf('function applyRewindInUI');
+  ok('找到 applyRewindInUI', fn >= 0);
+  const body = src.slice(fn, src.indexOf('\nfunction ', fn + 10) > 0 ? src.indexOf('\nfunction ', fn + 10) : fn + 2500);
+  ok('rewind 时回读会话并 applySession（清掉本地那份 goal）',
+     /api\(`\/api\/sessions\/\$\{state\.current\.id\}`\)/.test(body) && /\.then\(applySession\)/.test(body));
+}
+
+section('[11] fork 不继承目标');
+{
+  const f = src.indexOf('func (s *Server) handleFork');
+  const g = fs.readFileSync(path.resolve(__dirname, '../../internal/server/server.go'), 'utf8');
+  const gi = g.indexOf('func (s *Server) handleFork');
+  const seg = g.slice(gi, gi + 2200);
+  const lit = seg.indexOf('&store.Session{');
+  ok('fork 里构造了新 session', lit >= 0);
+  ok('构造段里没有 Goal 字段（fork 是新分支，不该继承自动续跑契约）',
+     !/Goal\s*:/.test(seg.slice(lit, seg.indexOf('\n\t}', lit))));
+}
+
 console.log(`\nhtml_frame: ${pass} 通过 / ${fail} 失败`);
 console.log('注意：真实裁剪效果与移动端滚动手感 jsdom 验不了，仍需浏览器过一眼。');
 process.exit(fail ? 1 : 0);

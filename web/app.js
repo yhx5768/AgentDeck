@@ -2858,6 +2858,15 @@ function applyRewindInUI(ev, refill) {
   const d = (ev && ev.data) || {};
   const checkpoint = d.checkpoint;
   if (!checkpoint) return;
+  // 回滚会作废 Session Goal（服务端 handleRewind 里 InvalidateGoal）：被回滚掉的
+  // 正是目标在追的那部分工作。这里同步清掉本地那份，否则目标条会继续显示一条
+  // 服务端已经删掉的目标。放在这里而不是提交按钮里，是因为 SSE 转发给别的客户端
+  // 也走这个函数——那一端同样需要清。回读服务端而不是就地改，尽量别让两端分叉。
+  if (state.current) {
+    api(`/api/sessions/${state.current.id}`)
+      .then(applySession)
+      .catch(() => {});
+  }
   const box = $('#messages');
   if (box.querySelector(`.rewind-marker[data-checkpoint="${checkpoint}"]`)) {
     if (refill && d.draft_text) setDraftText(d.draft_text);
