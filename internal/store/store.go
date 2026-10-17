@@ -42,7 +42,7 @@ type Session struct {
 	// GroupID marks a shadow member session owned by a group chat: it runs
 	// the group's turns for one participant and is hidden from the sidebar
 	// (openable directly by id from the group view). Empty = ordinary session.
-	GroupID string `json:"group_id,omitempty"`
+	GroupID  string `json:"group_id,omitempty"`
 	Archived bool   `json:"archived"`
 	// Unread marks a session whose latest turn just finished (active→idle) but
 	// no client has opened it since. Set server-side by the runner on
@@ -55,7 +55,7 @@ type Session struct {
 	// menu (orange dot) for sessions that run background work they want to
 	// revisit. Cleared automatically when the user sends a follow-up message,
 	// signalling the revisit happened.
-	Todo      bool      `json:"todo"`
+	Todo bool `json:"todo"`
 	// Goal is a session-scoped "keep working until this is true" contract. See
 	// the Goal type. Nil when the session has none. Copied by Get/List so a
 	// caller holding a *Session can never write through to the stored goal.
@@ -133,7 +133,7 @@ func (g *Goal) Exhausted(now time.Time) bool {
 		return true
 	}
 	if g.MaxHours > 0 && !g.CreatedAt.IsZero() &&
-		now.After(g.CreatedAt.Add(time.Duration(g.MaxHours * float64(time.Hour)))) {
+		now.After(g.CreatedAt.Add(time.Duration(g.MaxHours*float64(time.Hour)))) {
 		return true
 	}
 	return false
@@ -148,7 +148,7 @@ func (g *Goal) StopReason(now time.Time) string {
 		return fmt.Sprintf("达到最大轮数 %d", g.MaxTurns)
 	}
 	if g.MaxHours > 0 && !g.CreatedAt.IsZero() &&
-		now.After(g.CreatedAt.Add(time.Duration(g.MaxHours * float64(time.Hour)))) {
+		now.After(g.CreatedAt.Add(time.Duration(g.MaxHours*float64(time.Hour)))) {
 		return fmt.Sprintf("超过最长时限 %g 小时", g.MaxHours)
 	}
 	return ""

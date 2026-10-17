@@ -163,7 +163,7 @@ func TestCircuitBreakerStops(t *testing.T) {
 		t.Fatal("达到 MaxTurns 应熔断并给出原因")
 	}
 	g.Rounds = 0
-	if !g.Exhausted(now.Add(2*time.Hour)) {
+	if !g.Exhausted(now.Add(2 * time.Hour)) {
 		t.Fatal("超过 MaxHours 应熔断")
 	}
 	if r := g.StopReason(now.Add(2 * time.Hour)); r == "" {
