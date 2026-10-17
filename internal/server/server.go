@@ -165,6 +165,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/sessions/{id}/messages", s.auth(s.handlePostMessage))
 	s.mux.Handle("POST /api/sessions/{id}/uploads", s.auth(s.handleUpload))
 	s.mux.Handle("POST /api/sessions/{id}/stop", s.auth(s.handleStop))
+	s.mux.Handle("PUT /api/sessions/{id}/goal", s.auth(s.handleSetGoal))
+	s.mux.Handle("DELETE /api/sessions/{id}/goal", s.auth(s.handleClearGoal))
 	s.mux.Handle("GET /api/sessions/{id}/events", s.auth(s.handleEvents))
 	s.mux.Handle("GET /api/claude-sessions", s.auth(s.handleClaudeSessions))
 	s.mux.Handle("GET /api/claude-sessions/preview", s.auth(s.handleClaudeSessionPreview))
@@ -1180,6 +1182,75 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleSetGoal installs (or replaces) a session's auto-continue goal.
+//
+// A goal with empty text is a clear, so the client needs only one call to stop a
+// session from looping. The limits are clamped here rather than trusted: a
+// runaway goal that can never be satisfied is bounded by MaxTurns/MaxHours, and
+// those are the user's explicit budget, not something to widen by accident.
+func (s *Server) handleSetGoal(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess := s.st.Get(id)
+	if sess == nil {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	var body struct {
+		Text     string  `json:"text"`
+		MaxTurns int     `json:"max_turns"`
+		MaxHours float64 `json:"max_hours"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if strings.TrimSpace(body.Text) == "" {
+		s.mgr.InvalidateGoal(id)
+		writeJSON(w, http.StatusOK, s.view(s.st.Get(id)))
+		return
+	}
+	if body.MaxTurns < 1 {
+		body.MaxTurns = store.DefaultGoalMaxTurns
+	}
+	if body.MaxTurns > 200 {
+		body.MaxTurns = 200
+	}
+	if body.MaxHours <= 0 {
+		body.MaxHours = store.DefaultGoalMaxHours
+	}
+	if body.MaxHours > 48 {
+		body.MaxHours = 48
+	}
+	now := time.Now()
+	g := &store.Goal{
+		Text:      strings.TrimSpace(body.Text),
+		MaxTurns:  body.MaxTurns,
+		MaxHours:  body.MaxHours,
+		Status:    store.GoalActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := g.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.st.SetGoal(id, g); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.view(s.st.Get(id)))
+}
+
+func (s *Server) handleClearGoal(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.st.Get(id) == nil {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	s.mgr.InvalidateGoal(id)
+	writeJSON(w, http.StatusOK, s.view(s.st.Get(id)))
+}
+
 // ---- SSE event stream ----
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -2163,6 +2234,9 @@ func (s *Server) handleRewind(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// A rewind rolls back the very work the goal was chasing, so the goal is
+	// meaningless against the rewound transcript and must not resume.
+	s.mgr.InvalidateGoal(id)
 	switch eng := s.engineOf(sess); eng {
 	case config.KindClaude:
 	case config.KindOpenCode:

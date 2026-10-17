@@ -3213,3 +3213,47 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 @media (max-width: 640px) {
   #toast-layer { top: 8px; width: calc(100vw - 2 * var(--sp-2)); }
 }
+
+/* ---------- Session Goals：composer 顶部的目标条 ---------- */
+/* 目标是 per-session 的，所以条只挂在当前会话的 composer 上，侧栏不重复表达。 */
+.goal-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: var(--fs-sm);
+}
+.goal-bar svg { width: 14px; height: 14px; color: var(--accent); flex: none; }
+.goal-bar-body { flex: 1; min-width: 0; }
+.goal-bar-text {
+  color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.goal-bar-meta { color: var(--dim); font-size: var(--fs-xs); margin-top: 1px; }
+.goal-bar-stop {
+  flex: none;
+  padding: 2px 10px;
+  font-size: var(--fs-xs);
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.goal-bar-stop:hover { background: var(--bg3); }
+/* 终态不再显示停止按钮的紧迫感，配色退成中性 */
+.goal-bar.status-met { background: color-mix(in srgb, var(--green) 8%, var(--bg2)); }
+.goal-bar.status-stopped, .goal-bar.status-exhausted { opacity: .75; }
+.goal-bar.status-met svg { color: var(--green); }
+.goal-bar.status-exhausted svg { color: var(--orange); }
+
+.goal-hint {
+  margin: 0 0 10px;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--dim);
+}
+.goal-limits { display: flex; gap: 12px; }
+.goal-limits label { flex: 1; }
+.goal-limits input { width: 100%; }

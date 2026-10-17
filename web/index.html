@@ -159,6 +159,7 @@
         <div id="error-banner" class="hidden"></div>
         <div id="workspace-gate" class="hidden"><i data-lucide="alert-triangle"></i> 未选 workspace（cwd）— 聊天区已禁用</div>
         <div class="composer-card">
+          <div id="goal-bar" class="hidden"></div>
           <div id="perm-dock" class="hidden"></div>
           <div id="attached-images" class="attached-images"></div>
           <div class="input-wrapper">
@@ -353,6 +354,7 @@
 <!-- session actions menu (popover) -->
 <div id="session-menu" class="popover-menu hidden">
   <button data-action="todo"><i data-lucide="flag"></i>标记待办</button>
+  <button data-action="goal"><i data-lucide="target"></i>自动续跑目标…</button>
   <div class="menu-divider"></div>
   <button data-action="rename"><i data-lucide="pencil"></i>重命名</button>
   <button data-action="fork"><i data-lucide="git-fork"></i>分叉会话</button>
@@ -411,6 +413,26 @@
     <div class="modal-actions">
       <button class="ghost-btn" data-close>取消</button>
       <button class="primary-btn" id="rename-submit">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- session goal dialog -->
+<div id="modal-goal" class="modal hidden">
+  <div class="modal-card">
+    <h3>自动续跑到达成条件</h3>
+    <p class="goal-hint">每轮结束后模型会自检这条条件，没达标就自动再跑一轮。写具体点（可验证的判据）比写宽泛点靠谱——判定者是模型自己，没有独立裁判。</p>
+    <label>终止条件
+      <textarea id="goal-text" rows="3" placeholder="例：go test ./... 全绿，且 ./build 退出码为 0"></textarea>
+    </label>
+    <div class="goal-limits">
+      <label>最多轮数 <input id="goal-turns" type="number" min="1" max="200" value="20"></label>
+      <label>最长时限（小时） <input id="goal-hours" type="number" min="1" max="48" value="4"></label>
+    </div>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close>取消</button>
+      <button class="ghost-btn" id="goal-clear">清除目标</button>
+      <button class="primary-btn" id="goal-submit">开始</button>
     </div>
   </div>
 </div>

@@ -1252,6 +1252,10 @@ function openSessionMenu(s, anchor, isArchived) {
   todoBtn.innerHTML = s.todo
     ? '<i data-lucide="flag-off"></i>取消待办'
     : '<i data-lucide="flag"></i>标记待办';
+  const goalBtn = menu.querySelector('[data-action="goal"]');
+  goalBtn.innerHTML = s.goal
+    ? '<i data-lucide="pencil"></i>编辑续跑目标…'
+    : '<i data-lucide="target"></i>自动续跑目标…';
   menu.classList.remove('hidden');
   renderIcons(menu);
   const rect = anchor.getBoundingClientRect();
@@ -1297,6 +1301,7 @@ async function handleSessionAction(action, s) {
   if (action === 'fork')   return forkSession(s);
   if (action === 'archive') return toggleArchive(s);
   if (action === 'todo')   return patchSessionFlag(s.id, { todo: !s.todo });
+  if (action === 'goal')   return openGoalDialog(s);
   if (action === 'delete') return deleteSession(s);
 }
 
@@ -1707,6 +1712,7 @@ async function openSession(id) {
   $('#group-view').classList.add('hidden');
   relocatePermCards();
   $('#chat-view').classList.remove('hidden');
+  renderGoalBar();
   // 清 DOM 前先摘 observer，防悬空引用 + 旧会话文本闪现
   hidePinnedPrompt();
   $('#messages').innerHTML = '';
@@ -4129,6 +4135,19 @@ function renderEvent(ev, box) {
   } else if (ev.kind === 'status') {
     if (d.state === 'turn_start') {
       updateStatusUI({ running: true, queued: 0 });
+    } else if (d.state === 'goal_round' || d.state === 'goal_end') {
+      // 目标状态由服务端判定：这里只回读一次会话把轮次/终态拉回来，不自己算。
+      if (state.current && !state.renderingHistory) {
+        api(`/api/sessions/${state.current.id}`).then((sess) => {
+          applySession(sess);
+          if (d.state === 'goal_end') {
+            const msg = d.status === 'met' ? '自动续跑结束：目标已达标'
+              : d.status === 'exhausted' ? '自动续跑结束：已达上限'
+              : '自动续跑已停止';
+            goalToast(msg, d.reason || '');
+          }
+        }).catch(() => {});
+      }
     } else if (d.state === 'turn_end' || d.state === 'interrupted') {
       liveFinalizeAll(); // 中断时部分 block 永远等不到完整事件，固化已生成的内容
       updateStatusUI({ running: false, queued: 0 });
@@ -6763,3 +6782,146 @@ function openNewGroupDialog(cwd) {
     refreshProfiles(); // config 热加载的轮询兜底（无 SSE 连接或广播丢失时）
   }, 5000);
 })();
+
+// ---------- Session Goals（自动续跑） ----------
+// 服务端在每轮干净结束后判定：达标就停，没达标就自动再排一轮。UI 只做三件事——
+// 设目标、显示当前轮次/状态、手动停。不在客户端做任何判定逻辑，否则和服务端的
+// 熔断计数会各说各话。
+let goalTarget = null;
+
+// pushToast 接的是对象（id/title/body/actions），不是 (文案, 类型)——goal 这几处
+// 统一走它，避免同一条提示反复弹。
+function goalToast(title, body) {
+  pushToast({ id: 'goal-toast-' + (state.current ? state.current.id : 'x'), title, body: body || '' });
+}
+
+const GOAL_STATUS_TEXT = {
+  active: '续跑中',
+  met: '已达标',
+  stopped: '已停止',
+  exhausted: '已达上限',
+};
+
+async function setSessionGoal(id, payload) {
+  const res = await fetch(`/api/sessions/${id}/goal`, {
+    method: payload == null ? 'DELETE' : 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload == null ? undefined : JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({}));
+    throw new Error(b.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function openGoalDialog(s) {
+  goalTarget = s;
+  const g = s.goal;
+  $('#goal-text').value = g ? g.text : '';
+  $('#goal-turns').value = (g && g.max_turns) || 20;
+  $('#goal-hours').value = (g && g.max_hours) || 4;
+  $('#modal-goal').classList.remove('hidden');
+  setTimeout(() => $('#goal-text').focus(), 0);
+}
+
+function closeGoalDialog() {
+  $('#modal-goal').classList.add('hidden');
+  goalTarget = null;
+}
+
+async function submitGoal() {
+  const s = goalTarget;
+  if (!s) return;
+  const text = $('#goal-text').value.trim();
+  if (!text) return;
+  closeGoalDialog();
+  try {
+    applySession(await setSessionGoal(s.id, {
+      text,
+      max_turns: parseInt($('#goal-turns').value, 10) || 20,
+      max_hours: parseFloat($('#goal-hours').value) || 4,
+    }));
+    renderGoalBar();
+  } catch (e) {
+    goalToast('设置目标失败', e.message);
+  }
+}
+
+// 目标条只挂在当前会话的 composer 上：目标是 per-session 的，侧栏列表里再塞一条
+// 会让窄屏完全没法用。
+function renderGoalBar() {
+  const bar = $('#goal-bar');
+  const s = state.current;
+  if (!s || !s.goal) {
+    bar.classList.add('hidden');
+    bar.textContent = '';
+    return;
+  }
+  const g = s.goal;
+  bar.className = 'goal-bar status-' + (g.status || 'active');
+  bar.textContent = '';
+
+  const icon = document.createElement('i');
+  icon.dataset.lucide = 'target';
+  bar.appendChild(icon);
+
+  const body = document.createElement('div');
+  body.className = 'goal-bar-body';
+  const t = document.createElement('div');
+  t.className = 'goal-bar-text';
+  t.textContent = g.text;
+  const meta = document.createElement('div');
+  meta.className = 'goal-bar-meta';
+  const status = GOAL_STATUS_TEXT[g.status] || g.status;
+  meta.textContent = `${status} · 第 ${g.rounds}/${g.max_turns} 轮` +
+    (g.last_reason ? ` · ${g.last_reason}` : '');
+  body.append(t, meta);
+  bar.appendChild(body);
+
+  const stop = document.createElement('button');
+  stop.className = 'goal-bar-stop';
+  stop.type = 'button';
+  stop.textContent = '停止';
+  stop.title = '停止自动续跑（不影响当前这一轮）';
+  stop.onclick = async () => {
+    try {
+      applySession(await setSessionGoal(s.id, null));
+      renderGoalBar();
+    } catch (e) {
+      goalToast('停止失败', e.message);
+    }
+  };
+  bar.appendChild(stop);
+
+  renderIcons(bar);
+}
+
+// 把 PATCH/goal 返回的会话视图并回本地状态。goal 是 server-owned 的，别让前端
+// 各处自己改，否则侧栏点、目标条、弹窗三份状态会打架。
+function applySession(sess) {
+  if (!sess) return;
+  const i = state.sessions.findIndex((x) => x.id === sess.id);
+  if (i >= 0) state.sessions[i] = sess;
+  if (state.current && state.current.id === sess.id) state.current = sess;
+  renderGoalBar();
+}
+
+// 弹窗接线（goal 代码块在文件末尾，这里补事件绑定）
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#modal-goal [data-close]')) closeGoalDialog();
+});
+$('#goal-submit').onclick = submitGoal;
+$('#goal-clear').onclick = async () => {
+  const s = goalTarget;
+  if (!s) return;
+  closeGoalDialog();
+  try {
+    applySession(await setSessionGoal(s.id, null));
+  } catch (err) {
+    goalToast('清除目标失败', err.message);
+  }
+};
+$('#modal-goal').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitGoal();
+});
