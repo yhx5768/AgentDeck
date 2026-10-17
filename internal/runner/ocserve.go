@@ -169,6 +169,14 @@ func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *
 	}
 	p.mu.Unlock()
 
+	// opencode has no --append-system-prompt, so the HTML render hint reaches
+	// it as a global rules file instead. Must land before the server starts:
+	// a serve process is long-lived and shared, and we do not want to depend on
+	// whether it re-reads rules per turn. Failures here are logged and never
+	// fatal — losing the hint degrades output quality, but failing the whole
+	// turn over a file in $HOME would be a much worse trade.
+	p.m.ensureOpencodeRule()
+
 	env := envMapToSlice(buildEnvMap(cli.EffectiveEnv(prov, model)))
 	srv, err := opencodeapi.Start(cli.Path, env, workDir)
 	if err != nil {
