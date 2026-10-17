@@ -902,6 +902,7 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 		args = append(args, "--resume", sess.ClaudeSessionID)
 	}
 	args = append(args, cli.Args...)
+	args = m.appendHTMLRenderHint(args, cli)
 
 	if needsSettings && !hasArg(args, "--settings") {
 		if p, err := m.settingsFileEx(cli.Name, prov.Name, model, sess.EffortOverride, env, withHook); err == nil {
@@ -1240,6 +1241,7 @@ func (m *Manager) runMcodeTurn(sessionID string, msg Message, sess *store.Sessio
 		args = append(args, "--session", sess.ClaudeSessionID)
 	}
 	args = append(args, cli.Args...)
+	args = m.appendHTMLRenderHint(args, cli)
 	// Positional prompt before the attachment flags: `--file <path> <msg>`
 	// would let the array flag consume the message.
 	if msg.Text != "" {

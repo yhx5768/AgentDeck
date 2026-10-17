@@ -146,8 +146,21 @@ type Config struct {
 	CLIs         []CLI      `yaml:"clis"`
 	Providers    []Provider `yaml:"providers"`
 
+	// HTMLRenderHint controls whether cc-webui appends its own "this UI can
+	// render a whole HTML page" instruction to every turn's system prompt.
+	// nil (unset) means ON — it is what enables the feature, so defaulting it
+	// off would silently disable it on every existing config. Set it to false to
+	// opt out. See runner/htmlhint.go for the text and the per-engine coverage.
+	HTMLRenderHint *bool `yaml:"html_render_hint"`
+
 	// TokenGenerated is true when the token was auto-generated at startup.
 	TokenGenerated bool `yaml:"-" json:"-"`
+}
+
+// HTMLHintEnabled reports whether the HTML render hint should be injected.
+// Unset means enabled — see the HTMLRenderHint doc comment.
+func (c *Config) HTMLHintEnabled() bool {
+	return c == nil || c.HTMLRenderHint == nil || *c.HTMLRenderHint
 }
 
 // DefaultPath returns the first config path that exists, or ./config.yaml.

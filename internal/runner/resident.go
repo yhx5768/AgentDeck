@@ -308,6 +308,7 @@ func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residen
 		args = append(args, "--resume", sess.ClaudeSessionID)
 	}
 	args = append(args, cli.Args...)
+	args = m.appendHTMLRenderHint(args, cli)
 	if needsSettings && !hasArg(args, "--settings") {
 		if p, err := m.settingsFileEx(cli.Name, prov.Name, model, sess.EffortOverride, env, withHook); err == nil {
 			args = append(args, "--settings", p)
