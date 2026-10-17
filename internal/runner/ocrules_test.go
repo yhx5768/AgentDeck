@@ -5,226 +5,182 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"cc-webui/internal/config"
 )
 
-// ruleHome points HOME at a temp dir and returns it, so every test operates on
-// a throwaway ~/.config/opencode instead of the developer's real one.
+// ruleHome points HOME at a temp dir seeded with a fake ~/.config/opencode —
+// config plus the user's own AGENTS.md — so every test can assert cc-webui
+// never reaches into it.
 func ruleHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	userDir := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "opencode.jsonc"),
+		[]byte("{\n  \"provider\": {\"x\": {}}\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "AGENTS.md"),
+		[]byte("# 我自己的全局规则\n\n别动我。\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return home
 }
 
-func readRule(t *testing.T, home string) string {
+func readFile(t *testing.T, path string) string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "AGENTS.md"))
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read rule file: %v", err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
 }
 
-// TestEnsureOpencodeRuleCreates is the happy path: no file at all, so one is
-// created with the hint between the markers.
-func TestEnsureOpencodeRuleCreates(t *testing.T) {
+// TestEnsureOpencodeRuleIsolated is the point of the whole design. The hint must
+// land in cc-webui's own config dir and reach the model via the env the caller
+// sets — never in the user's ~/.config/opencode, which would leak into a TUI
+// session they start by hand.
+func TestEnsureOpencodeRuleIsolated(t *testing.T) {
 	home := ruleHome(t)
-	changed, err := ensureOpencodeGlobalRule("HINT BODY")
+	userRules := filepath.Join(home, ".config", "opencode", "AGENTS.md")
+	userConfig := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+	beforeRules, err := os.Stat(userRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !changed {
-		t.Fatal("first write must report changed")
+	beforeConfig, err := os.Stat(userConfig)
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := readRule(t, home)
-	if !strings.Contains(got, "HINT BODY") {
-		t.Fatalf("hint missing:\n%s", got)
+
+	dir := hintManager(t, nil).ensureOpencodeRule()
+	want := filepath.Join(home, ".config", "cc-webui", "opencode")
+	if dir != want {
+		t.Fatalf("config dir = %q, want %q", dir, want)
 	}
-	if !strings.Contains(got, ocRuleBegin) || !strings.Contains(got, ocRuleEnd) {
-		t.Fatalf("markers missing:\n%s", got)
+	if filepath.Dir(userRules) == dir {
+		t.Fatal("cc-webui wrote into the user's opencode config dir")
+	}
+
+	for _, p := range []string{userRules, userConfig} {
+		after, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !beforeRules.ModTime().Equal(after.ModTime()) && p == userRules {
+			t.Fatal("the user's own opencode AGENTS.md was rewritten")
+		}
+		if p == userConfig && !beforeConfig.ModTime().Equal(after.ModTime()) {
+			t.Fatal("the user's own opencode.jsonc was rewritten")
+		}
+	}
+	if !strings.Contains(readFile(t, userRules), "别动我。") {
+		t.Fatal("the user's own rules were lost")
+	}
+
+	// The hint itself must be readable, and reachable only through instructions.
+	hintPath := filepath.Join(dir, "HTML_RENDER_HINT.md")
+	if !strings.Contains(readFile(t, hintPath), htmlRenderHint) {
+		t.Fatal("hint file does not carry htmlRenderHint")
+	}
+	cfg := readFile(t, filepath.Join(dir, "opencode.json"))
+	if !strings.Contains(cfg, `"instructions"`) {
+		t.Fatalf("config does not declare instructions:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, hintPath) {
+		t.Fatalf("instructions does not point at the hint file:\n%s", cfg)
 	}
 }
 
-// TestEnsureOpencodeRuleIdempotent is the one that keeps us from being a
-// nuisance: a second call with the same text must not rewrite the file, or
-// every opencode turn would bump the user's mtime for no reason.
+// TestEnsureOpencodeRuleConfigIsMinimal guards the merge semantics: opencode
+// merges our config over the user's rather than replacing it, so our file must
+// carry only the one key we own. Anything else we put in here would silently
+// override the user's provider / mcp / theme settings for cc-webui sessions.
+func TestEnsureOpencodeRuleConfigIsMinimal(t *testing.T) {
+	ruleHome(t)
+	dir := hintManager(t, nil).ensureOpencodeRule()
+	cfg := readFile(t, filepath.Join(dir, "opencode.json"))
+	for _, forbidden := range []string{`"provider"`, `"mcp"`, `"theme"`, `"model"`, `"agent"`} {
+		if strings.Contains(cfg, forbidden) {
+			t.Errorf("our config declares %s, which would override the user's:\n%s", forbidden, cfg)
+		}
+	}
+}
+
+// TestEnsureOpencodeRuleIdempotent: a recycled serve must not churn the files.
 func TestEnsureOpencodeRuleIdempotent(t *testing.T) {
-	home := ruleHome(t)
-	if _, err := ensureOpencodeGlobalRule("HINT BODY"); err != nil {
-		t.Fatal(err)
+	ruleHome(t)
+	m := hintManager(t, nil)
+	dir := m.ensureOpencodeRule()
+	if dir == "" {
+		t.Fatal("no dir")
 	}
-	path := filepath.Join(home, ".config", "opencode", "AGENTS.md")
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
+	paths := []string{filepath.Join(dir, "opencode.json"), filepath.Join(dir, "HTML_RENDER_HINT.md")}
+	before := make([]int64, len(paths))
+	for i, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[i] = fi.ModTime().UnixNano()
 	}
-	changed, err := ensureOpencodeGlobalRule("HINT BODY")
-	if err != nil {
-		t.Fatal(err)
+	if again := m.ensureOpencodeRule(); again != dir {
+		t.Fatalf("dir changed between calls: %q then %q", dir, again)
 	}
-	if changed {
-		t.Fatal("second identical write reported changed")
-	}
-	after, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !before.ModTime().Equal(after.ModTime()) {
-		t.Fatal("file was rewritten despite identical content")
-	}
-}
-
-// TestEnsureOpencodeRuleUpdatesBlock pins that cc-webui owns the text *between*
-// the markers and follows the constant, while the user's own rules above and
-// below stay byte-identical.
-func TestEnsureOpencodeRuleUpdatesBlock(t *testing.T) {
-	home := ruleHome(t)
-	dir := filepath.Join(home, ".config", "opencode")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "AGENTS.md")
-	original := "# 我的个人规则\n\n永远用中文回答。\n"
-	stale := original + "\n" + ocRuleBegin + "\nOLD HINT\n" + ocRuleEnd + "\n\n## 尾部备注\n\n不要动我。\n"
-	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	changed, err := ensureOpencodeGlobalRule("NEW HINT")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !changed {
-		t.Fatal("stale hint should report changed")
-	}
-	got := readRule(t, home)
-	if !strings.Contains(got, "NEW HINT") || strings.Contains(got, "OLD HINT") {
-		t.Fatalf("hint not updated:\n%s", got)
-	}
-	if !strings.Contains(got, "永远用中文回答。") {
-		t.Fatalf("user's rule above the block was lost:\n%s", got)
-	}
-	if !strings.Contains(got, "不要动我。") {
-		t.Fatalf("user's text below the block was lost:\n%s", got)
-	}
-	if i, j := strings.Index(got, "永远用中文回答。"), strings.Index(got, ocRuleBegin); i > j {
-		t.Fatal("content above the block moved below it")
+	for i, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.ModTime().UnixNano() != before[i] {
+			t.Errorf("%s rewritten despite identical content", p)
+		}
 	}
 }
 
-// TestEnsureOpencodeRuleAppendsToExisting covers the common upgrade path: the
-// user already has global rules, we must add ours after them, not replace.
-func TestEnsureOpencodeRuleAppendsToExisting(t *testing.T) {
-	home := ruleHome(t)
-	dir := filepath.Join(home, ".config", "opencode")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+// TestEnsureOpencodeRuleFollowsTheConstant: the hint text has one source of
+// truth, so editing it must propagate. Simulated by checking the file carries
+// the current constant verbatim rather than a stale copy.
+func TestEnsureOpencodeRuleFollowsTheConstant(t *testing.T) {
+	ruleHome(t)
+	m := hintManager(t, nil)
+	dir := m.ensureOpencodeRule()
+	hintPath := filepath.Join(dir, "HTML_RENDER_HINT.md")
+	if err := os.WriteFile(hintPath, []byte("STALE"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "AGENTS.md")
-	if err := os.WriteFile(path, []byte("# 我的规则\n\n提交信息用中文。\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if again := m.ensureOpencodeRule(); again != dir {
+		t.Fatalf("dir changed: %q then %q", dir, again)
 	}
-	if _, err := ensureOpencodeGlobalRule("HINT BODY"); err != nil {
-		t.Fatal(err)
-	}
-	got := readRule(t, home)
-	if !strings.Contains(got, "提交信息用中文。") {
-		t.Fatalf("existing rules lost:\n%s", got)
-	}
-	if strings.Index(got, "提交信息用中文。") > strings.Index(got, "HINT BODY") {
-		t.Fatal("our hint should come after the user's existing rules")
+	if got := readFile(t, hintPath); !strings.Contains(got, htmlRenderHint) {
+		t.Fatalf("stale hint not refreshed:\n%s", got)
 	}
 }
 
-// TestEnsureOpencodeRuleAdoptsClaudeMD is the subtle one. opencode's global
-// rules are first-match-wins: once ~/.config/opencode/AGENTS.md exists,
-// ~/.claude/CLAUDE.md is silently ignored. Creating the file without carrying
-// that content over would delete the user's global rules as a side effect of a
-// cosmetic feature.
-func TestEnsureOpencodeRuleAdoptsClaudeMD(t *testing.T) {
-	home := ruleHome(t)
-	claudeDir := filepath.Join(home, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	claudeMD := "# Claude 全局规则\n\n提交前必须跑测试。\n"
-	if err := os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte(claudeMD), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ensureOpencodeGlobalRule("HINT BODY"); err != nil {
-		t.Fatal(err)
-	}
-	got := readRule(t, home)
-	if !strings.Contains(got, "提交前必须跑测试。") {
-		t.Fatalf("CLAUDE.md content was not carried over:\n%s", got)
-	}
-	if !strings.Contains(got, "CLAUDE.md") {
-		t.Fatalf("no note explaining where the content came from:\n%s", got)
-	}
-	if strings.Index(got, "提交前必须跑测试。") > strings.Index(got, "HINT BODY") {
-		t.Fatal("adopted CLAUDE.md content should precede the hint block")
-	}
-}
-
-// TestEnsureOpencodeRuleDoesNotAdoptTwice: once the rule file exists, opencode
-// was already preferring it over CLAUDE.md. Re-importing on every later call
-// would duplicate the user's rules forever.
-func TestEnsureOpencodeRuleDoesNotAdoptTwice(t *testing.T) {
-	home := ruleHome(t)
-	claudeDir := filepath.Join(home, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"),
-		[]byte("# Claude 全局规则\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ensureOpencodeGlobalRule("HINT BODY"); err != nil {
-		t.Fatal(err)
-	}
-	// Change the hint so the second call takes the update path, not the
-	// adopt path — that is what would reintroduce a duplicate.
-	if _, err := ensureOpencodeGlobalRule("HINT BODY v2"); err != nil {
-		t.Fatal(err)
-	}
-	got := readRule(t, home)
-	if n := strings.Count(got, "# Claude 全局规则"); n != 1 {
-		t.Fatalf("CLAUDE.md content imported %d times, want 1:\n%s", n, got)
-	}
-}
-
-// TestEnsureOpencodeRuleNoHome: HOME unset must be a clean error, not a write
-// to a relative path that would land somewhere unpredictable.
+// TestEnsureOpencodeRuleNoHome: no HOME means no predictable path. Return empty
+// so the caller leaves the env alone rather than pointing opencode somewhere odd.
 func TestEnsureOpencodeRuleNoHome(t *testing.T) {
 	t.Setenv("HOME", "")
-	if _, err := ensureOpencodeGlobalRule("HINT BODY"); err == nil {
-		t.Fatal("want error when HOME is unset")
+	if dir := hintManager(t, nil).ensureOpencodeRule(); dir != "" {
+		t.Fatalf("want empty dir with HOME unset, got %q", dir)
 	}
 }
 
-// TestEnsureOpencodeRuleRespectsSwitch is the opt-out: html_render_hint=false
-// must not touch the user's file at all — not create it, not update it.
+// TestEnsureOpencodeRuleRespectsSwitch: with the hint off we must not create
+// the directory, write anything, or return a path for the env.
 func TestEnsureOpencodeRuleRespectsSwitch(t *testing.T) {
 	home := ruleHome(t)
 	no := false
-	m := NewManager(configManagerWithHint(t, &no), nil)
-	m.ensureOpencodeRule()
-	if _, err := os.Stat(filepath.Join(home, ".config", "opencode", "AGENTS.md")); !os.IsNotExist(err) {
-		t.Fatalf("opt-out still wrote the rule file (stat err = %v)", err)
+	if dir := hintManager(t, &no).ensureOpencodeRule(); dir != "" {
+		t.Fatalf("opt-out returned %q", dir)
 	}
-
-	// And with the switch flipped back on, it writes.
+	if _, err := os.Stat(filepath.Join(home, ".config", "cc-webui")); !os.IsNotExist(err) {
+		t.Fatalf("opt-out still created our config dir (stat err = %v)", err)
+	}
 	yes := true
-	m2 := NewManager(configManagerWithHint(t, &yes), nil)
-	m2.ensureOpencodeRule()
-	if _, err := os.Stat(filepath.Join(home, ".config", "opencode", "AGENTS.md")); err != nil {
-		t.Fatalf("opt-in did not write the rule file: %v", err)
+	if dir := hintManager(t, &yes).ensureOpencodeRule(); dir == "" {
+		t.Fatal("opt-in did not return a config dir")
 	}
-}
-
-func configManagerWithHint(t *testing.T, on *bool) *config.Manager {
-	t.Helper()
-	cfg := &config.Config{DataDir: t.TempDir(), HTMLRenderHint: on}
-	return config.NewManager(filepath.Join(cfg.DataDir, "config.yaml"), cfg)
 }

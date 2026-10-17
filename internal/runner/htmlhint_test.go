@@ -193,3 +193,11 @@ func TestHTMLRenderHintContent(t *testing.T) {
 		t.Error("hint contains a raw backtick")
 	}
 }
+
+// configManagerWithHint builds a config.Manager whose html_render_hint tri-state
+// is `on` (nil = default-on). Shared by the hint and opencode-rule tests.
+func configManagerWithHint(t *testing.T, on *bool) *config.Manager {
+	t.Helper()
+	cfg := &config.Config{DataDir: t.TempDir(), HTMLRenderHint: on}
+	return config.NewManager(filepath.Join(cfg.DataDir, "config.yaml"), cfg)
+}

@@ -169,16 +169,21 @@ func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *
 	}
 	p.mu.Unlock()
 
-	// opencode has no --append-system-prompt, so the HTML render hint reaches
-	// it as a global rules file instead. Must land before the server starts:
-	// a serve process is long-lived and shared, and we do not want to depend on
-	// whether it re-reads rules per turn. Failures here are logged and never
-	// fatal — losing the hint degrades output quality, but failing the whole
-	// turn over a file in $HOME would be a much worse trade.
-	p.m.ensureOpencodeRule()
+	envMap := buildEnvMap(cli.EffectiveEnv(prov, model))
+	// opencode has no append-semantics flag, so the HTML render hint rides in an
+	// opencode Rules file instead. Pointing OPENCODE_CONFIG_DIR at cc-webui's own
+	// directory keeps it away from the user's ~/.config/opencode — otherwise a
+	// TUI session they start by hand would pick up the hint too. Must be set
+	// before the server starts: a serve process is long-lived and shared, and we
+	// do not want to depend on whether it re-reads rules per turn.
+	//
+	// Failures here degrade output quality (the model writes an .html file the
+	// user has to open by hand) but never fail the turn over a file in $HOME.
+	if dir := p.m.ensureOpencodeRule(); dir != "" {
+		envMap["OPENCODE_CONFIG_DIR"] = dir
+	}
 
-	env := envMapToSlice(buildEnvMap(cli.EffectiveEnv(prov, model)))
-	srv, err := opencodeapi.Start(cli.Path, env, workDir)
+	srv, err := opencodeapi.Start(cli.Path, envMapToSlice(envMap), workDir)
 	if err != nil {
 		return nil, nil, nil, err
 	}

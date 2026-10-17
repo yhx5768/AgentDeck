@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -9,142 +8,94 @@ import (
 	"strings"
 )
 
-// opencode 的全局规则文件。opencode 的 Rules 机制读它，并把它并进每一轮的
-// LLM context（https://opencode.ai/docs/rules/，原文："This gets applied
-// across all opencode sessions"）。
+// opencode 的 HTML 渲染约定走它自己的 Rules / instructions 机制，把一段文字
+// 并进每一轮的 LLM context。
 //
-// 为什么 opencode 要走文件而不是 --append-system-prompt：
-//   - `opencode run` 没有 append 语义的 flag；v1 prompt body 的 system 字段
-//     是**覆盖** agent 自身 system prompt 的（见 opencodeapi.PromptInput），
-//     填进去会把 opencode 的 agent 指令顶掉，比不注入更糟。
-//   - 文件路径是 per-user 而不是 per-repo，绕开了 AGENTS.md 的仓库作用域问题：
-//     会话 cwd 不在 cc-webui 仓库里时仓库那份根本不加载。
-//   - 实测过：文件放这里，用户自己在终端跑的 opencode 同样生效——这一点
-//     --append-system-prompt 做不到，它只覆盖 cc-webui 起的进程。
+// 为什么不走 --append-system-prompt：`opencode run` 没有 append 语义的 flag，
+// v1 prompt body 的 system 字段是**覆盖** agent 自身 system prompt 的（见
+// opencodeapi.PromptInput），填进去会把 opencode 的 agent 指令顶掉，比不注入更糟。
 //
-// 已知代价：全局规则是「第一个匹配的胜出」，同一时刻整个用户只有一份全局
-// 规则。下面的迁移逻辑负责不吞掉用户已有的 ~/.claude/CLAUDE.md。
-const (
-	ocRuleBegin = "<!-- cc-webui:html-render-hint:begin -->"
-	ocRuleEnd   = "<!-- cc-webui:html-render-hint:end -->"
-	// ocClaudeNote 解释为什么 CLAUDE.md 的内容会被搬进来。
-	ocClaudeNote = "以下内容原先在 ~/.claude/CLAUDE.md，由 cc-webui 原样迁入此处。\n" +
-		"原因：opencode 的全局规则是「第一个匹配的胜出」，两个文件都在时它只读\n" +
-		"~/.config/opencode/AGENTS.md，CLAUDE.md 会被静默忽略。想改这些规则，直接改本文件。\n"
-)
+// 为什么不用 ~/.config/opencode/AGENTS.md（opencode 的全局规则文件）：
+// 那是 per-user 的，写进去意味着**用户在终端里自己跑的 opencode 和 TUI 也会吃到**
+// ——劫持别人的工具，不是 cc-webui 的能力。
+//
+// 走 instructions 的关键在于 opencode 会读 OPENCODE_CONFIG_DIR 指向目录下的
+// opencode.json，且配置是**合并不是替换**（实测：把 CONFIG_DIR 指到一个只有
+// 指令、没有配置文件的目录，用户的 provider / mcp 配置照常生效）。所以只给
+// cc-webui 起的 serve 进程设这个 env，约定就只对 cc-webui 里的 opencode 会话
+// 生效，终端和 TUI 一个字节都不受影响。
+//
+// 实测三连（同一个 HOME 连续跑，问一个只存在于指令文件里的哨兵串）：
+// 无 CONFIG_DIR → 无；带 CONFIG_DIR → 有；再回到无 CONFIG_DIR → 无。
+// 第三步排除了「缓存把指令泄漏给 TUI」这个最该担心的问题。
+//
+// 已知取舍：instructions 是配置里的一个键，而同名键是**后者覆盖**。如果用户
+// 自己在 ~/.config/opencode/*.json(c) 里也配了 instructions，cc-webui 里的
+// 会话会用 ours 替换掉那份，而不是追加。合并它需要解析用户的 JSONC（含注释），
+// 代价远大于收益；当前用户配置里没有这个键。
 
-// opencodeGlobalRulePath returns ~/.config/opencode/AGENTS.md.
-// XDG 不用：opencode 文档给的就是这个字面路径，自己推断 ~/.xdg 反而可能
-// 写到一个它不读的地方——写错文件比不写更糟（看起来成功了，其实没生效）。
-func opencodeGlobalRulePath() (string, error) {
+// opencodeConfigDir returns the directory cc-webui points OPENCODE_CONFIG_DIR
+// at. XDG 不用：opencode 文档给的是 ~/.config 这个字面路径，自己推断 ~/.xdg
+// 反而可能指到一个它不读的地方——静默不生效比报错更难查。
+func opencodeConfigDir() (string, error) {
 	home := os.Getenv("HOME")
 	if home == "" {
-		return "", errors.New("HOME is not set")
+		return "", fmt.Errorf("HOME is not set")
 	}
-	return filepath.Join(home, ".config", "opencode", "AGENTS.md"), nil
+	return filepath.Join(home, ".config", "cc-webui", "opencode"), nil
 }
 
-func (m *Manager) ensureOpencodeRule() {
+// ensureOpencodeRule materialises cc-webui's opencode config dir — one config
+// file whose `instructions` points at the hint — and returns the dir to hand the
+// serve child as OPENCODE_CONFIG_DIR.
+//
+// Returns "" when the hint is switched off or the files could not be written;
+// the caller must then leave the env alone and run opencode with the user's
+// normal configuration. Degrading output quality (the model writes an .html file
+// the user opens by hand) is better than failing the turn over $HOME.
+//
+// No marker block is needed here: this directory belongs to cc-webui, nothing
+// else writes to it, and both files are rewritten whole. Read-back-and-compare
+// keeps an identical run from churning mtimes on a directory the user may well
+// be looking at while debugging.
+func (m *Manager) ensureOpencodeRule() string {
 	if m.cm != nil && !m.cm.Get().HTMLHintEnabled() {
-		return
+		return ""
 	}
-	changed, err := ensureOpencodeGlobalRule(htmlRenderHint)
-	switch {
-	case err != nil:
-		log.Printf("opencode 全局规则写入失败（opencode 会话将不注入 HTML 渲染约定）: %v", err)
-	case changed:
-		if p, perr := opencodeGlobalRulePath(); perr == nil {
-			log.Printf("已把 HTML 渲染约定写入 opencode 全局规则 %s", p)
-		}
-	}
-}
-
-// ensureOpencodeGlobalRule makes htmlRenderHint present in opencode's global
-// rules file. Idempotent in both directions: the block between the markers is
-// owned by cc-webui and is rewritten to match; everything outside is never
-// touched, so the user's own rules in that file survive.
-//
-// Returns (changed, err). changed=false means the file already said exactly
-// this and was left untouched — callers must not write on that path, or every
-// turn would churn the user's mtime.
-func ensureOpencodeGlobalRule(hint string) (bool, error) {
-	path, err := opencodeGlobalRulePath()
+	dir, err := opencodeConfigDir()
 	if err != nil {
-		return false, err
+		log.Printf("opencode 隔离配置目录不可用（opencode 会话将不注入 HTML 渲染约定）: %v", err)
+		return ""
 	}
-	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, fmt.Errorf("create %s: %w", dir, err)
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return false, fmt.Errorf("read %s: %w", path, err)
-	}
-	existing := string(raw)
-
-	var next string
-	switch {
-	case strings.Contains(existing, ocRuleBegin) && strings.Contains(existing, ocRuleEnd):
-		next = replaceRuleBlock(existing, hint)
-	case strings.TrimSpace(existing) == "":
-		// Creating the file. This is the one moment that would make opencode
-		// stop reading ~/.claude/CLAUDE.md, so bring that content along.
-		next = adoptClaudeRules() + "\n" + ruleBlockInner(hint) + "\n"
-	default:
-		// No block yet, and the file already has the user's own rules. Append
-		// ours after them; nothing above moves.
-		next = existing + "\n" + ruleBlockInner(hint) + "\n"
-	}
-	if next == existing {
-		return false, nil
-	}
-	if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
-		return false, fmt.Errorf("write %s: %w", path, err)
-	}
-	return true, nil
-}
-
-// ruleBlockInner renders just the markers and the hint, with no leading or
-// trailing newline. Callers own the surrounding whitespace, which is what
-// makes replaceRuleBlock byte-stable: head and tail are slices of the original
-// file, so re-running with unchanged text reproduces the file exactly and the
-// idempotency check can say "nothing to do".
-func ruleBlockInner(hint string) string {
-	return ocRuleBegin + "\n" + strings.TrimSpace(hint) + "\n" + ocRuleEnd
-}
-
-// replaceRuleBlock swaps only what is between the markers. Everything before
-// the begin marker and after the end marker survives byte-for-byte.
-func replaceRuleBlock(existing, hint string) string {
-	i := strings.Index(existing, ocRuleBegin)
-	j := strings.Index(existing, ocRuleEnd)
-	if i < 0 || j < 0 || j < i {
-		return existing
-	}
-	head := existing[:i]
-	tail := existing[j+len(ocRuleEnd):]
-	return head + ruleBlockInner(hint) + tail
-}
-
-// adoptClaudeRules returns the contents of ~/.claude/CLAUDE.md when it exists,
-// to be preserved into a global file we are about to create. Returns "" when
-// there is nothing to preserve.
-//
-// This matters because opencode reads the global category first-match-wins:
-// the moment ~/.config/opencode/AGENTS.md exists, ~/.claude/CLAUDE.md is
-// silently ignored. Creating the file without carrying the old content over
-// would quietly delete the user's global opencode rules. Only called when the
-// file did not exist before — if it already existed, opencode was already
-// preferring it over CLAUDE.md and none of that is ours to change.
-func adoptClaudeRules() string {
-	home := os.Getenv("HOME")
-	if home == "" {
+		log.Printf("opencode 隔离配置目录创建失败 %s: %v", dir, err)
 		return ""
 	}
-	raw, err := os.ReadFile(filepath.Join(home, ".claude", "CLAUDE.md"))
-	if err != nil || strings.TrimSpace(string(raw)) == "" {
+
+	hintPath := filepath.Join(dir, "HTML_RENDER_HINT.md")
+	hint := strings.TrimSpace(htmlRenderHint) + "\n"
+	if err := writeIfChanged(hintPath, []byte(hint)); err != nil {
+		log.Printf("写 %s 失败: %v", hintPath, err)
 		return ""
 	}
-	return "\n" + ocClaudeNote + "\n" + string(raw) + "\n"
+
+	// Only one key, and it points at a path inside our own directory, so the
+	// user's provider / mcp / theme settings keep merging in normally.
+	cfg := fmt.Sprintf(
+		"{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"instructions\": [%q]\n}\n",
+		hintPath)
+	cfgPath := filepath.Join(dir, "opencode.json")
+	if err := writeIfChanged(cfgPath, []byte(cfg)); err != nil {
+		log.Printf("写 %s 失败: %v", cfgPath, err)
+		return ""
+	}
+	return dir
+}
+
+// writeIfChanged writes data only when it differs from what is already there.
+func writeIfChanged(path string, data []byte) error {
+	if old, err := os.ReadFile(path); err == nil && string(old) == string(data) {
+		return nil
+	}
+	return os.WriteFile(path, data, 0o644)
 }

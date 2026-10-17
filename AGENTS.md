@@ -259,12 +259,15 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
   - iframe 里注入了宿主主题的 CSS 变量，**优先用它们而不是硬编码颜色**，页面就能跟随 app 的深浅色：`--background` `--surface` `--border` `--foreground` `--muted` `--accent` `--code-bg`。同时写上兜底值 `var(--background, #fff)`，没注入时也不至于裸奔。
   - 高度自动跟随内容，别在页面里做内层滚动（聊天滚动会被劫持）；宽表格自己套一个横向滚动容器。
   - 轨迹视图是台账，不渲染 frame（`md(x, {artifacts:false})`），只看代码——这是有意的，不是 bug。
-  - **opencode 走另一条路：全局规则文件**（`internal/runner/ocrules.go`）。`opencode run` 没有 `--append-system-prompt`，v1 prompt body 的 `system` 字段是**覆盖** agent 自身 system prompt 的（见 `opencodeapi.PromptInput` 注释），填进去会把 opencode 指令顶掉，比不注入更糟。改用 opencode 自己的 Rules 机制：把约定写进 `~/.config/opencode/AGENTS.md`，文档原话是 *"applied across all opencode sessions"*。时机在 `opencodeServePool.acquire` 启动 serve **之前**（serve 是长驻共享进程，不能赌它每轮重读规则）。副作用是这个文件也会让**用户自己在终端跑的 opencode** 生效——`--append-system-prompt` 做不到这点，它只覆盖 cc-webui 起的进程。
-    - 写入是**标记块幂等**：`<!-- cc-webui:html-render-hint:begin/end -->` 之间归 cc-webui 管，块外一个字节都不动；内容一致时完全不写（否则每轮都 churn 用户文件的 mtime）。块内改了就整块替换。
-    - **opencode 的全局规则是 first-match-wins**：`~/.config/opencode/AGENTS.md` 一旦存在，`~/.claude/CLAUDE.md` 会被静默忽略。所以**建文件的第一次**会把 CLAUDE.md 的内容原样搬进新文件并加来源说明（`adoptClaudeRules`），否则这个装饰性功能会顺手删掉用户的全局规则。已经存在的文件不再搬——那是 opencode 本来就在忽略，不是我们造成的。
-    - `html_render_hint: false` 时**完全不碰**用户文件：既不创建也不更新。
-    - 写失败只 `log.Printf` 不 fatal——丢掉提示词只是输出质量下降，为一个 `$HOME` 下的文件让整轮失败不划算。
-    - 实测（隔离 HOME，cwd 在仓库外，`sensenova-openai/deepseek-v4-flash`）：有这份全局规则 → 直接给 ```html 围栏（44 处 `var(--…, fallback)`）；没有 → 「已创建 dashboard.html，浏览器直接打开即可」。另外手工复刻 `runner.go` 的 `PromptInput` 形状（`System`/`Agent` 均为零值，不 override）打 `opencode serve` HTTP 也通。
+  - **opencode 走隔离配置目录**（`internal/runner/ocrules.go`）。`opencode run` 没有 `--append-system-prompt`，v1 prompt body 的 `system` 字段是**覆盖** agent 自身 system prompt 的（见 `opencodeapi.PromptInput` 注释），填进去会把 opencode 指令顶掉，比不注入更糟，所以改走 opencode 自己的指令机制。
+    - **为什么不用 `~/.config/opencode/AGENTS.md`**（opencode 的全局 Rules）：那是 per-user 的，写进去会让**用户自己在终端跑的 opencode 和 TUI 也吃到**——劫持别人的工具。实测确认过。
+    - 做法：cc-webui 维护自己的 `~/.config/cc-webui/opencode/`，里面 `HTML_RENDER_HINT.md` 放约定正文、`opencode.json` 只有 `{"instructions": ["<那个 md 的路径>"]}` 一个键；`opencodeServePool.acquire` 启动 serve 前写好，并把 `OPENCODE_CONFIG_DIR` 指到该目录。opencode 会读 CONFIG_DIR 下的配置，且配置是**合并不是替换**，所以用户的 provider / mcp / theme 照常生效。
+    - **必须放在 `opencode.json` 的 `instructions` 而不是 CONFIG_DIR 里的 `AGENTS.md`**：实测前者跟随 CONFIG_DIR，后者不跟随（Rules 只认 `~/.config/opencode/AGENTS.md`）。
+    - 我们的 `opencode.json` 只能是 `instructions` 一个键。配置同名键是后者覆盖，多写任何 provider / mcp / theme 都会盖掉用户设置——有测试钉住（`TestEnsureOpencodeRuleConfigIsMinimal`）。已知取舍：用户自己若在 `~/.config/opencode/*.json(c)` 里也配了 `instructions`，cc-webui 的会话会用 ours 替换而非追加；合并它要解析用户的 JSONC（含注释），代价大于收益。
+    - 两个文件都**整体重写 + 内容相同就不写**（`writeIfChanged`）：目录是 cc-webui 独占的，不需要标记块那套；不写是为了避免用户正盯着这个目录排查时看到 mtime 乱跳。
+    - `html_render_hint: false` 时连目录都不建、不返回路径，serve 用用户原本的配置。
+    - 写失败只 `log.Printf` 不 fatal——丢掉提示词是输出质量下降，为 `$HOME` 下两个文件让整轮失败不划算。
+    - 实测（隔离 HOME，cwd 在仓库外，`sensenova-openai/deepseek-v4-flash`）：cc-webui 会话里模型答「是」（知道有「输出成 markdown 代码块而不是写 .html 文件」这条约定），同一 HOME 下不带 `OPENCODE_CONFIG_DIR` 的裸 opencode 答「否」。三连测过 无→有→无，排除了「缓存把指令泄漏给 TUI」。用户的 `~/.config/opencode/` 两个文件 md5 全程未变。
   - 另有一个 `mcp__*__render_html` 工具形态（`buildToolView` 分支）前端认，但**至今没有任何模型真的调用过它**，别默认它可用。MCP 是工具层，解决「模型要不要调这个工具」，解决不了「模型知不知道有这个能力」——实测 minimax 两次、mcode 一次都只在 `ToolSearch` 里发现了工具然后转头写文件。
 - **并行开发用 worktree**：多需求/bug 并行时每条开一个 worktree，别在 master 上堆未提交改动互相打架。`git worktree add ../cc-webui-<topic> -b <topic-branch>`；每个 worktree 的 `data/`、构建产物 `cc-webui` 都 gitignore、各自隔离、互不污染。`config.yaml` 也 gitignore——新 worktree 要么 `cp config.example.yaml config.yaml` 重新填 token，要么软链主 worktree 的 config——**只为共享 token + clis/providers/models 静态配置**（这些本来就想各 worktree 一致）；软链后 `listen` 也随之共享成 8321，**端口别改 config（会动 master），靠启动时 `CC_WEBUI_LISTEN` env 覆盖**（见下条）。`data_dir: "./data"` 经 `filepath.Abs` 按**进程 CWD**解析（非 config 文件位置），各 worktree 自带独立 `<worktree>/data`，不会写穿 master。完事回主 worktree 合 master，再 `git worktree remove ../cc-webui-<topic>`。
 

@@ -20,9 +20,10 @@ default_cwd: "~"
 #   claude / qoder / mcode —— 走 --append-system-prompt 追加进每轮 system prompt。
 #     用户在 clis[].args 里自己写了同名 flag 时不重复注入（CLIs 取最后一个）。
 #   opencode —— 它没有 append 语义的入口（system 字段是覆盖 agent 自身 prompt
-#     的，填进去更糟），改写 ~/.config/opencode/AGENTS.md 的全局规则文件，
-#     在 opencode serve 启动前幂等写入一个标记块，块外内容不碰。
-#     副作用：你在终端里自己跑的 opencode 也会读到这份约定。
+#     的，填进去更糟），改写 ~/.config/cc-webui/opencode/ 下的 opencode.json，
+#     只放一个 instructions 键指向约定正文，并在 opencode serve 启动前把
+#     OPENCODE_CONFIG_DIR 指过去。opencode 的配置是合并的，provider / mcp /
+#     theme 照常生效；而你在终端里跑的 opencode 和 TUI 读不到这份约定。
 # 设 false 时完全不碰上面那个用户文件（既不创建也不更新）。
 # html_render_hint: false
 
