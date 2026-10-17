@@ -12,6 +12,15 @@ data_dir: "./data"
 # 新建会话时的默认工作目录
 default_cwd: "~"
 
+# 每一轮都往 system prompt 追加一段「本界面能把整页 HTML 渲染成活的页面」的
+# 提示词（文本在 internal/runner/htmlhint.go），让模型把图表/仪表盘直接输出成
+# ```html 围栏而不是写成文件丢给用户自己开。
+# 注释掉 = 开（默认）。设 false 才关闭。
+# 覆盖范围：claude / qoder（--append-system-prompt）与 mcode；**opencode 不注入**
+# ——它没有 append 语义的入口，system 字段是覆盖 agent 自身 prompt 的。
+# 用户在 clis[].args 里自己写了 --append-system-prompt 时不重复注入。
+# html_render_hint: false
+
 # 三层结构：
 #   clis[]      - 一个聊天 CLI 二进制安装（path + args + 权限模式 + 共享 env）
 #                 kind: claude（缺省）= Claude Code 及兼容 CLI（stream-json 协议）
