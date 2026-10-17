@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"cc-webui/internal/config"
+	"cc-webui/internal/store"
 )
 
 // hintManager builds a Manager whose config has html_render_hint set to the
@@ -101,6 +102,68 @@ func TestAppendHTMLRenderHintNilManager(t *testing.T) {
 	if _, ok := valueAfter(m.appendHTMLRenderHint([]string{"-p"}, nil), "--append-system-prompt"); !ok {
 		t.Fatal("nil cm did not inject")
 	}
+}
+
+// TestMcodeArgsOrdering pins runMcodeTurn's argv order. The positional prompt
+// must precede `--file` (an array flag — it would eat a trailing positional and
+// silently drop the user's message). The hint's position relative to cli.Args
+// is deliberately NOT load-bearing: appendHTMLRenderHint inspects cli.Args
+// itself precisely so the merge order can't break dedup, and flipping the two
+// lines here still passes. What's left is that the hint lands before the
+// positional, so it can't be mistaken for message text.
+func TestMcodeArgsOrdering(t *testing.T) {
+	m := hintManager(t, nil)
+	sess := &store.Session{
+		PermissionMode:  "bypassPermissions",
+		EffortOverride:  "high",
+		ClaudeSessionID: "sess-1",
+	}
+	cli := &config.CLI{Name: "mcode"}
+	prov := &config.Provider{Name: "mcode-minimax", Models: []config.Model{{Name: "m"}}}
+	args := m.buildMcodeArgs(Message{
+		Text:  "PROMPT_POSITIONAL",
+		Files: []UploadedFile{{Path: "/tmp/a.png"}},
+	}, sess, cli, prov)
+
+	idx := func(want string) int {
+		for i, a := range args {
+			if a == want {
+				return i
+			}
+		}
+		return -1
+	}
+	hint, pos, file := idx("--append-system-prompt"), idx("PROMPT_POSITIONAL"), idx("--file")
+	if hint < 0 {
+		t.Fatalf("no --append-system-prompt in %q", args)
+	}
+	if args[hint+1] != htmlRenderHint {
+		t.Fatalf("hint text not directly after its flag")
+	}
+	if pos < 0 || file < 0 {
+		t.Fatalf("missing positional or --file in %q", args)
+	}
+	if pos > file {
+		t.Errorf("positional at %d must precede --file at %d: %q", pos, file, args)
+	}
+	if hint > pos {
+		t.Errorf("hint at %d must precede the positional at %d: %q", hint, pos, args)
+	}
+	// cli.Args must already be merged, otherwise hasArg can't see a user's flag.
+	withUser := m.buildMcodeArgs(Message{Text: "P"}, sess,
+		&config.CLI{Name: "mcode", Args: []string{"--append-system-prompt=mine"}}, prov)
+	if containsArg(withUser, htmlRenderHint) {
+		t.Fatalf("user's own flag was not honoured: %q", withUser)
+	}
+}
+
+func containsArg(args []string, s string) bool {
+	for _, a := range args {
+		if a == s {
+			return true
+		}
+	}
+	return false
 }
 
 // TestHTMLRenderHintContent pins the properties the hint must keep having for

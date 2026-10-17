@@ -1204,21 +1204,13 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	cancel()
 }
 
-// runMcodeTurn runs one user message through the MiniMax Code engine
-// (`mcode exec --output-format stream-json`). Every stdout line is one JSON
-// event adapted to the canonical cc-webui stream shape and broadcast live
-// (mcodehist — the same mapping the replay path uses, so a reloaded page
-// looks like the live run did). The mcode session id rides on every line
-// (mvs_… ), so it is captured on first sight and stored in the same
-// ClaudeSessionID field opencode reuses; the transcript itself stays in
-// mcode's own store and is replayed from messages.jsonl on later connects.
-//
-// No stdin channel: the message rides as a positional argument, like
-// opencode. Inline images are rejected at the API layer — images and files
-// both travel as mcode's official `--file` attachments. The positional must
-// precede those flags: --file is an array flag and would swallow a trailing
-// positional.
-func (m *Manager) runMcodeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
+// buildMcodeArgs assembles the `mcode exec` argv. Split out of runMcodeTurn so
+// the ordering contract is testable, because getting it wrong fails silently:
+//   - the positional prompt must come **before** `--file <path>` (an array flag
+//     would consume a trailing positional and eat the message)
+//   - the HTML render hint must come **after** cli.Args, or a user's own
+//     --append-system-prompt in config.yaml wouldn't be seen by the dedup check
+func (m *Manager) buildMcodeArgs(msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider) []string {
 	args := []string{"exec", "--output-format", "stream-json"}
 	// mcode takes --permission smart|full|off; "ask" needs an interactive
 	// approver, which a headless run has none of. cc-webui's own default is
@@ -1250,6 +1242,25 @@ func (m *Manager) runMcodeTurn(sessionID string, msg Message, sess *store.Sessio
 	for _, f := range msg.Files {
 		args = append(args, "--file", f.Path)
 	}
+	return args
+}
+
+// runMcodeTurn runs one user message through the MiniMax Code engine
+// (`mcode exec --output-format stream-json`). Every stdout line is one JSON
+// event adapted to the canonical cc-webui stream shape and broadcast live
+// (mcodehist — the same mapping the replay path uses, so a reloaded page
+// looks like the live run did). The mcode session id rides on every line
+// (mvs_… ), so it is captured on first sight and stored in the same
+// ClaudeSessionID field opencode reuses; the transcript itself stays in
+// mcode's own store and is replayed from messages.jsonl on later connects.
+//
+// No stdin channel: the message rides as a positional argument, like
+// opencode. Inline images are rejected at the API layer — images and files
+// both travel as mcode's official `--file` attachments. The positional must
+// precede those flags: --file is an array flag and would swallow a trailing
+// positional.
+func (m *Manager) runMcodeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
+	args := m.buildMcodeArgs(msg, sess, cli, prov)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.setRunning(sessionID, cancel)
@@ -1263,7 +1274,7 @@ func (m *Manager) runMcodeTurn(sessionID string, msg Message, sess *store.Sessio
 		}
 		return nil
 	}
-	envMap := buildEnvMap(cli.EffectiveEnv(prov, model))
+	envMap := buildEnvMap(cli.EffectiveEnv(prov, prov.EffectiveModel(sess.ModelOverride)))
 	cmd.Env = envMapToSlice(envMap)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
