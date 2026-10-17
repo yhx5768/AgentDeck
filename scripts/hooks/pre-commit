@@ -4,6 +4,14 @@
 # No-op when no .go files are staged (docs / web / config changes pass through).
 set -euo pipefail
 
+# web/ 改动 → 跑前端 jsdom 回归。这块出过三个 bug（图标空壳、全屏中卸载失效、
+# 滚动容器写错 CSS 层级），全是「单测全绿也照样漏」、靠人工点出来的类型，所以这里
+# 必须挡一下。测试在 scripts/frontend-tests/，jsdom 是那边唯一的依赖。
+web_files=$(git diff --cached --name-only -- 'web/*.js' 'web/*.css' 'web/*.html' || true)
+if [ -n "$web_files" ]; then
+  ./scripts/frontend-tests/run.sh
+fi
+
 go_files=$(git diff --cached --name-only -- '*.go' || true)
 if [ -z "$go_files" ]; then
   exit 0

@@ -260,7 +260,13 @@ let htmlFsReturn = null;
 function enterHtmlFullscreen(wrap) {
   const box = wrap && wrap.querySelector('.html-frame-box');
   const frame = box && box.querySelector('iframe.html-frame');
-  if (!box || !frame || htmlFsReturn) return;
+  if (!box || !frame) return;
+  // 已经在全屏里、又点了另一个块的按钮：先收掉再进新的，否则这一次点击是死的，
+  // 用户只会以为按钮坏了。
+  if (htmlFsReturn) {
+    if (htmlFsReturn.box === box) return; // 已经在全屏的就是它，别把自己搬自己
+    exitHtmlFullscreen();
+  }
   const layer = htmlFsLayer();
   const body = layer.querySelector('.html-fs-body');
   htmlFsReturn = { box, parent: box.parentNode, next: box.nextSibling };
@@ -276,7 +282,11 @@ function exitHtmlFullscreen() {
   const layer = htmlFsLayer();
   const { box, parent, next } = htmlFsReturn;
   htmlFsReturn = null;
-  if (parent) parent.insertBefore(box, next && next.parentNode === parent ? next : null);
+  // parent 可能已经被替换掉了：流式重绘会把整段 innerHTML 换掉，原 box 连同
+  // 旧父节点一起脱离文档。这时别往一个游离节点里插，overlay 照常收起就行。
+  if (parent && parent.isConnected) {
+    parent.insertBefore(box, next && next.parentNode === parent ? next : null);
+  }
   layer.classList.add('hidden');
   layer.querySelector('.html-fs-body').textContent = '';
   document.body.classList.remove('html-fs-open');
@@ -3874,7 +3884,11 @@ document.addEventListener('click', (e) => {
   if (!fs) return;
   const wrap = fs.closest('.code-block-artifact');
   if (!wrap) return;
-  if (isHtmlFullscreen()) exitHtmlFullscreen();
+  // 只有「在看的正是这个块」才收遮罩；在看别的块时要把全屏切过去，
+  // 早先写成 if (isHtmlFullscreen()) exit... else enter...，结果全屏中点第二个块的
+  // 按钮只会把遮罩关掉，永远切不过去。
+  const box = wrap.querySelector('.html-frame-box');
+  if (isHtmlFullscreen() && htmlFsReturn && htmlFsReturn.box === box) exitHtmlFullscreen();
   else enterHtmlFullscreen(wrap);
 });
 document.addEventListener('keydown', (e) => {

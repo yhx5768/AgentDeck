@@ -16,3 +16,7 @@ docs/screenshots/
 
 # opencode serve 探测时抓下来的 OpenAPI 快照（不入库，形状以运行中 /doc 为准）
 openapi.json
+
+# 前端测试的依赖
+scripts/frontend-tests/node_modules/
+scripts/frontend-tests/package-lock.json

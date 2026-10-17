@@ -266,7 +266,8 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
 - **命名**：标准 Go——PascalCase 导出 / camelCase 包内；文件名小写单词（`store.go`、`files.go`）；包名同目录名。前端用 `$()` 作 `querySelector` 简写、`state`/`traj` 全局对象。
 - **错误处理**：`fmt.Errorf("%w")` 包装；后台非致命错误 `log.Printf`；仅 `main.go` 启动失败用 `log.Fatalf`；HTTP handler 用 `writeErr(w, code, msg)` 返回 `{"error":...}`。
 - **文件权限**：数据文件 0600、敏感目录 0700、events/data 根 0755。
-- **测试**：有单测的包 `claudehist`（含 stats）、`opencodehist`（含 stats）、`server`、`runner`、`config`；`statsagg`、`store` 无测试。改 rewind 相关的 `LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt` 务必跑 `go test ./internal/claudehist/`；改统计口径（section 9）务必跑 `go test ./internal/claudehist/ ./internal/opencodehist/`——两侧计数规则要一致。pre-commit 守卫（`scripts/hooks/pre-commit`，一次性激活 `git config core.hooksPath "$(pwd)/scripts/hooks"`）：staged 含 `.go` 自动跑 `go vet ./...`，含 `internal/claudehist/` 时加跑其测试——commit 被挡多半是这俩没过。
+- **前端测试**：`scripts/frontend-tests/`（jsdom，唯一依赖是那边的 package.json）。跑法 `./scripts/frontend-tests/run.sh`。覆盖 HTML 沙箱渲染 + 全屏（节点搬运、Esc/关闭委托、卸载顺序、滚动容器的 CSS 契约与 DOM 嵌套必须对得上）和图标白名单。**jsdom 不做布局**——max-height 裁不裁、overflow 生不生效、手感如何，一律验不了，仍需人工过一眼；能钉的只有 DOM 契约和「样式写在了正确的元素上」。
+- **测试**：有单测的包 `claudehist`（含 stats）、`opencodehist`（含 stats）、`server`、`runner`、`config`；`statsagg`、`store` 无测试。改 rewind 相关的 `LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt` 务必跑 `go test ./internal/claudehist/`；改统计口径（section 9）务必跑 `go test ./internal/claudehist/ ./internal/opencodehist/`——两侧计数规则要一致。pre-commit 守卫（`scripts/hooks/pre-commit`，**一次性激活** `git config core.hooksPath "$(pwd)/scripts/hooks"`——**注意当前 clone 还没激活过**，所以本文件里记的自动跑目前并不会发生）：staged 含 `web/` 时跑 `scripts/frontend-tests/run.sh`，含 `.go` 自动跑 `go vet ./...`，含 `internal/claudehist/` 时加跑其测试——commit 被挡多半是这俩没过。
 
 ## 安全边界（务必遵守）
 
