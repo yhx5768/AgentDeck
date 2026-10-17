@@ -28,6 +28,9 @@ function parseFileLink(href) {
 
 // 代码块复制按钮的图标：直接内联 lucide copy 的 SVG，不走 <i data-lucide>。
 // 流式期间 md() 每帧重绘，renderIcons 每帧扫描会刷日志且没必要。
+// 工具条里的图标一律用原始 SVG，不走 lucide：renderIcons 只认 wanted 白名单，
+// 白名单外的 <i data-lucide> 不会被替换成 svg，按钮就只剩一圈 padding（看着像没有）。
+const HTML_FS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg>';
 const CODE_COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 
 // Render markdown to sanitized HTML; force all links to open in a new tab
@@ -116,6 +119,13 @@ function buildHtmlArtifactNode(pre) {
   btn.type = 'button';
   btn.title = '复制代码';
   btn.innerHTML = CODE_COPY_ICON;
+  // 全屏：框内封顶后长页面要滚，收起聊天其余部分看整页
+  const fs = document.createElement('button');
+  fs.className = 'html-artifact-fs';
+  fs.type = 'button';
+  fs.title = '全屏查看';
+  fs.setAttribute('aria-label', '全屏查看');
+  fs.innerHTML = HTML_FS_ICON;
   const toggle = document.createElement('button');
   toggle.className = 'html-artifact-toggle';
   toggle.type = 'button';
@@ -126,7 +136,7 @@ function buildHtmlArtifactNode(pre) {
   tag.textContent = 'HTML';
   const bar = document.createElement('div');
   bar.className = 'html-artifact-bar';
-  bar.append(tag, toggle);
+  bar.append(fs, tag, toggle); // toggle 靠 margin-left:auto 顶到右边
   const box = document.createElement('div');
   box.className = 'html-frame-box';
   const art = document.createElement('div');
@@ -228,6 +238,10 @@ function mountHtmlFrame(wrap) {
 }
 
 function unmountHtmlFrame(wrap) {
+  // 必须先收全屏：enterHtmlFullscreen 把 .html-frame-box 搬进了遮罩，此时它在
+  // wrap 之外，下面那句 querySelector 会找不到而整个函数提前 return——表现为
+  // 「全屏中点源码没反应，iframe 留在遮罩里」。
+  exitHtmlFullscreen();
   const box = wrap.querySelector('.html-frame-box');
   if (!box) return;
   // 拆掉而不是隐藏：iframe 常驻会一直占着内存和 rAF，页面里的定时器也不停。
@@ -236,6 +250,54 @@ function unmountHtmlFrame(wrap) {
   wrap.classList.remove('rendered');
   const toggle = wrap.querySelector('.html-artifact-toggle');
   if (toggle) toggle.textContent = '渲染';
+}
+
+// 全屏：把承载 iframe 的 .html-frame-box 整体搬进 fixed 遮罩。
+// 搬节点而不是重建 iframe —— 重建会把页面里的脚本状态、定时器、滚动位置全清掉。
+// 退出时原路搬回同一个父节点。
+let htmlFsReturn = null;
+
+function enterHtmlFullscreen(wrap) {
+  const box = wrap && wrap.querySelector('.html-frame-box');
+  const frame = box && box.querySelector('iframe.html-frame');
+  if (!box || !frame || htmlFsReturn) return;
+  const layer = htmlFsLayer();
+  const body = layer.querySelector('.html-fs-body');
+  htmlFsReturn = { box, parent: box.parentNode, next: box.nextSibling };
+  body.appendChild(box);
+  layer.classList.remove('hidden');
+  document.body.classList.add('html-fs-open');
+  const close = layer.querySelector('.html-fs-close');
+  if (close) close.focus();
+}
+
+function exitHtmlFullscreen() {
+  if (!htmlFsReturn) return;
+  const layer = htmlFsLayer();
+  const { box, parent, next } = htmlFsReturn;
+  htmlFsReturn = null;
+  if (parent) parent.insertBefore(box, next && next.parentNode === parent ? next : null);
+  layer.classList.add('hidden');
+  layer.querySelector('.html-fs-body').textContent = '';
+  document.body.classList.remove('html-fs-open');
+}
+
+function isHtmlFullscreen() { return !!htmlFsReturn; }
+
+function htmlFsLayer() {
+  let layer = document.getElementById('html-fs-layer');
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.id = 'html-fs-layer';
+    layer.className = 'html-fs hidden';
+    layer.innerHTML =
+      '<div class="html-fs-bar">' +
+      '<span class="html-fs-title">HTML 预览</span>' +
+      '<button class="html-fs-close" type="button">✕ 退出全屏（Esc）</button>' +
+      '</div><div class="html-fs-body"></div>';
+    document.body.appendChild(layer);
+  }
+  return layer;
 }
 
 function syncHtmlFrameThemes() {
@@ -353,6 +415,8 @@ function renderIcons(root) {
     'panel-left-close', 'panel-left-open', 'list-collapse',
     'bot', 'users',
     'list-todo', 'circle', 'circle-check',
+    'target', // Session Goals 的目标条靶心（§12）
+    'message-circle-question', // 待回答 toast 的问号图标（§11，一直漏了，白名单外的 data-lucide 会渲染成空壳）
     'sliders-horizontal',
   ];
   // lucide 自动 kebab→Pascal，所以 icons map 的 key 也用 PascalCase
@@ -3801,6 +3865,20 @@ document.addEventListener('click', async (e) => {
     await copyText(code.textContent);
     flashCheck(btn, btn.innerHTML);
   } catch (_) {}
+});
+
+// HTML 全屏开关（md 围栏和 render_html 工具块共用同一份工具条）
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.html-fs-close')) { exitHtmlFullscreen(); return; }
+  const fs = e.target.closest('.html-artifact-fs');
+  if (!fs) return;
+  const wrap = fs.closest('.code-block-artifact');
+  if (!wrap) return;
+  if (isHtmlFullscreen()) exitHtmlFullscreen();
+  else enterHtmlFullscreen(wrap);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && isHtmlFullscreen()) exitHtmlFullscreen();
 });
 
 // HTML 沙箱渲染的开关按钮（md() 注入）。已渲染则拆掉 iframe 回到源码，

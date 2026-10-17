@@ -231,7 +231,13 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
   - **数据面**：`server.sessionView.PendingAsks`（`pendingAsksOf`）与 `server.groupView.PendingAsks`（`groupPendingAsksOf`，额外带 `member_id`/`member_name`——成员影子会话不在侧栏里，跳转得靠群 id）随会话/群列表一起下发，最老的一条在前（最接近超时）。`input["questions"]` 两种形状都要认：claude/qoder 是 JSON 解出来的 `[]any`，opencode 是进程内造的 `[]map[string]any`（`ask_test.go` 守住这条）。**列表空时也返回 `[]` 不是 null**，前端无条件索引。
   - **触发面**：三条源按提问 id 去重（`raiseAskToast` 幂等）——SSE `permission_request`（当前会话/群转发）、`fetchPendingPermissions`（刷新后补卡）、`diffPendingAsks()`（`loadSessions` 5s 轮询 diff，**唯一能看见别的会话在提问的通道**）。`resolvePermissionCard` 立即撤对应浮层，跨会话时由下一轮轮询兜。
   - **呈现面**：`#toast-layer` 顶部居中横幅（iPad 来通知形态，**不是右下角小卡片**——见 §11 踩过的坑），整条可点 = `gotoAsk` 跳到那张卡（跨会话开会话、群卡开群视图，定位靠 `focusAskCard` 轮询等异步补卡出现）。侧栏另有：整行底色脉动 `.session-item.has-ask` + `.dot.ask`（压过 running）+ 行内 `待回答` 标签、工作区栏 `#ws-activity` 的「待回答 N」徽标 + `renderWsPopPending` 列表。**别只做浮层**——人往往在别的标签页/会话，侧栏那一条才是回来第一眼看到的。
+- **lucide 图标是白名单制**：`renderIcons` 只渲染 `wanted` 数组里的图标，白名单外的 `<i data-lucide="x">` **不会被替换成 svg**——元素还在但里面是空的，表现为「按钮/标签只剩一圈 padding」。加图标必须同步加白名单；拿不准就直接用原始内联 SVG 常量（`CODE_COPY_ICON` / `HTML_FS_ICON` 那样），不依赖 `renderIcons` 被调用。`scripts` 里没有这个检查，测试得自己钉。
 - `style.css` — 全部样式，`[data-theme]` 深浅主题；`.goal-bar` 是 Session Goals 的 composer 顶部条（§12）。
+- **HTML 沙箱渲染的封顶与全屏**（` ```html ` 围栏和 `mcp__*__render_html` 工具块共用）：
+  - iframe 高度 = 页面自报的真实高度，但外层 `.html-frame-box` 封顶 `var(--html-frame-max, 640px)`。不封顶的话一个 3000px 的页面会把整个聊天撑爆，滚几千像素才能越过这个块。640px 是按常见页面实际高度定的——仪表盘、换算器那类 300–600px 的页面永远碰不到上限，所以对日常场景是零变化。
+  - 框内滚动用 `overflow-y: auto` **而不是 `contain`**：`contain` 会让手指在框里滚到底之后也带不动聊天，那种"卡住"比内滚本身更糟。代价是手机触摸滚动会被 iframe 捕获，全屏按钮就是解药。
+  - 全屏是**搬节点**不是重建 iframe：重建会把页面里的脚本状态、定时器、滚动位置全清掉。`enterHtmlFullscreen` 把 `.html-frame-box` 整体搬进 fixed 遮罩，退出原路搬回。
+  - **滚动容器是 `.html-fs-body`，不是里面的 `.html-frame-box`**。后者是孙节点，拿不到高度；滚动写在内层会撑破父容器、外层又没 overflow，整块就彻底滚不动。而且 flex 子项必须配 `min-height: 0`，少了它 `flex: 1` 形同虚设。
 - `vendor/` — marked / DOMPurify / highlight.js / lucide / 主题 css，均已 vendored。
 - `go:embed all:web` → `fs.Sub(webFS, "web")` → `http.FileServerFS`。
 

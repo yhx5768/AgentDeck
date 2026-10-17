@@ -1302,11 +1302,67 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 .html-artifact-toggle:hover { background: var(--bg3); }
-.html-artifact .html-frame-box { background: var(--bg); overflow-x: auto; }
+/* 框内封顶：多数页面 300-600px 根本碰不到上限，只有真长文档才在框里滚。
+   不封顶的话一个 3000px 的页面会把整个聊天撑爆，滚几千像素才能越过这个块。
+   overflow-y 用默认的 auto（保留滚动链）而不是 contain——contain 会让手指在框
+   里滚到底之后也带不动聊天，那是真正会让人觉得"卡住了"的写法。 */
+.html-artifact .html-frame-box {
+  background: var(--bg);
+  overflow: auto;
+  max-height: var(--html-frame-max, 640px);
+}
 .code-block-artifact .html-artifact pre { margin: 0; border-radius: 0; }
 .code-block-artifact.rendered .html-artifact pre { display: none; }
 .code-block-artifact.rendered .html-artifact-bar { border-bottom: 1px solid var(--border); }
 .html-frame { display: block; width: 100%; border: 0; background: var(--bg); }
+/* 工具条左边的全屏按钮：没渲染时没有页面可看，藏掉 */
+.html-artifact-fs {
+  display: none;
+  align-items: center; justify-content: center;
+  padding: 3px; margin: -3px 0;
+  border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--dim); cursor: pointer;
+}
+.code-block-artifact.rendered .html-artifact-fs { display: inline-flex; }
+.html-artifact-fs:hover { color: var(--fg); background: var(--bg3); }
+.html-artifact-fs svg { width: 13px; height: 13px; }
+
+/* ---------- 全屏遮罩 ---------- */
+.html-fs {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+}
+.html-fs.hidden { display: none; }
+.html-fs-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex: none;
+}
+.html-fs-title { font-size: var(--fs-sm); color: var(--fg); }
+.html-fs-close {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: var(--fs-xs); font-family: inherit;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--fg); cursor: pointer;
+}
+.html-fs-close:hover { background: var(--bg3); }
+/* 全屏下不再受 640px 封顶限制，撑满可用高度 */
+/* 全屏下的滚动容器是 .html-fs-body，不是里面的 .html-frame-box——后者是它的子元素。
+   早先误把 flex/overflow 写在内层，结果内层撑破父容器、外层又没 overflow，
+   整块就彻底滚不动了。flex 子项必须配 min-height:0，否则不肯收缩到内容高度以下。 */
+.html-fs-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.html-fs .html-frame-box { max-height: none; overflow: visible; }
+/* 遮罩打开时锁住背景滚动，否则 wheel 会同时滚两层 */
+body.html-fs-open { overflow: hidden; }
 /* 页面若没跑起来脚本，留个最小高度，避免整块塌成一条线看不出点过 */
 .html-frame-box:empty { display: none; }
 .msg .bubble code,
