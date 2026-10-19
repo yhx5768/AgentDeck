@@ -1938,6 +1938,25 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   margin: var(--sp-1) var(--sp-2) var(--sp-1) 0;
   vertical-align: middle;
 }
+/* 模型回复里的本地图片（md() 把本地路径改写成 /api/image?path=…）。
+   不限宽的话大图会横向撑破气泡。 */
+.local-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: var(--sp-2) 0;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+}
+.img-missing {
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-lg);
+  color: var(--dim);
+  font-size: var(--fs-sm);
+}
 
 .composer-footer {
   display: flex; align-items: baseline; gap: var(--sp-3);

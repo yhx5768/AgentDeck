@@ -62,10 +62,33 @@ function guardSingleTilde(text) {
   }
   return parts.join('');
 }
+// 本地图片：模型在回复里写 ![](/abs/path/x.png) 或 ![](docs/x.png) 时，浏览器会
+// 把它当站点相对 URL 去请求 http://host/abs/path/x.png —— cc-webui 的静态服务只
+// 提供内嵌的 web/，一律 404，图就裂在消息里（用户报「模型发的截图前端看不到」）。
+// 改成走 /api/image 拉本地文件：后端限会话工作区内 + 图片类型白名单。
+// 路径语义复用 parseFileLink（绝对路径直用、相对路径按会话 cwd 解析、.. 拒绝）。
+function fixLocalImages(tpl) {
+  tpl.content.querySelectorAll('img[src]').forEach((img) => {
+    let src = img.getAttribute('src') || '';
+    if (!src) return;
+    // 已经是可直接取到的 URL：data:/http(s):/blob:/应用内路径，都不动。
+    if (/^(data:|https?:|blob:|\/api\/)/i.test(src)) return;
+    if (src.startsWith('file://')) src = src.slice('file://'.length);
+    const file = parseFileLink(src);
+    if (!file) return;
+    img.setAttribute('src', '/api/image?path=' + encodeURIComponent(file.path));
+    img.setAttribute('loading', 'lazy');
+    img.classList.add('local-img');
+    // 加载失败时（路径不在工作区内、文件被删了）浏览器显示 alt 文字，
+    // 至少能看出是哪个路径出的问题，而不是一片碎图。
+    if (!img.getAttribute('alt')) img.setAttribute('alt', '图片：' + file.path);
+  });
+}
 const md = (text, opts) => {
   const tpl = document.createElement('template');
   tpl.innerHTML = DOMPurify.sanitize(marked.parse(guardSingleTilde(text || '')));
   fixCjkAutolink(tpl);
+  fixLocalImages(tpl);
   tpl.content.querySelectorAll('a[href]').forEach((a) => {
     const file = parseFileLink(a.getAttribute('href'));
     if (file) {
@@ -3934,6 +3957,19 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isHtmlFullscreen()) exitHtmlFullscreen();
 });
+
+// 本地图片加载失败（路径不在会话工作区内、文件被删、不是图片类型）时给个说明。
+// <img> 的 error 事件不冒泡，只能用捕获阶段在 document 上兜。
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (!img || img.tagName !== 'IMG' || !img.classList.contains('local-img')) return;
+  if (img.dataset.failed) return;
+  img.dataset.failed = '1';
+  const box = document.createElement('div');
+  box.className = 'img-missing';
+  box.textContent = '图片无法显示（不在会话工作区内、已被删除，或不是受支持的图片类型）';
+  if (img.parentNode) img.parentNode.replaceChild(box, img);
+}, true);
 
 // HTML 沙箱渲染的开关按钮（md() 注入）。已渲染则拆掉 iframe 回到源码，
 // 未渲染则挂 iframe —— 切换即销毁/重建，不留上一页面的脚本和定时器。

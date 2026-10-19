@@ -198,6 +198,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/groups/{id}/stop", s.auth(s.handleGroupStop))
 	s.mux.Handle("GET /api/groups/{id}/events", s.auth(s.handleGroupEvents))
 	s.mux.Handle("GET /api/files", s.auth(s.handleReadFile))
+	// 会话工作区内的图片：前端 <img> 直接引用模型回复里的本地图片路径。
+	s.mux.Handle("GET /api/image", s.auth(s.handleImage))
 
 	// Static frontend (index redirects to login when unauthorized; the SPA
 	// also guards itself via /api/me).
