@@ -8,6 +8,9 @@
    ============================================================= */
 :root {
   /* ---------- color (light = default) ---------- */
+  /* 让浏览器原生件（滚动条、select 弹出层）和 iOS 状态栏跟随应用主题：
+     独立 PWA 用 black-translucent，状态栏压在页面顶上，文字颜色要跟着主题走。 */
+  color-scheme: light;
   --bg: #ffffff;
   --bg2: #f6f8fa;
   --bg3: #eaeef2;
@@ -108,6 +111,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0d1117;
   --bg2: #161b22;
   --bg3: #21262d;
@@ -320,6 +324,8 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 .sidebar-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: var(--sp-4) var(--sp-5);
+  /* 抽屉侧栏在移动端是全屏 fixed 抽屉，顶部同样要避开状态栏 */
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-4));
   border-bottom: 1px solid var(--border);
 }
 .logo {
@@ -666,6 +672,8 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   flex: none;
   display: flex; align-items: center; gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
+  /* 右侧固定面板贴顶，标题行要避开状态栏 */
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-2));
   border-bottom: 1px solid var(--border);
 }
 .fv-path {
@@ -978,6 +986,9 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 #chat-header {
   border-bottom: 1px solid var(--border);
   padding: var(--sp-3) var(--sp-5);
+  /* iOS 独立 PWA（black-translucent + viewport-fit=cover）下页面顶到状态栏底下，
+     顶部内容会被系统状态栏盖住点不到；用 safe-area 让开，栏底色仍然铺满状态栏区域。 */
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-3));
   background: var(--bg2);
 }
 .title-row { display: flex; align-items: center; gap: var(--sp-3); }
@@ -1337,6 +1348,7 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 .html-fs-bar {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 12px;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 8px);
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
   flex: none;
@@ -2385,7 +2397,7 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   }
   /* hide when a chat is open (chat-header has its own drawer button) */
   #main:has(#chat-view:not(.hidden)) .drawer-standalone { display: none; }
-  #chat-header { padding: var(--sp-2) var(--sp-3); }
+  #chat-header { padding: var(--sp-2) var(--sp-3); padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-2)); }
   .title-row { gap: var(--sp-2); }
   .name-input { font-size: var(--fs-lg); padding: var(--sp-1) var(--sp-2); }
   #chat-header .cwd { display: none; }
@@ -3097,7 +3109,7 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 #group-list .session-item { cursor: pointer; }
 .group-name { font-weight: 600; font-size: var(--fs-lg); }
 #group-view { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
-#group-header-bar { padding: var(--sp-2) var(--sp-4); border-bottom: 1px solid var(--border); }
+#group-header-bar { padding: var(--sp-2) var(--sp-4); padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-2)); border-bottom: 1px solid var(--border); }
 #group-header-bar .title-row { display: flex; align-items: center; gap: var(--sp-2); }
 #group-header-bar .header-actions { margin-left: auto; display: flex; gap: var(--sp-1); }
 .group-members { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
@@ -3165,7 +3177,7 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
    z-index 150 在弹窗（200）之下：设置类弹窗开着时不抢它的层级。 */
 #toast-layer {
   position: fixed;
-  top: 14px;
+  top: calc(env(safe-area-inset-top, 0px) + 14px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 150;
@@ -3267,7 +3279,7 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 .toast-btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
 .toast-btn.primary:hover { filter: brightness(1.08); }
 @media (max-width: 640px) {
-  #toast-layer { top: 8px; width: calc(100vw - 2 * var(--sp-2)); }
+  #toast-layer { top: calc(env(safe-area-inset-top, 0px) + 8px); width: calc(100vw - 2 * var(--sp-2)); }
 }
 
 /* ---------- Session Goals：composer 顶部的目标条 ---------- */
