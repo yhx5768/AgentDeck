@@ -4162,6 +4162,71 @@ function safeRenderEvent(ev, box) {
   }
 }
 
+// 错误横幅：长文本必须折叠，否则能把主对话整个盖掉。
+//
+// #error-banner 在 <footer id="composer"> 里，而 composer 是 position:absolute 的浮层
+// （浮在 #messages 之上，z-index:10）。banner 原本 white-space:pre-wrap 且不限高，
+// 一条 CLI 崩溃堆栈（node OOM 有 40+ 帧、几千行）灌进去，banner 就长到几千像素：
+//   ① 从底部向上溢出，把主对话盖得看不见；
+//   ② syncComposerSpace() 按 composer 的 offsetHeight 给 #messages 设 padding-bottom，
+//      同样被撑成几千 px，消息被顶到视口外。
+// 所以：短的照旧整段显示；长的默认折叠成「摘要 + 展开全文」，展开后也只占有限的
+// 视口高度并在内部滚动——限高是硬约束，任何情况下都不许盖住主对话。
+const ERROR_INLINE_MAX_CHARS = 400;
+const ERROR_INLINE_MAX_LINES = 6;
+
+// 摘要取第一行"像错误"的行。node 的 OOM 首行是 "<--- Last few GCs --->" 这类噪声，
+// 真正有用的是后面那行 "FATAL ERROR: ... JavaScript heap out of memory"。
+function errorSummary(text) {
+  const noise = /^\s*(<[-=]{2,}|={2,})/;
+  const lines = String(text).split('\n');
+  let pick = lines.find((l) => /error/i.test(l) && !noise.test(l));
+  if (!pick) pick = lines.find((l) => l.trim() && !noise.test(l));
+  return (pick || '出错了').trim();
+}
+
+// 所有写 #error-banner 的地方都走这里，长短按同一套规则渲染。
+function setErrorBanner(text, opts) {
+  const banner = $('#error-banner');
+  if (!banner) return;
+  const o = opts || {};
+  banner.textContent = '';
+  banner.classList.toggle('warning', !!o.warning);
+  const raw = text == null ? '' : String(text);
+  const lines = raw.split('\n');
+  if (raw.length <= ERROR_INLINE_MAX_CHARS && lines.length <= ERROR_INLINE_MAX_LINES) {
+    const pre = document.createElement('div');
+    pre.className = 'err-text';
+    pre.textContent = raw || o.fallback || 'unknown error';
+    banner.appendChild(pre);
+  } else {
+    const head = document.createElement('div');
+    head.className = 'err-head';
+    const sum = document.createElement('span');
+    sum.className = 'err-summary';
+    sum.textContent = errorSummary(raw);
+    sum.title = errorSummary(raw);
+    const btn = document.createElement('button');
+    btn.className = 'err-toggle';
+    btn.type = 'button';
+    btn.textContent = '展开全文';
+    head.appendChild(sum);
+    head.appendChild(btn);
+    banner.appendChild(head);
+
+    const full = document.createElement('div');
+    full.className = 'err-full';
+    full.textContent = raw;
+    banner.appendChild(full);
+
+    btn.addEventListener('click', () => {
+      const open = full.classList.toggle('open');
+      btn.textContent = open ? '收起' : '展开全文';
+    });
+  }
+  banner.classList.remove('hidden');
+}
+
 function renderEvent(ev, box) {
   box = box || $('#messages');
   const d = ev.data;
@@ -4315,20 +4380,16 @@ function renderEvent(ev, box) {
       // For recoverable CLI errors (e.g. ducc's unrecognized_model warning
       // after usable output has already streamed), show a warning banner and
       // allow the pending message to flush so the user can keep chatting.
-      const banner = $('#error-banner');
-      banner.classList.remove('hidden');
       if (d.recoverable) {
-        banner.classList.add('warning');
-        banner.textContent = d.error || 'CLI 报告非致命错误';
+        setErrorBanner(d.error || 'CLI 报告非致命错误', { warning: true });
         if (!state.renderingHistory) {
           flushPending();
           refreshCurrentStatus();
         }
       } else {
-        banner.classList.remove('warning');
-        banner.textContent = d.error || 'unknown error';
         // Don't auto-flush on hard error — leave the pending bubble visible so the
         // user can cancel or wait and resend after the failure is resolved.
+        setErrorBanner(d.error || 'unknown error');
         refreshCurrentStatus();
       }
     }
@@ -4813,9 +4874,7 @@ async function flushPending() {
     // 按当前会话重绘（当前会话无 pending 时等于清除）。
     state.pendingBySid[sid] = payload;
     renderPendingBubble();
-    const banner = $('#error-banner');
-    banner.textContent = '待发送消息提交失败：' + (e.message || 'unknown error');
-    banner.classList.remove('hidden');
+    setErrorBanner('待发送消息提交失败：' + (e.message || 'unknown error'));
   }
 }
 
@@ -6074,9 +6133,7 @@ async function nsSend() {
       const up = await uploadAttachment(a.file, sess.id);
       files.push({ name: up.name, path: up.path });
     } catch (e) {
-      const banner = $('#error-banner');
-      banner.textContent = `上传失败：${a.name}（${e.message || 'unknown error'}）`;
-      banner.classList.remove('hidden');
+      setErrorBanner(`上传失败：${a.name}（${e.message || 'unknown error'}）`);
       files.length = 0; // 半截文件不发给模型，整条附件作废
       break;
     }

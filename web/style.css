@@ -1962,8 +1962,55 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   border: 1px solid var(--danger-border);
   color: var(--red);
   font-size: var(--fs-sm);
-  white-space: pre-wrap;
 }
+/* 短错误整段显示（保持旧观感）。长错误走 .err-head + .err-full 的折叠结构。 */
+.err-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 长错误默认只露一行摘要 + 「展开全文」按钮。
+   限高是硬约束：#error-banner 在浮层 composer 里，无限高会把主对话整个盖住
+   （composer 的高度还会被 syncComposerSpace() 写进 #messages 的 padding-bottom，
+   消息被顶出视口）。展开区自己滚动，不连带滚聊天。 */
+.err-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.err-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.err-toggle {
+  flex: none;
+  background: transparent;
+  border: 1px solid currentColor;
+  color: inherit;
+  border-radius: var(--r-full);
+  padding: 1px var(--sp-3);
+  font-size: var(--fs-xs);
+  font-family: inherit;
+  cursor: pointer;
+}
+.err-toggle:hover { background: var(--danger-border); }
+#error-banner.warning .err-toggle:hover { background: var(--warning-border); }
+.err-full {
+  display: none;
+  margin-top: var(--sp-2);
+  max-height: 36vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.err-full.open { display: block; }
 #error-banner.warning {
   background: var(--warning-bg);
   border-color: var(--warning-border);
