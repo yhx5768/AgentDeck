@@ -83,16 +83,27 @@ const md = (text, opts) => {
   // 按钮放在 pre 外面而不是里面：pre 横向滚动时按钮不跟着内容跑。
   // ```html 围栏额外升级成沙箱渲染容器（默认仍显示代码，点「渲染」才挂 iframe）。
   tpl.content.querySelectorAll('pre').forEach((pre) => {
-    const code = pre.querySelector('code');
-    const lang = code ? (code.className.match(/language-([\w+-]+)/) || [])[1] || '' : '';
-    const wantArtifact = (!opts || opts.artifacts !== false) && lang.toLowerCase() === 'html';
-    // 先把 pre 从树上摘下来再交给构造器：构造器会把 pre 收进新节点里，
-    // 若此时 pre 还挂在原位，replaceWith 会因为它已无父节点而抛异常。
     const parent = pre.parentNode;
+    if (!parent) return; // 已被上一轮摘走：没有原位可放回去，直接跳过
     const anchor = pre.nextSibling;
-    parent.removeChild(pre);
-    const node = wantArtifact ? buildHtmlArtifactNode(pre) : buildCodeBlockNode(pre);
-    parent.insertBefore(node, anchor);
+    let detached = false;
+    try {
+      const code = pre.querySelector('code');
+      const lang = code ? (code.className.match(/language-([\w+-]+)/) || [])[1] || '' : '';
+      const wantArtifact = (!opts || opts.artifacts !== false) && lang.toLowerCase() === 'html';
+      // 先把 pre 从树上摘下来再交给构造器：构造器会把 pre 收进新节点里，
+      // 若此时 pre 还挂在原位，replaceWith 会因为它已无父节点而抛异常。
+      parent.removeChild(pre);
+      detached = true;
+      const node = wantArtifact ? buildHtmlArtifactNode(pre) : buildCodeBlockNode(pre);
+      parent.insertBefore(node, anchor);
+    } catch (err) {
+      // 这一段是纯 DOM 手术，不该让整条消息渲染失败——抛出去会中断 flushHistory
+      // 的回放循环，用户只看到"对话到一半没了"，还查不出是哪条消息。
+      // 降级：把 pre 按原位放回去（没有复制按钮的裸代码块），其余照常。
+      if (detached) { try { parent.insertBefore(pre, anchor); } catch (_) {} }
+      console.warn('md: 代码块壳构造失败，已降级为裸代码块', err);
+    }
   });
   return tpl.innerHTML;
 };
@@ -2390,7 +2401,7 @@ function connectEvents(id) {
       state.historyBuf.push(ev);
       return;
     }
-    renderEvent(ev);
+    safeRenderEvent(ev);
     // live 事件同样进入 historyBuf，作为轨迹视图的数据源；
     // stream_event 增量太多且轨迹用不到（完整 assistant 事件兜底），不入。
     if (ev.kind !== 'stream' || !ev.data || ev.data.type !== 'stream_event') {
@@ -2528,7 +2539,7 @@ function flushHistory() {
   state.renderingHistory = true;
   try {
     for (let i = state.histRenderedFrom; i < buf.length; i++) {
-      renderEvent(buf[i], box);
+      safeRenderEvent(buf[i], box);
     }
   } finally {
     state.renderingHistory = false;
@@ -2560,7 +2571,7 @@ function loadMoreHistory() {
   state.renderingHistory = true;
   try {
     for (let i = from; i < state.histRenderedFrom; i++) {
-      renderEvent(state.historyBuf[i], frag);
+      safeRenderEvent(state.historyBuf[i], frag);
     }
   } finally {
     state.renderingHistory = false;
@@ -4109,6 +4120,26 @@ function renderOcTextDelta(d, box, ts) {
   state.ocBuf = text;
   state.ocBubble = b;
   liveSchedulePaint(b);
+}
+
+// 单条事件渲染失败不能拖垮整段回放。renderEvent 里全是 DOM 手术（md 的代码块壳、
+// 工具卡片配对、流式气泡替换），历史内容又是模型自由输出的文本——一旦某条抛错，
+// flushHistory 的循环会当场中断，用户看到的是"对话到一半就没了"，而且完全不知道
+// 是哪条消息出的问题。这里兜住：占位一行说明跳过了哪条，其余事件继续渲染。
+function safeRenderEvent(ev, box) {
+  try {
+    renderEvent(ev, box);
+  } catch (err) {
+    const what = (err && err.name) || 'Error';
+    console.warn('renderEvent 失败，已跳过该事件', ev && ev.kind, err);
+    try {
+      const host = box || $('#messages');
+      const line = document.createElement('div');
+      line.className = 'meta-line';
+      line.textContent = `⚠️ 一条消息渲染失败（${what}），已跳过，其余内容不受影响`;
+      host.appendChild(line);
+    } catch (_) { /* 连占位都放不下就算了，不能再抛 */ }
+  }
 }
 
 function renderEvent(ev, box) {
