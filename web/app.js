@@ -2522,6 +2522,18 @@ function updateStatsUI() {
   el.textContent = `${out} · 累计 ${dur}`;
 }
 
+// 会话里最后一条用户输入在回放缓冲中的下标（没有则 -1）。三个引擎的回放都把真实
+// 输入转成 kind:"user" + data.text（claudehist / opencodehist / mcodehist 同口径），
+// tool_result 与 peer 消息走 kind:"stream" 不算——所以它就是「DOM 里最后一条
+// .msg-user」在缓冲里的对应物。空文本的 user 事件渲染出来是空气泡，一并跳过。
+function lastUserEventIndex(buf) {
+  for (let i = buf.length - 1; i >= 0; i--) {
+    const ev = buf[i];
+    if (ev && ev.kind === 'user' && ev.data && typeof ev.data.text === 'string' && ev.data.text.trim()) return i;
+  }
+  return -1;
+}
+
 // Render the latest page of buffered history (called on replay_end).
 function flushHistory() {
   // EventSource auto-reconnect replays history again with fresh seqs; the
@@ -2533,7 +2545,15 @@ function flushHistory() {
   // Optimistic bubbles sent while history was loading belong at the end.
   const optimistic = [...box.querySelectorAll('.msg-optimistic')];
   const buf = state.historyBuf;
-  state.histRenderedFrom = Math.max(0, buf.length - HISTORY_PAGE);
+  // 首屏窗口必须含最后一条 user 事件：顶部悬浮条钉的就是它（内容取 DOM 里最后一条
+  // .msg-user），而一轮几十步工具调用就能在它后面堆出上百条 assistant/tool 事件
+  // ——固定 50 条的窗口会把最后一条输入整条截在外面，切会话回来悬浮条凭空消失，
+  // 得点几次「加载更多」才回来。窗口只向前扩到那条输入为止，多渲染的正是用户
+  // 要看的那一轮，不算浪费；「加载更多」的剩余条数仍是 histRenderedFrom，口径不变。
+  const lastUser = lastUserEventIndex(buf);
+  state.histRenderedFrom = (lastUser >= 0 && lastUser < buf.length - HISTORY_PAGE)
+    ? lastUser
+    : Math.max(0, buf.length - HISTORY_PAGE);
   // 历史渲染期间旧 status 事件不得触发副作用（旧 turn_end 会把待发送消息
   // 在轮次仍在跑时误提交；见 renderEvent 的 status 分支）。
   state.renderingHistory = true;
