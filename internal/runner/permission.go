@@ -69,6 +69,8 @@ func effectivePermissionMode(sessPerm, cliPerm string) string {
 //     octurn.go).
 //   - mcode's "ask" needs an interactive TUI/ACP client; headless runs only
 //     know smart/full.
+//   - codex exec never prompts: it runs under a sandbox policy (or is fully
+//     bypassed), so there is no approval card to raise.
 //
 // Bypass/dontAsk never prompt, so they need no hook either.
 func permissionHookWanted(cli *config.CLI, sessPerm string) bool {

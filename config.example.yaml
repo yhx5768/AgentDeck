@@ -18,6 +18,7 @@ default_cwd: "~"
 # 注释掉 = 开（默认）。设 false 才关闭。
 # 覆盖范围：
 #   claude / qoder / mcode —— 走 --append-system-prompt 追加进每轮 system prompt。
+#   codex / ducx —— 没有 append 语义的入口（-c 只接配置键），不注入。
 #     用户在 clis[].args 里自己写了同名 flag 时不重复注入（CLIs 取最后一个）。
 #   opencode —— 它没有 append 语义的入口（system 字段是覆盖 agent 自身 prompt
 #     的，填进去更糟），改写 ~/.config/cc-webui/opencode/ 下的 opencode.json，
@@ -36,6 +37,9 @@ default_cwd: "~"
 #                 kind: qoder = Qoder CLI CN 引擎（Claude Code 的 fork，协议同
 #                 claude，只是没有 --verbose、档位 flag 叫 --reasoning-effort、
 #                 permission_mode 用下划线拼写，transcript 在 ~/.qoder-cn）
+#                 kind: codex = Codex CLI 引擎（`codex exec --json` +
+#                 $CODEX_HOME/sessions rollout；Baidu 的 ducx 是同一协议，
+#                 用 home 指向 ~/.baidu-cx、model_provider 指向 oneapi）
 #   providers[] - 一个模型后端（kind: claude 的共享 env 是 BASE_URL/TOKEN；
 #                 kind: opencode 的 provider 名必须等于 opencode CLI 的
 #                 providerID，凭据走 opencode 自己的 auth.json，env 不生效；
@@ -88,6 +92,24 @@ clis:
     path: "qoderclicn"            # 官方安装脚本装到 ~/.local/bin/qoderclicn
                                    # 凭据走 `qoderclicn login` 的登录态，无需 env
     permission_mode: "default"   # 内部转成 --permission-mode default；bypassPermissions 才全放行（→ bypass_permissions）
+    args: []
+    env: {}
+
+  - name: "codex"
+    kind: "codex"                 # Codex CLI；`codex exec --json` 一次性进程
+    path: "codex"                 # 原生 codex 的 CODEX_HOME 默认 ~/.codex
+    permission_mode: "bypassPermissions"  # default → --sandbox workspace-write；
+                                   # bypassPermissions → 完全跳过沙箱与审批
+    args: []
+    env: {}
+
+  - name: "ducx"
+    kind: "codex"                 # 百度二次封装（ducx = baidu-codex 的软链）
+    path: "/home/you/.baidu-cx/baidu-cx/bin/ducx"
+    home: "~/.baidu-cx"           # ducx 忽略 CODEX_HOME，rollout 固定写这里
+    model_provider: "oneapi"      # 只要传 -c（例如档位），必须同时钉住 provider，
+                                   # 否则 ducx 会退回 api.openai.com
+    permission_mode: "bypassPermissions"
     args: []
     env: {}
 
@@ -155,6 +177,15 @@ providers:
   # been exhausted"。想要一个不花钱的会话，就把模型选成 Flash。
   - name: "qoder-cn"
     kind: "qoder"
+    env: {}
+    models: []
+
+  # codex 引擎示例：provider 名只需在 cc-webui 内唯一；凭据由 codex 自己的
+  # config.toml / 登录态决定，config 的 env 不参与。models 留空即可——可用
+  # 模型与每个模型的推理档位由 CLI 的 `debug models --bundled` 提供
+  # （/api/codex-models），写死会随 CLI 升级/账号档位过期。
+  - name: "codex"
+    kind: "codex"
     env: {}
     models: []
 

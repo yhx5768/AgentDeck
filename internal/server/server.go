@@ -23,6 +23,7 @@ import (
 	"unicode"
 
 	"cc-webui/internal/claudehist"
+	"cc-webui/internal/codexhist"
 	"cc-webui/internal/config"
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
@@ -72,6 +73,18 @@ var qoderEfforts = []string{"auto", "none", "low", "medium", "high", "xhigh", "m
 // low/high/max, none/thinking, or nothing at all) — only the shape is checked
 // here, the UI offers the actual keys from the model metadata. Qoder takes its
 // own fixed --reasoning-effort set (qoderEfforts).
+func effortKeyShapeOK(s string) bool {
+	if s == "" || len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 func effortOKFor(kind, s string) bool {
 	if s == "" {
 		return true // empty = default / clear the override
@@ -89,6 +102,10 @@ func effortOKFor(kind, s string) bool {
 		return true
 	case config.KindQoder:
 		return validQoderEffort(s)
+	case config.KindCodex:
+		// Per-model levels come from the CLI's own catalog (low..ultra today);
+		// only the shape is checked here, and validateEffort refines it.
+		return effortKeyShapeOK(s)
 	}
 	return validEffort(s)
 }
@@ -111,6 +128,9 @@ type Server struct {
 	// ocRefreshing marks keys with a background --refresh already in flight,
 	// so a burst of requests cannot stampede the CLI or models.dev.
 	ocRefreshing map[string]bool
+	// codexCaches holds one incremental stats cache per codex home (ducx and
+	// native codex keep separate rollout trees).
+	codexCaches map[string]*codexhist.StatsCache
 
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
@@ -177,6 +197,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/mcode-models", s.auth(s.handleMcodeModels))
 	s.mux.Handle("GET /api/mcode-sessions", s.auth(s.handleMcodeSessions))
 	s.mux.Handle("GET /api/mcode-sessions/preview", s.auth(s.handleMcodeSessionPreview))
+	s.mux.Handle("GET /api/codex-models", s.auth(s.handleCodexModels))
+	s.mux.Handle("GET /api/codex-sessions", s.auth(s.handleCodexSessions))
+	s.mux.Handle("GET /api/codex-sessions/preview", s.auth(s.handleCodexSessionPreview))
 	s.mux.Handle("GET /api/qoder-models", s.auth(s.handleQoderModels))
 	s.mux.Handle("GET /api/qoder-sessions", s.auth(s.handleQoderSessions))
 	s.mux.Handle("GET /api/qoder-sessions/preview", s.auth(s.handleQoderSessionPreview))
@@ -413,7 +436,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 type sessionView struct {
 	*store.Session
-	Engine        string        `json:"engine"` // cli kind: claude | opencode | mcode | qoder
+	Engine        string        `json:"engine"` // cli kind: claude | opencode | mcode | qoder | codex
 	Status        runner.Status `json:"status"`
 	ResumeCommand string        `json:"resume_command,omitempty"`
 	// PendingAsks summarizes outstanding AskUserQuestion prompts. The approval
@@ -579,6 +602,35 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 		return base + shellQuote(cliPath) + " --session " + sess.ClaudeSessionID
 	case config.KindQoder:
 		effortFlag = "--reasoning-effort"
+	case config.KindCodex:
+		if cliPath == "" {
+			cliPath = "codex"
+		}
+		cmd := base + shellQuote(cliPath)
+		if cli != nil && cli.ModelProvider != "" {
+			cmd += " -c " + shellQuote("model_provider="+cli.ModelProvider)
+		}
+		if prov := s.cfg().ProviderByName(sess.Provider); prov != nil {
+			if model := prov.EffectiveModel(sess.ModelOverride); model != "" {
+				cmd += " -m " + shellQuote(model)
+			}
+		}
+		if sess.EffortOverride != "" {
+			cmd += " -c " + shellQuote("model_reasoning_effort="+sess.EffortOverride)
+		}
+		mode := sess.PermissionMode
+		if mode == "" && cli != nil {
+			mode = cli.PermissionMode
+		}
+		switch mode {
+		case "bypassPermissions":
+			cmd += " --dangerously-bypass-approvals-and-sandbox"
+		case "plan", "readOnly":
+			cmd += " -s read-only"
+		default:
+			cmd += " -s workspace-write"
+		}
+		return cmd + " resume " + sess.ClaudeSessionID
 	}
 	prov := s.cfg().ProviderByName(sess.Provider)
 	var settings string
@@ -690,8 +742,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.Cwd = resolvedCwd
-	if !effortOKFor(cli.Kind, body.Effort) {
-		writeErr(w, http.StatusBadRequest, "invalid effort: "+body.Effort)
+	if err := s.validateEffort(cli, prov, body.Model, body.Effort); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	now := time.Now()
@@ -1038,8 +1090,8 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	// whose prompt API takes file parts directly, so images travel on the
 	// real multimodal channel instead of degrading to a path mention.
 	if len(body.Images) > 0 {
-		if eng := s.engineOf(sess); eng == config.KindMcode {
-			writeErr(w, http.StatusBadRequest, eng+" 引擎暂不支持图片消息（文件附件可用）")
+		if eng := s.engineOf(sess); eng == config.KindMcode || eng == config.KindCodex {
+			writeErr(w, http.StatusBadRequest, eng+" 引擎暂不支持内嵌图片消息（文件附件可用）")
 			return
 		}
 	}
@@ -1289,7 +1341,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		// directory — see claudehist.Profile), opencode sessions are exported
 		// via the CLI and mcode sessions are parsed from their own
 		// messages.jsonl (both keep their transcript inside the CLI's own
-		// store).
+		// store); codex sessions are parsed from the CLI's rollout tree.
 		var extEvents []*store.Event
 		switch s.engineOf(sess) {
 		case config.KindOpenCode:
@@ -1305,6 +1357,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				extEvents = mc.ToEvents()
 			} else {
 				log.Printf("mcode replay %s: %v", sess.ClaudeSessionID, err)
+			}
+		case config.KindCodex:
+			if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
+				if cx, err := codexhist.FetchSession(codexHome(cli), sess.ClaudeSessionID); err == nil {
+					extEvents = cx.ToEvents()
+				} else {
+					log.Printf("codex replay %s: %v", sess.ClaudeSessionID, err)
+				}
 			}
 		default:
 			// claude and qoder share the transcript reader, differing only in
@@ -1640,6 +1700,29 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		}
 		if mc.ModelID != "" && prov.ModelByName(mcodehist.BareModelID(mc.ModelID)) != nil {
 			sess.ModelOverride = mcodehist.BareModelID(mc.ModelID)
+		}
+		if err := s.st.Upsert(sess, nil); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, s.view(sess))
+		return
+	}
+	if cli.IsCodex() {
+		// codex import: the rollout lives under the cli's CODEX_HOME. Reading
+		// it doubles as the readability check (SSE re-parses on connect) and
+		// supplies the model the session last ran on.
+		if _, err := runner.ResolveCwd(body.Cwd); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		cx, err := codexhist.FetchSession(codexHome(cli), body.ClaudeSessionID)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "codex session not found: "+err.Error())
+			return
+		}
+		if cx.ModelID != "" && s.modelKnown(cli, prov, cx.ModelID) {
+			sess.ModelOverride = cx.ModelID
 		}
 		if err := s.st.Upsert(sess, nil); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -2044,6 +2127,13 @@ func (s *Server) modelKnown(cli *config.CLI, prov *config.Provider, model string
 			}
 		}
 		return false
+	case cli.IsCodex():
+		cat, err := codexhist.LoadCatalog(cli.Path, false)
+		if err != nil {
+			log.Printf("codex model catalog unavailable, skipping model check for %q: %v", model, err)
+			return true
+		}
+		return cat.Find(model) != nil
 	}
 	return false
 }

@@ -18,12 +18,15 @@ import (
 // "mcode" is MiniMax Code (exec --output-format stream-json stdout +
 // ~/.minimax messages.jsonl transcript); kind "qoder" is Qoder CLI CN, a
 // Claude Code fork that speaks the same stream-json protocol and writes the
-// same transcript layout under ~/.qoder-cn.
+// same transcript layout under ~/.qoder-cn; kind "codex" is the Codex CLI
+// (codex exec --json stdout + $CODEX_HOME/sessions rollout files), which also
+// covers wrappers such as Baidu's ducx.
 const (
 	KindClaude   = "claude"
 	KindOpenCode = "opencode"
 	KindMcode    = "mcode"
 	KindQoder    = "qoder"
+	KindCodex    = "codex"
 )
 
 // CLI describes one chat CLI binary.
@@ -36,8 +39,18 @@ type CLI struct {
 	// PartialMessages passes --include-partial-messages to the CLI, enabling
 	// token-level stream_event deltas in the output stream. Only enable for
 	// recent Claude Code builds; compatible CLIs may not recognize the flag.
-	PartialMessages bool              `yaml:"partial_messages" json:"partial_messages"`
-	Env             map[string]string `yaml:"env" json:"-"` // never serialized to API clients
+	PartialMessages bool `yaml:"partial_messages" json:"partial_messages"`
+	// Home relocates a per-installation CLI home for engines that read their own
+	// transcript from a fixed directory. Codex uses it as CODEX_HOME (Baidu's
+	// ducx wrapper writes to ~/.baidu-cx and ignores the env var, so it must be
+	// declared here); other engines ignore it.
+	Home string `yaml:"home" json:"home,omitempty"`
+	// ModelProvider is the codex `model_provider` id to pin when a config
+	// override is passed. It matters for launcher wrappers: any `-c` flag makes
+	// ducx drop the provider it would otherwise inject, so the id has to be
+	// repeated. Standard codex with its own config.toml can leave it empty.
+	ModelProvider string            `yaml:"model_provider" json:"model_provider,omitempty"`
+	Env           map[string]string `yaml:"env" json:"-"` // never serialized to API clients
 }
 
 // Model is one model within a provider, with optional per-model env and
@@ -81,6 +94,12 @@ func (c *CLI) IsQoder() bool { return c.Kind == KindQoder }
 
 // IsQoder mirrors CLI.IsQoder for providers.
 func (p *Provider) IsQoder() bool { return p.Kind == KindQoder }
+
+// IsCodex reports whether this cli speaks the Codex CLI protocol.
+func (c *CLI) IsCodex() bool { return c.Kind == KindCodex }
+
+// IsCodex mirrors CLI.IsCodex for providers.
+func (p *Provider) IsCodex() bool { return p.Kind == KindCodex }
 
 // ModelByName returns the model with the given name, or nil.
 func (p *Provider) ModelByName(name string) *Model {

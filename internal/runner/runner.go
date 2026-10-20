@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"cc-webui/internal/claudehist"
+	"cc-webui/internal/codexhist"
 	"cc-webui/internal/config"
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodeapi"
@@ -740,7 +741,8 @@ func ResolveCwd(dir string) (string, error) {
 // qoder-kind CLIs spawn a one-shot `-p --output-format stream-json` process
 // (runStreamJSONTurn, one argv dialect each), opencode-kind CLIs drive a
 // shared `opencode serve` process over HTTP+SSE (runOpenCodeTurn), mcode-kind
-// CLIs spawn `mcode exec` (runMcodeTurn).
+// CLIs spawn `mcode exec` (runMcodeTurn), codex-kind CLIs spawn
+// `codex exec --json` (runCodexTurn).
 func (m *Manager) runTurn(sessionID string, msg Message) {
 	sess := m.st.Get(sessionID)
 	if sess == nil {
@@ -770,6 +772,10 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	}
 	if cli.IsMcode() {
 		m.runMcodeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
+		return
+	}
+	if cli.IsCodex() {
+		m.runCodexTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
 		return
 	}
 	// claude-kind and qoder-kind CLIs share one spawn path: Qoder CLI CN is a
@@ -1367,6 +1373,169 @@ func mcodeModelID(providerName, modelName string) string {
 		return modelName
 	}
 	return providerName + "/" + modelName
+}
+
+// buildCodexArgs assembles the `codex exec` argv (and `exec resume` when the
+// session already has an id). The prompt is never a positional argument: it is
+// written to stdin, which avoids argv length limits for long prompts that
+// include file mentions.
+//
+// `exec resume` does not accept --sandbox: a resumed thread inherits the
+// policy recorded when it was created. bypassPermissions is the only mode that
+// drops the sandbox entirely.
+func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider) []string {
+	args := []string{"exec"}
+	resume := sess.ClaudeSessionID != ""
+	if resume {
+		args = append(args, "resume")
+	}
+	args = append(args, "--json", "--skip-git-repo-check")
+	mode := sess.PermissionMode
+	if mode == "" {
+		mode = cli.PermissionMode
+	}
+	switch mode {
+	case "bypassPermissions":
+		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
+	case "plan", "readOnly":
+		// resume inherits the thread's policy, so only new sessions take it.
+		if !resume {
+			args = append(args, "--sandbox", "read-only")
+		}
+	default:
+		// Headless exec cannot surface approval prompts, so the useful
+		// default is "edit inside the workspace, never ask".
+		if !resume {
+			args = append(args, "--sandbox", "workspace-write")
+		}
+	}
+	model := prov.EffectiveModel(sess.ModelOverride)
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	// Any -c override makes ducx skip the provider it would otherwise inject,
+	// so a configured id is repeated here before the override that needs it.
+	if sess.EffortOverride != "" && cli.ModelProvider != "" {
+		args = append(args, "-c", "model_provider="+cli.ModelProvider)
+	}
+	if sess.EffortOverride != "" {
+		args = append(args, "-c", "model_reasoning_effort="+sess.EffortOverride)
+	}
+	for _, f := range msg.Files {
+		if isImageFile(f.Path) {
+			args = append(args, "-i", f.Path)
+		}
+	}
+	args = append(args, cli.Args...)
+	if resume {
+		args = append(args, sess.ClaudeSessionID)
+	}
+	return args
+}
+
+// runCodexTurn runs one user message through the Codex engine
+// (`codex exec --json`). Every stdout line is one JSON event adapted to the
+// canonical cc-webui stream shape (codexhist — the same mapping the replay
+// path uses, so a reloaded page looks like the live run). The thread id arrives
+// in thread.started and is stored in the same ClaudeSessionID field opencode,
+// mcode and qoder reuse; the transcript itself stays in codex's rollout tree
+// under $CODEX_HOME and is replayed from there on later connects.
+//
+// Inline base64 images are rejected at the API layer for this engine: images
+// arrive as uploaded files and image-typed ones are additionally passed with
+// codex's -i flag.
+func (m *Manager) runCodexTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
+	args := m.buildCodexArgs(msg, sess, cli, prov)
+	model := prov.EffectiveModel(sess.ModelOverride)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.setRunning(sessionID, cancel)
+
+	cmd := exec.CommandContext(ctx, cli.Path, args...)
+	cmd.Dir = resolvedCwd
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	envMap := buildEnvMap(cli.EffectiveEnv(prov, model))
+	cmd.Env = envMapToSlice(envMap)
+	cmd.Stdin = strings.NewReader(turnText(msg))
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
+		return
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": "start codex: " + err.Error()})
+		return
+	}
+
+	tx := codexhist.NewToolTx()
+	fatal := ""
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	for sc.Scan() {
+		ev, ok := codexhist.ParseLive(sc.Bytes())
+		if !ok {
+			continue
+		}
+		if sid := ev.SessionIDOf(); sid != "" && sid != sess.ClaudeSessionID {
+			m.st.Upsert(sess, store.WithClaudeSID(sid))
+			sess.ClaudeSessionID = sid
+		}
+		if emsg := ev.ErrorMessage(); emsg != "" {
+			fatal = emsg
+		}
+		for _, payload := range ev.Adapt(tx) {
+			m.emit(sessionID, "stream", payload)
+		}
+		if ev.Type == "turn.completed" {
+			if p := codexhist.UsagePayload(ev.Usage, model, ev.TS); p != nil {
+				m.emit(sessionID, "stream", p)
+			}
+		}
+	}
+
+	waitErr := cmd.Wait()
+	m.st.Upsert(sess, func(s *store.Session) { s.UpdatedAt = time.Now() })
+
+	switch {
+	case ctx.Err() != nil:
+		m.emit(sessionID, "status", map[string]string{"state": "interrupted"})
+		m.setIdle(sessionID, "interrupted")
+	case waitErr != nil || fatal != "":
+		errMsg := strings.TrimSpace(fatal)
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(stderr.String())
+		}
+		if errMsg == "" && waitErr != nil {
+			errMsg = waitErr.Error()
+		}
+		log.Printf("codex turn failed (session %s, codex sid %s): %s", sessionID, sess.ClaudeSessionID, errMsg)
+		m.emit(sessionID, "status", map[string]string{"state": "error", "error": errMsg})
+		m.setIdle(sessionID, errMsg)
+	default:
+		m.emit(sessionID, "status", map[string]string{"state": "turn_end"})
+		m.setIdle(sessionID, "")
+	}
+	// No captureCheckpoint: codex exposes no claude-style file rewind.
+}
+
+// isImageFile reports whether path looks like an image codex can attach with
+// -i. The composer uploads inline images as files for this engine, so the
+// extension is the only type signal available (UploadedFile has no MIME).
+func isImageFile(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return true
+	}
+	return false
 }
 
 // diagnoseOpenCodeRunError enriches a generic opencode run failure with an

@@ -381,6 +381,7 @@ const state = {
   ocModels: {},       // "cli/provider" -> {ts, data:{models:[{name,input}]}|null}（带 TTL，见 ocModelsFor）
   mcodeCatalog: {},   // "cli/provider" -> {ts, data:{provider_id,models:[…],default_model}|null}（带 TTL，见 mcodeCatalogFor）
   qoderCatalog: {},   // "cli/provider" -> {ts, data:{models:[…],efforts:[…]}|null}（带 TTL，见 qoderCatalogFor）
+  codexCatalog: {},   // "cli/provider" -> {ts, data:{models:[…]}|null}（带 TTL，见 codexCatalogFor）
   nearBottom: true,
   home: '',           // server home dir, for ~ path shortening
   drafts: {},         // sessionId -> {text, attachments}
@@ -1933,14 +1934,19 @@ function applyAttachGate() {
       : '当前模型未声明能力；如需附件请检查模型配置';
   };
   gate(cached.length ? cached : providerModels(state.current.provider));
-  if (!cached.length && provKind(state.current.provider) === 'opencode' && state.current.cli) {
+  if (!cached.length && state.current.cli) {
     const cli = state.current.cli;
     const provider = state.current.provider;
-    ocModelsFor(cli, provider).then((cat) => {
-      // 期间可能已经切了会话/provider，判定必须落在当前这一组上。
-      if (!state.current || state.current.cli !== cli || state.current.provider !== provider) return;
-      gate(Array.isArray(cat && cat.models) && cat.models.length ? cat.models : providerModels(provider));
-    });
+    const kind = provKind(provider);
+    // opencode / mcode / qoder / codex 的模型清单是 CLI 侧的，config 里通常
+    // 为空；这里异步拉一次再判，避免首屏附件按钮一直是禁用的。
+    if (kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex') {
+      modelsForProvider(provider, cli).then((models) => {
+        // 期间可能已经切了会话/provider，判定必须落在当前这一组上。
+        if (!state.current || state.current.cli !== cli || state.current.provider !== provider) return;
+        gate(models.length ? models : providerModels(provider));
+      });
+    }
   }
 }
 
@@ -1965,7 +1971,8 @@ const provKind = (name) => kindOf(state.providers.find((p) => p.name === name));
 // claude 与 qoder 都吃：qoderclicn 1.1.65 实测能正确读出 base64 PNG 的内容，
 // 都走 --input-format stream-json 的多模态载荷。
 // opencode 走 `opencode serve` 的 prompt file part，同样原样内嵌。
-// 只有 mcode 没有内嵌通道，图片降级成文件附件（见 attachFiles / nsAttachFiles）。
+// mcode 与 codex 没有内嵌通道，图片降级成文件附件（见 attachFiles /
+// nsAttachFiles）；codex 另外会把图片文件的路径以 -i 传给 CLI。
 const engineTakesImages = (kind) => kind === 'claude' || kind === 'qoder' || kind === 'opencode';
 
 function fillCLISelect(sel, value, kind) {
@@ -2176,6 +2183,31 @@ function qoderEfforts(catalog) {
   return (catalog && Array.isArray(catalog.efforts)) ? catalog.efforts : [];
 }
 
+// ---- codex 模型目录 ----
+// codex 的模型清单编译在 CLI 里（`codex debug models --bundled`），随 CLI
+// 升级和账号档位变化，写进 config 必然过期。服务端解析后经 /api/codex-models
+// 下发；ducx 是同一协议，只是 home 和内置模型不同。缓存策略与其它目录一致。
+const CODEX_CATALOG_TTL = 10 * 60 * 1000;
+async function codexCatalogFor(cliName, providerName) {
+  const key = `${cliName}/${providerName}`;
+  const ent = state.codexCatalog[key];
+  if (ent && Date.now() - ent.ts < CODEX_CATALOG_TTL) return ent.data;
+  let data = null;
+  try {
+    data = await api(`/api/codex-models?cli=${encodeURIComponent(cliName)}&provider=${encodeURIComponent(providerName)}&fresh=1`);
+  } catch (_) {
+    // 拉取失败 = CLI 太老不支持 debug models；退回 config 的静态列表
+  }
+  state.codexCatalog[key] = { ts: Date.now(), data: data || null };
+  return data;
+}
+
+function codexEffortsFor(catalog, modelName) {
+  if (!catalog || !modelName || !Array.isArray(catalog.models)) return [];
+  const m = catalog.models.find((x) => x.id === modelName);
+  return (m && m.efforts) || [];
+}
+
 // 某 provider 的模型列表：opencode / mcode / qoder 走 CLI 侧目录，其余走 config
 // 静态列表。
 //
@@ -2205,6 +2237,12 @@ async function modelsForProvider(providerName, cliName) {
     const cat = await qoderCatalogFor(cliName, providerName);
     if (cat && Array.isArray(cat.models) && cat.models.length) {
       return cat.models.map((m) => ({ name: m.name, input: m.input || [] }));
+    }
+  }
+  if (kind === 'codex' && cliName) {
+    const cat = await codexCatalogFor(cliName, providerName);
+    if (cat && Array.isArray(cat.models) && cat.models.length) {
+      return cat.models.map((m) => ({ name: m.id, input: m.input || [] }));
     }
   }
   return providerModels(providerName);
@@ -2249,6 +2287,14 @@ async function refreshSessionEffort() {
     applyEffortOptions(sheet, 'qoder', keys, sheetWrap);
     return;
   }
+  if (engine === 'codex') {
+    const ms = await modelsForProvider(s.provider, s.cli);
+    const model = s.model_override || (ms[0] && ms[0].name) || '';
+    const keys = codexEffortsFor(await codexCatalogFor(s.cli, s.provider), model);
+    applyEffortOptions(main, 'codex', keys);
+    applyEffortOptions(sheet, 'codex', keys, sheetWrap);
+    return;
+  }
   applyEffortOptions(main, 'claude');
   applyEffortOptions(sheet, 'claude', null, sheetWrap);
 }
@@ -2272,6 +2318,11 @@ async function refreshNsEffort() {
     applyEffortOptions(sel, 'qoder', qoderEfforts(await qoderCatalogFor(cliName, $('#ns-provider').value)));
     return;
   }
+  if (kind === 'codex') {
+    const cat = await codexCatalogFor(cliName, $('#ns-provider').value);
+    applyEffortOptions(sel, 'codex', codexEffortsFor(cat, $('#ns-model').value));
+    return;
+  }
   applyEffortOptions(sel, 'claude');
 }
 
@@ -2292,6 +2343,11 @@ async function refreshNewEffort() {
   }
   if (kind === 'qoder') {
     applyEffortOptions(sel, 'qoder', qoderEfforts(await qoderCatalogFor(cliName, $('#new-provider').value)), wrap);
+    return;
+  }
+  if (kind === 'codex') {
+    const cat = await codexCatalogFor(cliName, $('#new-provider').value);
+    applyEffortOptions(sel, 'codex', codexEffortsFor(cat, $('#new-model').value), wrap);
     return;
   }
   applyEffortOptions(sel, 'claude', null, wrap);
@@ -2319,7 +2375,7 @@ function renderModelList(sel, models, value, defaultLabel) {
 // provider 时，先发的请求后到也不能把下拉覆盖成上一个 provider 的模型。
 function fillModelSelect(sel, providerName, value, cliName, defaultLabel) {
   const kind = provKind(providerName);
-  if ((kind === 'opencode' || kind === 'mcode' || kind === 'qoder') && cliName) {
+  if ((kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex') && cliName) {
     sel.dataset.provider = providerName;
     modelsForProvider(providerName, cliName).then((models) => {
       if (sel.dataset.provider !== providerName) return;
@@ -2345,6 +2401,7 @@ async function refreshProfiles() {
     state.ocModels = {};   // 同理：opencode 目录按 cli/provider 缓存，改名/新增后失效
     state.mcodeCatalog = {}; // 同理：mcode provider 改名/新增后旧目录对不上
     state.qoderCatalog = {}; // 同理：qoder 目录按 cli/provider 缓存，改名后失效
+    state.codexCatalog = {}; // 同理：codex 目录按 cli/provider 缓存，改名后失效
     rerenderProfileSelects();
   } catch (_) {
     // 网络抖动忽略：下一轮轮询/广播再试
@@ -5605,6 +5662,7 @@ function renderStats(stats) {
   if (engines.opencode) scopeParts.push(`opencode ${fmtInt(engines.opencode)} 个`);
   if (engines.mcode) scopeParts.push(`mcode ${fmtInt(engines.mcode)} 个`);
   if (engines.qoder) scopeParts.push(`qoder ${fmtInt(engines.qoder)} 个（~/.qoder-cn/projects）`);
+  if (engines.codex) scopeParts.push(`codex ${fmtInt(engines.codex)} 个`);
   $('#stats-scope').textContent = scopeParts.join(' + ') || (stats.total_sessions ? '本机全部会话' : '无');
   const daily = stats.daily_activity || [];
   const totalTokens = (stats.daily_model_tokens || []).reduce(
@@ -5806,6 +5864,7 @@ const IMPORT_HINTS = {
   opencode: 'opencode 会话存于 opencode 自己的存储（<code>opencode session list</code>）。导入时会话按导出里的模型对齐到所选 provider。',
   mcode: 'mcode 会话存于它自己的运行时数据目录（<code>~/.minimax/v2/sessions/</code>，每个会话一个日期目录，session id 是 <code>mvs_</code> 开头的串）。导入时按 transcript 里的模型对齐到所选 provider；工作区需在下一步自行填写。',
   qoder: 'qoder 会话存于 <code>~/.qoder-cn/projects/&lt;cwd-slug&gt;/&lt;session-id&gt;.jsonl</code>（与 Claude Code 同构，只是 home 不同）。也可以 <code>qoderclicn --list-sessions</code> 看当前项目的会话。',
+  codex: 'codex 会话存于 <code>$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*-&lt;session-id&gt;.jsonl</code>（ducx 的 home 是 <code>~/.baidu-cx</code>）。导入时按 transcript 里的模型对齐到所选 provider。',
 };
 
 function syncImportTabs(kind) {
@@ -5867,18 +5926,19 @@ async function scanImport() {
     ? '工作目录（mcode 不记录会话目录，导入时按此设置）'
     : (kind === 'opencode' ? '工作目录过滤（留空 = 全部项目）' : '工作目录过滤');
   const params = new URLSearchParams();
-  if (kind === 'opencode' || kind === 'mcode') {
-    // opencode / mcode 的会话源在各自 CLI 自己的存储里，按 cli 查询
+  if (kind === 'opencode' || kind === 'mcode' || kind === 'codex') {
+    // opencode / mcode / codex 的会话源在各自 CLI 自己的存储里，按 cli 查询
     params.set('cli', cliSel.value);
   }
-  // claude / qoder / opencode 都按项目分桶（jsonl 目录 / opencode 自己的桶），
-  // cwd 对它们就是选桶条件；留空时服务端列全部项目。
-  if (cwd && (kind === 'claude' || kind === 'qoder' || kind === 'opencode')) params.set('cwd', cwd);
+  // claude / qoder / opencode / codex 都记录会话目录，cwd 是过滤条件；
+  // 留空时服务端列全部项目。
+  if (cwd && (kind === 'claude' || kind === 'qoder' || kind === 'opencode' || kind === 'codex')) params.set('cwd', cwd);
   if (prefix) params.set('prefix', prefix);
   const url = (kind === 'claude'
       ? '/api/claude-sessions'
       : (kind === 'mcode' ? '/api/mcode-sessions'
-        : (kind === 'qoder' ? '/api/qoder-sessions' : '/api/opencode-sessions')))
+        : (kind === 'qoder' ? '/api/qoder-sessions'
+          : (kind === 'codex' ? '/api/codex-sessions' : '/api/opencode-sessions'))))
     + '?' + params.toString();
   try {
     state.importList = await api(url);
@@ -5971,7 +6031,7 @@ async function selectImportPreview(item, row) {
     pane.innerHTML = '<div class="ip-empty">加载中…</div>';
     const params = new URLSearchParams({ id: item.session_id });
     const kind = state.importKind;
-    if (kind === 'opencode' || kind === 'mcode') {
+    if (kind === 'opencode' || kind === 'mcode' || kind === 'codex') {
       params.set('cli', $('#import-cli').value);
     } else if (item.cwd) {
       params.set('cwd', item.cwd);
@@ -5979,7 +6039,8 @@ async function selectImportPreview(item, row) {
     try {
       const base = kind === 'claude' ? 'claude-sessions'
         : (kind === 'mcode' ? 'mcode-sessions'
-          : (kind === 'qoder' ? 'qoder-sessions' : 'opencode-sessions'));
+          : (kind === 'qoder' ? 'qoder-sessions'
+            : (kind === 'codex' ? 'codex-sessions' : 'opencode-sessions')));
       p = await api('/api/' + base + '/preview?' + params.toString());
     } catch (e) {
       pane.innerHTML = '<div class="ip-empty">加载失败：' + e.message + '</div>';
@@ -6084,13 +6145,16 @@ function renderModelOptions(sel, providerName) {
   // opencode / mcode / qoder 的模型不在 config 里静态声明（可用集合由 CLI 自己
   // 决定），异步拉目录后重建；dataset.provider 防止连点切换时旧请求覆盖新结果。
   const kind = provKind(providerName);
-  if (kind === 'opencode' || kind === 'mcode' || kind === 'qoder') {
+  if (kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex') {
     const cliName = $('#ns-cli').value;
     sel.dataset.provider = providerName;
     modelsForProvider(providerName, cliName).then((models) => {
       if (sel.dataset.provider !== providerName) return;
       sel.innerHTML = models.map((m) => `<option value="${m.name}">${m.name}</option>`).join('');
       if (models.length) sel.value = models[0].name;
+      // 目录是异步到的：模型真正落定后重建一次档位下拉，否则首屏会
+      // 因为 model.value 还是空而把 reasoning 控件整个隐藏。
+      refreshNsEffort();
     });
     return;
   }
@@ -6935,6 +6999,10 @@ async function refreshNgEffort(row, wrap) {
   }
   if (kind === 'qoder') {
     apply('qoder', qoderEfforts(await qoderCatalogFor(cliName, provName)));
+    return;
+  }
+  if (kind === 'codex') {
+    apply('codex', codexEffortsFor(await codexCatalogFor(cliName, provName), model.value));
     return;
   }
   apply('claude');

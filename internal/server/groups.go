@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"cc-webui/internal/codexhist"
 	"cc-webui/internal/config"
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/runner"
@@ -53,14 +54,25 @@ func (s *Server) validateEffort(cli *config.CLI, prov *config.Provider, model, e
 	if !effortOKFor(kind, effort) {
 		return fmt.Errorf("invalid effort: %s", effort)
 	}
-	if kind != config.KindMcode || prov == nil || effort == "" {
+	if prov == nil || effort == "" {
 		return nil
 	}
 	m := prov.EffectiveModel(model)
-	cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(m, prov.Name))
-	if mm := cat.Find(mcodehist.BareModelID(m)); err == nil && mm != nil && len(mm.Efforts) > 0 &&
-		!mcodehist.EffortOK(cat, mcodehist.BareModelID(m), effort) {
-		return fmt.Errorf("模型 %s 不支持推理档位 %q（可选：%s）", m, effort, strings.Join(mm.Efforts, ", "))
+	switch kind {
+	case config.KindMcode:
+		cat, err := mcodehist.LoadCatalog(mcodeProviderIDFromModel(m, prov.Name))
+		if mm := cat.Find(mcodehist.BareModelID(m)); err == nil && mm != nil && len(mm.Efforts) > 0 &&
+			!mcodehist.EffortOK(cat, mcodehist.BareModelID(m), effort) {
+			return fmt.Errorf("模型 %s 不支持推理档位 %q（可选：%s）", m, effort, strings.Join(mm.Efforts, ", "))
+		}
+	case config.KindCodex:
+		if cli == nil {
+			return nil
+		}
+		cat, err := codexhist.LoadCatalog(cli.Path, false)
+		if mm := cat.Find(m); err == nil && mm != nil && len(mm.Efforts) > 0 && !cat.EffortOK(m, effort) {
+			return fmt.Errorf("模型 %s 不支持推理档位 %q（可选：%s）", m, effort, strings.Join(mm.Efforts, ", "))
+		}
 	}
 	return nil
 }

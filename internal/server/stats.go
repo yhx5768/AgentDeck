@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"cc-webui/internal/claudehist"
+	"cc-webui/internal/codexhist"
 	"cc-webui/internal/config"
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
@@ -46,6 +47,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// the engine in the stats at all.
 	if s.hasMcodeCLI() {
 		fas = append(fas, mcodeStatsCache.Refresh(fresh)...)
+	}
+	// codex 的 home 可以按 cli 不同（ducx 在 ~/.baidu-cx，原生 codex 在
+	// ~/.codex），所以按 cli 声明的 home 去重后各扫一份。
+	for _, home := range s.codexStatsHomes() {
+		fas = append(fas, s.codexStatsCache(home).Refresh(fresh)...)
 	}
 	// qoder 的 home dir 是 per-installation（~/.qoder-cn），所以和 mcode 一样
 	// 按「有没有配 qoder cli」决定是否扫；模型名另有一层修正，见 qoderModelHints。
@@ -106,6 +112,39 @@ func (s *Server) qoderModelHints() map[string]string {
 		}
 	}
 	return hints
+}
+
+// codexStatsHomes returns the distinct codex homes of the configured clis.
+func (s *Server) codexStatsHomes() []string {
+	seen := map[string]bool{}
+	var homes []string
+	for i := range s.cfg().CLIs {
+		cli := &s.cfg().CLIs[i]
+		if !cli.IsCodex() {
+			continue
+		}
+		h := codexHome(cli)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		homes = append(homes, h)
+	}
+	return homes
+}
+
+// codexStatsCache returns the incremental cache for one codex home, creating
+// it on first use. Callers hold statsMu.
+func (s *Server) codexStatsCache(home string) *codexhist.StatsCache {
+	if s.codexCaches == nil {
+		s.codexCaches = map[string]*codexhist.StatsCache{}
+	}
+	if c, ok := s.codexCaches[home]; ok {
+		return c
+	}
+	c := codexhist.NewStatsCache(home)
+	s.codexCaches[home] = c
+	return c
 }
 
 // hasMcodeCLI reports whether any configured cli uses the mcode engine.
