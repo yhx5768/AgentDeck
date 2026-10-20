@@ -188,3 +188,21 @@ func TestSessionIDFromPathAndFind(t *testing.T) {
 		t.Fatalf("id = %q, want %q", got, id)
 	}
 }
+
+// codex stores an attached image as <image …> + input_image + </image> blocks
+// plus the real prompt. The wrapper tags must not become user text: cc-webui's
+// stored echo has only the prompt, and a mismatch makes the same message show
+// as two bubbles after switching away and back.
+func TestUserTextSkipsImageWrappers(t *testing.T) {
+	blocks := []contentBlock{
+		{Type: "input_text", Text: `<image name=[Image #1] path="/tmp/image.png">`},
+		{Type: "input_image"},
+		{Type: "input_text", Text: "</image>"},
+		{Type: "input_text", Text: "看看这张图\n\n（用户上传了 1 个文件，已保存到磁盘：）\n- /tmp/image.png"},
+	}
+	got := userText(blocks)
+	want := "看看这张图\n\n（用户上传了 1 个文件，已保存到磁盘：）\n- /tmp/image.png"
+	if got != want {
+		t.Fatalf("userText = %q, want %q", got, want)
+	}
+}

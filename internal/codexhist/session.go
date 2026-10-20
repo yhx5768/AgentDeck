@@ -639,13 +639,31 @@ func isRealUser(it responsePayload) bool {
 func userText(blocks []contentBlock) string {
 	parts := []string{}
 	for _, b := range blocks {
-		if b.Type == "input_text" || b.Type == "text" {
-			if t := strings.TrimSpace(b.Text); t != "" {
-				parts = append(parts, t)
-			}
+		if b.Type != "input_text" && b.Type != "text" {
+			continue
 		}
+		t := strings.TrimSpace(b.Text)
+		if t == "" || isImageWrapper(t) {
+			continue
+		}
+		parts = append(parts, t)
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+// isImageWrapper reports whether a text block is codex's synthetic wrapper
+// around an attached image, not user prose. Codex stores an image attachment
+// as three content blocks — `<image name=[Image #1] path="…">`,
+// `input_image`, `</image>` — and the surrounding tags are user.text blocks,
+// so the replay would otherwise show them as part of the prompt. cc-webui's
+// stored echo has only the real text plus its file mention, and the mismatch
+// breaks the count-based dedup: the same message ends up as two bubbles after
+// switching away and back.
+func isImageWrapper(t string) bool {
+	if t == "</image>" || t == "<image>" {
+		return true
+	}
+	return strings.HasPrefix(t, "<image ") && strings.HasSuffix(t, ">")
 }
 
 func assistantText(blocks []contentBlock) string {
