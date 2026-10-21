@@ -1414,12 +1414,18 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 		args = append(args, "-m", model)
 	}
 	// Any -c override makes ducx skip the provider it would otherwise inject,
-	// so a configured id is repeated here before the override that needs it.
-	if sess.EffortOverride != "" && cli.ModelProvider != "" {
+	// so a configured id is repeated here before the overrides that need it.
+	// The HTML hint below is one of them, which is why this is not gated on
+	// EffortOverride alone.
+	wantHint := m.htmlHintEnabled() && !hasConfigOverride(cli.Args, "instructions")
+	if (sess.EffortOverride != "" || wantHint) && cli.ModelProvider != "" {
 		args = append(args, "-c", "model_provider="+cli.ModelProvider)
 	}
 	if sess.EffortOverride != "" {
 		args = append(args, "-c", "model_reasoning_effort="+sess.EffortOverride)
+	}
+	if wantHint {
+		args = append(args, "-c", codexInstructionsArg())
 	}
 	for _, f := range msg.Files {
 		if isImageFile(f.Path) {

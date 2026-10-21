@@ -1,6 +1,11 @@
 package runner
 
-import "cc-webui/internal/config"
+import (
+	"strconv"
+	"strings"
+
+	"cc-webui/internal/config"
+)
 
 // HTML 渲染提示词——让模型知道「这个聊天界面能把一页 HTML 渲染成活的页面」。
 //
@@ -14,6 +19,7 @@ import "cc-webui/internal/config"
 //
 //	claude / qoder  --append-system-prompt <text>
 //	mcode           --append-system-prompt <text>
+//	codex / ducx    -c instructions=<text>（见 codexInstructionsArg）
 //	opencode        没有等价 flag。v1 prompt body 里的 system 字段是 **覆盖**
 //	                agent 自己的 system prompt（见 opencodeapi.PromptInput 的
 //	                注释），填进去会把 opencode 的 agent 指令顶掉，比不注入更糟，
@@ -57,7 +63,7 @@ const htmlRenderHint = `【本界面的 HTML 渲染能力】
 // stopped seeing the user's flag. Making the function order-independent removes
 // that whole class of bug.
 func (m *Manager) appendHTMLRenderHint(args []string, cli *config.CLI) []string {
-	if m.cm != nil && !m.cm.Get().HTMLHintEnabled() {
+	if !m.htmlHintEnabled() {
 		return args
 	}
 	if hasArg(args, "--append-system-prompt") {
@@ -67,4 +73,53 @@ func (m *Manager) appendHTMLRenderHint(args []string, cli *config.CLI) []string 
 		return args
 	}
 	return append(args, "--append-system-prompt", htmlRenderHint)
+}
+
+func (m *Manager) htmlHintEnabled() bool {
+	return m.cm == nil || m.cm.Get().HTMLHintEnabled()
+}
+
+// codexInstructionsArg renders the hint as a codex `-c instructions=...`
+// override. codex has no append flag, and its two neighbouring keys do not fit:
+//
+//   - developer_instructions is stored with the thread at creation time, so
+//     `exec resume` keeps the old value and silently ignores the override —
+//     verified against a fake endpoint: a new session carries the marker, a
+//     resume of the same thread does not.
+//   - model_instructions_file replaces the model's built-in instructions.
+//
+// `instructions` is read from config on every run and rendered as a separate
+// developer message before the built-in blocks, so resumed sessions get it too.
+// The value must be TOML, not JSON; strconv.Quote's escapes are a subset TOML
+// accepts for this text (quotes and newlines only — no raw control bytes).
+func codexInstructionsArg() string {
+	return "instructions=" + strconv.Quote(htmlRenderHint)
+}
+
+// hasConfigOverride reports whether args already carries `-c <key>=...` (or the
+// --config spelling, with or without `=`), so callers do not clobber a value the
+// user supplied in cli.args.
+func hasConfigOverride(args []string, key string) bool {
+	for i := 0; i < len(args); i++ {
+		var v string
+		switch a := args[i]; {
+		case a == "-c" || a == "--config":
+			if i+1 < len(args) {
+				i++
+				v = args[i]
+			}
+		case strings.HasPrefix(a, "-c="):
+			v = a[len("-c="):]
+		case strings.HasPrefix(a, "--config="):
+			v = a[len("--config="):]
+		}
+		name := strings.TrimSpace(v)
+		if j := strings.IndexAny(name, "= \t"); j >= 0 {
+			name = name[:j]
+		}
+		if name == key {
+			return true
+		}
+	}
+	return false
 }

@@ -87,3 +87,64 @@ func TestBuildCodexArgsDefaultSandbox(t *testing.T) {
 		t.Errorf("default mode should edit the workspace: %s", got)
 	}
 }
+
+// codex has no --append-system-prompt: the hint rides on `-c instructions=`,
+// which codex renders as a developer message. It must be present on resumes
+// too (developer_instructions would be ignored there).
+func TestBuildCodexArgsHTMLHint(t *testing.T) {
+	for _, sess := range []*store.Session{
+		{},
+		{ClaudeSessionID: "thread-1"},
+	} {
+		cli, prov := codexTestProfile(t)
+		args := (&Manager{}).buildCodexArgs(Message{Text: "hi"}, sess, cli, prov)
+		got := joined(args)
+		if !strings.Contains(got, "-c "+codexInstructionsArg()) {
+			t.Errorf("resume=%v: missing instructions override: %s", sess.ClaudeSessionID != "", got)
+		}
+		// Our -c makes ducx stop injecting its own provider, so the configured
+		// id must ride along even when there is no effort override.
+		if !strings.Contains(got, "-c model_provider=oneapi") {
+			t.Errorf("resume=%v: missing provider pin: %s", sess.ClaudeSessionID != "", got)
+		}
+	}
+}
+
+func TestBuildCodexArgsHTMLHintDisabled(t *testing.T) {
+	off := false
+	cli, prov := codexTestProfile(t)
+	args := hintManager(t, &off).buildCodexArgs(Message{Text: "hi"}, &store.Session{}, cli, prov)
+	if got := joined(args); strings.Contains(got, "instructions=") {
+		t.Errorf("html_render_hint=false must not inject: %s", got)
+	}
+}
+
+func TestBuildCodexArgsHTMLHintRespectsUserOverride(t *testing.T) {
+	cli, prov := codexTestProfile(t)
+	cli.Args = []string{"-c", `instructions="mine"`}
+	args := (&Manager{}).buildCodexArgs(Message{Text: "hi"}, &store.Session{}, cli, prov)
+	if n := strings.Count(joined(args), "instructions="); n != 1 {
+		t.Errorf("instructions override count = %d, want only the user's: %s", n, joined(args))
+	}
+}
+
+func TestHasConfigOverride(t *testing.T) {
+	cases := []struct {
+		args []string
+		key  string
+		want bool
+	}{
+		{[]string{"-c", "instructions=\"x\""}, "instructions", true},
+		{[]string{"--config", "instructions = \"x\""}, "instructions", true},
+		{[]string{"--config=instructions=\"x\""}, "instructions", true},
+		{[]string{"-c=instructions=\"x\""}, "instructions", true},
+		{[]string{"-c", "model_reasoning_effort=high"}, "instructions", false},
+		{[]string{"-c", "fake_instructions=\"x\""}, "instructions", false},
+		{[]string{"-c"}, "instructions", false},
+	}
+	for _, c := range cases {
+		if got := hasConfigOverride(c.args, c.key); got != c.want {
+			t.Errorf("hasConfigOverride(%q, %q) = %v, want %v", c.args, c.key, got, c.want)
+		}
+	}
+}
