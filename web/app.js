@@ -113,12 +113,17 @@ const md = (text, opts) => {
     try {
       const code = pre.querySelector('code');
       const lang = code ? (code.className.match(/language-([\w+-]+)/) || [])[1] || '' : '';
-      const wantArtifact = (!opts || opts.artifacts !== false) && lang.toLowerCase() === 'html';
+      const allowArtifact = !opts || opts.artifacts !== false;
+      const langLc = lang.toLowerCase();
+      const wantArtifact = allowArtifact && langLc === 'html';
+      const wantMermaid = allowArtifact && langLc === 'mermaid';
       // 先把 pre 从树上摘下来再交给构造器：构造器会把 pre 收进新节点里，
       // 若此时 pre 还挂在原位，replaceWith 会因为它已无父节点而抛异常。
       parent.removeChild(pre);
       detached = true;
-      const node = wantArtifact ? buildHtmlArtifactNode(pre) : buildCodeBlockNode(pre);
+      const node = wantArtifact ? buildHtmlArtifactNode(pre)
+        : wantMermaid ? buildMermaidArtifactNode(pre)
+        : buildCodeBlockNode(pre);
       parent.insertBefore(node, anchor);
     } catch (err) {
       // 这一段是纯 DOM 手术，不该让整条消息渲染失败——抛出去会中断 flushHistory
@@ -180,6 +185,166 @@ function buildHtmlArtifactNode(pre) {
   wrap.className = 'code-block code-block-artifact';
   wrap.append(btn, art);
   return wrap;
+}
+
+// Mermaid 渲染壳：与 HTML 一样，源码默认可见，点「渲染」才换成图。
+// 不开 iframe：mermaid 直接产出 SVG，宿主 DOM 里挂上即可；安全边界靠
+// mermaid 的 securityLevel:'strict'（它内部会 DOMPurify 标签）+ 我们再对
+// 产出的 SVG 过一遍 DOMPurify。
+function buildMermaidArtifactNode(pre) {
+  const btn = document.createElement('button');
+  btn.className = 'code-copy-btn';
+  btn.type = 'button';
+  btn.title = '复制代码';
+  btn.innerHTML = CODE_COPY_ICON;
+  const toggle = document.createElement('button');
+  toggle.className = 'mermaid-artifact-toggle';
+  toggle.type = 'button';
+  toggle.textContent = '渲染';
+  toggle.title = '把这段 Mermaid 源码画成图';
+  const tag = document.createElement('span');
+  tag.className = 'html-artifact-tag';
+  tag.textContent = 'MERMAID';
+  const bar = document.createElement('div');
+  bar.className = 'html-artifact-bar';
+  bar.append(tag, toggle);
+  const box = document.createElement('div');
+  box.className = 'mermaid-frame-box';
+  const art = document.createElement('div');
+  art.className = 'html-artifact';
+  art.append(bar, box, pre);
+  const wrap = document.createElement('div');
+  wrap.className = 'code-block code-block-artifact code-block-mermaid';
+  wrap.append(btn, art);
+  return wrap;
+}
+
+// ---------- Mermaid 渲染 ----------
+// 库有 5 MB，不能塞进 index.html 让每页首屏都解析一遍——第一次点「渲染」时才加载。
+let mermaidLoadPromise = null;
+let mermaidSeq = 0;
+const mermaidMounted = new Set(); // 已渲染的 wrap，切主题时重画
+
+function mermaidConfig() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (n, d) => cs.getPropertyValue(n).trim() || d;
+  const dark = document.documentElement.dataset.theme === 'dark';
+  return {
+    startOnLoad: false,
+    securityLevel: 'strict',
+    // 不让标签走 foreignObject：DOMPurify 会把它整段剥掉（标签就没了）。
+    htmlLabels: false,
+    theme: dark ? 'dark' : 'default',
+    fontFamily: v('--font-sans', 'sans-serif'),
+    themeVariables: {
+      background: 'transparent',
+      primaryColor: v('--bg2', dark ? '#161b22' : '#f6f8fa'),
+      primaryTextColor: v('--fg', dark ? '#e6edf3' : '#1f2328'),
+      primaryBorderColor: v('--border', dark ? '#30363d' : '#d0d7de'),
+      lineColor: v('--dim', dark ? '#8b949e' : '#656d76'),
+      secondaryColor: v('--bg3', dark ? '#21262d' : '#eaeef2'),
+      tertiaryColor: v('--bg', dark ? '#0d1117' : '#fff'),
+    },
+  };
+}
+
+function ensureMermaid() {
+  if (window.mermaid) return Promise.resolve(window.mermaid);
+  if (mermaidLoadPromise) return mermaidLoadPromise;
+  mermaidLoadPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/vendor/mermaid.min.js';
+    s.async = true;
+    s.onload = () => {
+      const m = window.mermaid;
+      if (m && typeof m.render === 'function') resolve(m);
+      else { mermaidLoadPromise = null; reject(new Error('mermaid 未挂到全局')); }
+    };
+    s.onerror = () => {
+      mermaidLoadPromise = null;
+      reject(new Error('mermaid 库加载失败'));
+    };
+    document.head.appendChild(s);
+  });
+  return mermaidLoadPromise;
+}
+
+// 把源码画进 box。返回是否成功；失败时 box 里留一行错误说明，源码保持可见。
+async function paintMermaid(wrap) {
+  const pre = wrap.querySelector('pre');
+  const box = wrap.querySelector('.mermaid-frame-box');
+  if (!pre || !box) return false;
+  const src = (pre.textContent || '').trim();
+  if (!src) return false;
+  const gen = String(++mermaidSeq);
+  wrap.dataset.mermaidGen = gen;
+  try {
+    const m = await ensureMermaid();
+    if (wrap.dataset.mermaidGen !== gen) return false;
+    m.initialize(mermaidConfig());
+    const { svg } = await m.render('ccgw-mermaid-' + gen, src);
+    if (wrap.dataset.mermaidGen !== gen) return false;
+    // 再洗一遍：mermaid 的 strict 模式已经处理过标签，这里是纵深防御。
+    const holder = document.createElement('div');
+    holder.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
+    const el = holder.querySelector('svg');
+    if (el) {
+      // 按 viewBox 钉成自然尺寸再做框内滚动：mermaid 默认 width="100%" 会把一张
+      // 1900px 宽的水平流程图压进 500px 的聊天宽度里，字小到看不清。
+      const vb = (el.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+      if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+        el.setAttribute('width', String(Math.ceil(vb[2])));
+        el.setAttribute('height', String(Math.ceil(vb[3])));
+      }
+      el.style.maxWidth = 'none';
+    }
+    box.textContent = '';
+    while (holder.firstChild) box.appendChild(holder.firstChild);
+    return true;
+  } catch (err) {
+    if (wrap.dataset.mermaidGen !== gen) return false;
+    box.textContent = '';
+    const msg = document.createElement('div');
+    msg.className = 'mermaid-error';
+    msg.textContent = 'Mermaid 渲染失败：' + ((err && err.message) || String(err));
+    box.appendChild(msg);
+    return false;
+  }
+}
+
+async function mountMermaid(wrap) {
+  const toggle = wrap.querySelector('.mermaid-artifact-toggle');
+  if (toggle) { toggle.disabled = true; toggle.textContent = '渲染中…'; }
+  const ok = await paintMermaid(wrap);
+  if (toggle) toggle.disabled = false;
+  if (ok) {
+    wrap.classList.add('rendered');
+    mermaidMounted.add(wrap);
+    if (toggle) toggle.textContent = '源码';
+  } else if (!wrap.classList.contains('rendered')) {
+    if (toggle) toggle.textContent = '渲染';
+  }
+}
+
+function unmountMermaid(wrap) {
+  // 让还在飞的 paintMermaid 作废，别等它回来把图又塞回去。
+  wrap.dataset.mermaidGen = String(++mermaidSeq);
+  const box = wrap.querySelector('.mermaid-frame-box');
+  if (box) {
+    box.textContent = '';
+  }
+  wrap.classList.remove('rendered');
+  mermaidMounted.delete(wrap);
+  const toggle = wrap.querySelector('.mermaid-artifact-toggle');
+  if (toggle) { toggle.disabled = false; toggle.textContent = '渲染'; }
+}
+
+function syncMermaidThemes() {
+  if (!window.mermaid) return;
+  for (const wrap of [...mermaidMounted]) {
+    if (!wrap.isConnected) { mermaidMounted.delete(wrap); continue; }
+    paintMermaid(wrap);
+  }
 }
 
 // ---------- HTML 沙箱渲染 ----------
@@ -430,6 +595,7 @@ function applyTheme(t, persist) {
   // 已挂载的沙箱 iframe 是 opaque origin，变量得由宿主推过去（重建 iframe 会
   // 丢掉页面内状态，所以不拆了重挂）
   syncHtmlFrameThemes();
+  syncMermaidThemes();
   if (persist) localStorage.setItem('cc-webui-theme', t);
 }
 $('#btn-theme').onclick = () => {
@@ -4037,6 +4203,16 @@ document.addEventListener('click', (e) => {
   if (!wrap) return;
   if (wrap.classList.contains('rendered')) unmountHtmlFrame(wrap);
   else mountHtmlFrame(wrap);
+});
+
+// Mermaid 渲染开关（与上面的 HTML 同一套交互：渲染 / 源码切换）。
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.mermaid-artifact-toggle');
+  if (!btn) return;
+  const wrap = btn.closest('.code-block-mermaid');
+  if (!wrap) return;
+  if (wrap.classList.contains('rendered')) unmountMermaid(wrap);
+  else mountMermaid(wrap);
 });
 
 // 沙箱页面的 postMessage 入口。opaque origin 只能发 '*'，所以唯一的信任依据是

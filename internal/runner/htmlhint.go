@@ -49,7 +49,12 @@ const htmlRenderHint = `【本界面的 HTML 渲染能力】
   --background（页面底） --surface（卡片/分区底） --border（描边）
   --foreground（正文）   --muted（次要文字）      --accent（强调/图表主色）
 同时**一律带上兜底值**，写成 var(--background, #fff) 这样的形式——变量没注入时也
-不至于裸奔。`
+不至于裸奔。
+
+另外，流程图 / 时序图 / 状态图 / 类图 / ER 图 / 甘特图这类结构化示意图，直接用三个
+反引号包住 mermaid 写 Mermaid 源码（语言标记写 mermaid，第一行写图类型，例如
+flowchart LR）。界面上会有「渲染」按钮把它画成图，跟随深浅色主题。这类图不要用
+ASCII 字符画，也不要塞进 HTML 页面里。`
 
 // appendHTMLRenderHint injects the hint into a spawn's args when the engine has a
 // real "append" flag and the user hasn't already supplied one in cli.Args.

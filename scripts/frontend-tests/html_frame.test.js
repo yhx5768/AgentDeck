@@ -104,7 +104,8 @@ section('[1] 工具条结构');
   ok('全屏在左、标签居中、源码/渲染在右',
      kids[0] === 'html-artifact-fs' && kids[1] === 'html-artifact-tag' && kids[2] === 'html-artifact-toggle',
      kids.join(' | '));
-  ok('开关靠 margin-left:auto 顶右', /\.html-artifact-toggle\s*\{[^}]*margin-left:\s*auto/.test(css));
+  ok('开关靠 margin-left:auto 顶右',
+     /\.html-artifact-toggle,?\s*(?:\n\.mermaid-artifact-toggle\s*)?\{[^}]*margin-left:\s*auto/.test(css));
   ok('未渲染时全屏按钮隐藏，靠 .rendered 控制',
      /\.code-block-artifact\.rendered \.html-artifact-fs\s*\{[^}]*display:\s*inline-flex/.test(css));
 }

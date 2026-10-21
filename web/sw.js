@@ -13,6 +13,7 @@ const SHELL = [
   '/vendor/purify.min.js',
   '/vendor/highlight.min.js',
   '/vendor/lucide.min.js',
+  '/vendor/mermaid.min.js',
   '/vendor/github.min.css',
   '/vendor/github-dark.min.css',
 ];

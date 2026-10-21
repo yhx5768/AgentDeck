@@ -258,7 +258,8 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
   - 框内滚动用 `overflow-y: auto` **而不是 `contain`**：`contain` 会让手指在框里滚到底之后也带不动聊天，那种"卡住"比内滚本身更糟。代价是手机触摸滚动会被 iframe 捕获，全屏按钮就是解药。
   - 全屏是**搬节点**不是重建 iframe：重建会把页面里的脚本状态、定时器、滚动位置全清掉。`enterHtmlFullscreen` 把 `.html-frame-box` 整体搬进 fixed 遮罩，退出原路搬回。
   - **滚动容器是 `.html-fs-body`，不是里面的 `.html-frame-box`**。后者是孙节点，拿不到高度；滚动写在内层会撑破父容器、外层又没 overflow，整块就彻底滚不动。而且 flex 子项必须配 `min-height: 0`，少了它 `flex: 1` 形同虚设。
-- `vendor/` — marked / DOMPurify / highlight.js / lucide / 主题 css，均已 vendored。
+- **Mermaid 渲染**（` ```mermaid ` 围栏）：源码默认可见，工具条上的「渲染」按钮才画图，和 HTML artifact 同一套 `.code-block-artifact` 壳。库（5 MB）不在 `index.html` 里，第一次点渲染才由 `ensureMermaid()` 动态加载 `/vendor/mermaid.min.js`；`securityLevel:'strict'` + 关掉 `htmlLabels`（DOMPurify 会把 foreignObject 整段剥掉，标签就没了）+ 对产出 SVG 再过一遍 DOMPurify。已渲染的 wrap 记在 `mermaidMounted`，`applyTheme` 时重画以跟随深浅色；渲染失败只在框里写 `.mermaid-error`，源码保持可见、按钮可重试。
+- `vendor/` — marked / DOMPurify / highlight.js / lucide / mermaid / 主题 css，均已 vendored。
 - `go:embed all:web` → `fs.Sub(webFS, "web")` → `http.FileServerFS`。
 
 ## 运行时数据布局（`data_dir`，默认 `./data`，gitignore）

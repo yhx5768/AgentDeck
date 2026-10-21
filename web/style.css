@@ -1300,7 +1300,8 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   font-size: var(--fs-xs);
 }
 .html-artifact-tag { font-family: var(--font-mono); color: var(--dim); letter-spacing: .04em; }
-.html-artifact-toggle {
+.html-artifact-toggle,
+.mermaid-artifact-toggle {
   margin-left: auto;
   padding: 2px 10px;
   font-size: var(--fs-xs);
@@ -1312,7 +1313,29 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   cursor: pointer;
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
-.html-artifact-toggle:hover { background: var(--bg3); }
+.html-artifact-toggle:hover,
+.mermaid-artifact-toggle:hover { background: var(--bg3); }
+.mermaid-artifact-toggle:disabled { opacity: .6; cursor: default; }
+
+/* ---------- Mermaid（md() 把 ```mermaid 围栏升级成的容器） ---------- */
+/* 与 HTML 的框同一个封顶思路：图上超宽/超高时框内滚动，别把整段聊天撑爆。 */
+.code-block-mermaid .mermaid-frame-box {
+  background: var(--bg);
+  overflow: auto;
+  padding: 12px;
+  max-height: var(--mermaid-frame-max, 640px);
+}
+.code-block-mermaid .mermaid-frame-box:empty { display: none; }
+.mermaid-frame-box svg { display: block; max-width: none; margin: 0 auto; }
+/* 宽图不缩到看不清，交给框内横向滚动（与宽表格同一策略）。 */
+.mermaid-error {
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 /* 框内封顶：多数页面 300-600px 根本碰不到上限，只有真长文档才在框里滚。
    不封顶的话一个 3000px 的页面会把整个聊天撑爆，滚几千像素才能越过这个块。
    overflow-y 用默认的 auto（保留滚动链）而不是 contain——contain 会让手指在框
