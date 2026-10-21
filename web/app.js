@@ -1978,7 +1978,7 @@ async function openSession(id) {
   if (state.ocBubble) { liveFinalizeBlock(state.ocBubble); state.ocBubble = null; }
   state.ocPartID = ''; state.ocBuf = '';
   taskFoldReset();
-  state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
+  state.stats = freshStats();
   updateStatsUI();
   trajReset();
   switchChatTab('chat');
@@ -2693,15 +2693,23 @@ function resetChatForReplay() {
   if (state.ocBubble) { liveFinalizeBlock(state.ocBubble); state.ocBubble = null; }
   state.ocPartID = ''; state.ocBuf = '';
   taskFoldReset();
-  state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
+  state.stats = freshStats();
   trajReset();
   syncTaskPanel();
   updateLoadMoreBtn();
 }
 
-// ---------- session stats (轮数 / 步数 / 累计耗时) ----------
+// ---------- session stats (轮数 / 步数 / 累计耗时 / 最近一轮 tok/s) ----------
 // 轮数 = user 事件数；步数 = assistant 消息里的 tool_use 块数；
 // 耗时 = 首尾事件时间差（随实时事件增长）。
+// `last*` 只统计最后一条 user 之后的事件，用来算最近一轮的输出速度。
+function freshStats() {
+  return {
+    turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0,
+    lastOut: 0, lastLlmMs: 0, lastLlmEstMs: 0, lastSeen: {},
+  };
+}
+
 function trackStats(ev) {
   const st = state.stats;
   if (!st) return;
@@ -2712,10 +2720,25 @@ function trackStats(ev) {
   }
   if (ev.kind === 'user') {
     st.turns++;
+    st.lastOut = 0;
+    st.lastLlmMs = 0;
+    st.lastLlmEstMs = 0;
+    st.lastSeen = {};
   } else if (ev.kind === 'stream' && ev.data && ev.data.type === 'assistant') {
-    const content = ev.data.message && ev.data.message.content;
+    const msg = ev.data.message || {};
+    const content = msg.content;
     if (Array.isArray(content)) {
       for (const b of content) if (b && b.type === 'tool_use') st.steps++;
+    }
+    // 输出 token 按 message.id 去重：claude 的 transcript 会把同一次 API
+    // 调用的 thinking/tool_use 拆成多行，每行重复携带同一份 usage。
+    // 没有 id 的 usage（mcode/codex 的整轮 usage 事件）每轮只出现一次。
+    if (msg.usage) {
+      const mid = msg.id || '';
+      if (!mid || !st.lastSeen[mid]) {
+        if (mid) st.lastSeen[mid] = true;
+        st.lastOut += Number(msg.usage.output_tokens) || 0;
+      }
     }
   } else if (ev.kind === 'stream' && ev.data && ev.data.type === 'result') {
     // LLM 耗时 = result.duration_api_ms（API 时间）；
@@ -2724,14 +2747,19 @@ function trackStats(ev) {
     const api = ev.data.duration_api_ms || 0;
     st.llmMs += api;
     st.toolMs += Math.max(0, total - api);
+    st.lastLlmMs += api;
   }
   // 无 result 事件的会话（如 claude jsonl 重放的历史）退化为时间差估算：
   // assistant 前的间隙 ≈ LLM 耗时，tool_result 前的间隙 ≈ 工具耗时。
   // 单段封顶 2 分钟，避免权限确认等待等长停顿把估算打爆。
   if (ev.kind === 'stream' && ev.data && ts && st.prevTs) {
     const gap = Math.min(Math.max(0, ts - st.prevTs), 120000);
-    if (ev.data.type === 'assistant') st.llmEstMs += gap;
-    else if (ev.data.type === 'user') st.toolEstMs += gap;
+    if (ev.data.type === 'assistant') {
+      st.llmEstMs += gap;
+      st.lastLlmEstMs += gap;
+    } else if (ev.data.type === 'user') {
+      st.toolEstMs += gap;
+    }
   }
   if (ts) st.prevTs = ts;
 }
@@ -2766,6 +2794,14 @@ function updateStatsUI() {
   }
   const dur = st.lastTs > st.firstTs ? fmtDuration(st.lastTs - st.firstTs) : '—';
   el.textContent = `${out} · 累计 ${dur}`;
+  // 最近一轮的输出速度：分母优先用 result 的精确 API 时间，回放里没有
+  // result 就退回相邻事件间隙的估算（前缀 ~ 标明）。没有 usage 的引擎
+  // （opencode 的流事件不带 usage）自然不显示。
+  const lastMs = st.lastLlmMs || st.lastLlmEstMs || 0;
+  if (st.lastOut > 0 && lastMs > 0) {
+    const tps = st.lastOut / (lastMs / 1000);
+    el.textContent += ` · 最近一轮 ${st.lastLlmMs ? '' : '~'}${tps.toFixed(1)} tok/s`;
+  }
 }
 
 // 会话里最后一条用户输入在回放缓冲中的下标（没有则 -1）。三个引擎的回放都把真实
@@ -3181,7 +3217,7 @@ function applyRewindInUI(ev, refill) {
   scrollBottom();
   updateLoadMoreBtn();
   // Recompute stats from the truncated buffer.
-  state.stats = { turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0 };
+  state.stats = freshStats();
   for (const e of buf) trackStats(e);
   updateStatsUI();
   if (refill && d.draft_text) setDraftText(d.draft_text);
