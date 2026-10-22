@@ -7,7 +7,7 @@
 
 ## 项目是什么
 
-cc-webui：单文件 Go 二进制 + `go:embed` 内嵌 vanilla JS 前端，把 Claude Code（及任何兼容 CLI）变成 Web 控制台。会话管理、SSE 流式对话、工具调用可视化、rewind 回滚、轨迹视图。**无前端构建步骤**——改了 `web/` 直接 `go build`。
+cc-webui（对外展示名 **AgentDeck**，内部标识仍为 `cc-webui`）：单文件 Go 二进制 + `go:embed` 内嵌 vanilla JS 前端，把五个编码 CLI 变成 Web 控制台。会话管理、SSE 流式对话、工具调用可视化、rewind 回滚、轨迹视图。**无前端构建步骤**——改了 `web/` 直接 `go build`。
 
 - 模块名 `cc-webui`，Go 1.22.2，唯一外部依赖 `gopkg.in/yaml.v3`。
 - 入口 `main.go`：`config.Load` → `store.Open` → `runner.NewManager` → `fs.Sub(embed, "web")` → `server.New` → `srv.Run`。

@@ -1,7 +1,7 @@
 {
-  "name": "cc-webui",
-  "short_name": "cc-webui",
-  "description": "远程管理 Claude Code 会话",
+  "name": "AgentDeck",
+  "short_name": "AgentDeck",
+  "description": "多引擎 AI 编码会话控制台",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",

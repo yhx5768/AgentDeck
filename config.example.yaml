@@ -1,4 +1,4 @@
-# cc-webui 配置
+# AgentDeck 配置（内部标识仍为 cc-webui）
 # 也可以用环境变量 GATEWAY_TOKEN 覆盖 gateway_token
 
 listen: "0.0.0.0:8321"
@@ -18,8 +18,11 @@ default_cwd: "~"
 # 注释掉 = 开（默认）。设 false 才关闭。
 # 覆盖范围：
 #   claude / qoder / mcode —— 走 --append-system-prompt 追加进每轮 system prompt。
-#   codex / ducx —— 没有 append 语义的入口（-c 只接配置键），不注入。
-#     用户在 clis[].args 里自己写了同名 flag 时不重复注入（CLIs 取最后一个）。
+#   codex / ducx —— 没有 append 语义的入口，改走 -c instructions=<TOML 字符串>；
+#     它是一条独立的 developer 消息，每次运行都从 config 重读，resume 也生效。
+#     注意任何 -c 都会让 ducx 不再注入自己的 provider，所以传 hint 时会一并补
+#     -c model_provider=<clis[].model_provider>。用户在 clis[].args 里自己写了
+#     同名 flag 时不重复注入（CLIs 取最后一个）。
 #   opencode —— 它没有 append 语义的入口（system 字段是覆盖 agent 自身 prompt
 #     的，填进去更糟），改写 ~/.config/cc-webui/opencode/ 下的 opencode.json，
 #     只放一个 instructions 键指向约定正文，并在 opencode serve 启动前把
@@ -71,7 +74,9 @@ clis:
     env: {}
 
   - name: "opencode"
-    kind: "opencode"              # opencode 引擎；permission_mode 映射为 --auto
+    kind: "opencode"              # opencode 引擎；permission_mode 映射为会话 permission
+                                   # ruleset：bypassPermissions → 全 allow，其余模式
+                                   # 不钉规则（走 opencode 默认的 ask，前端弹审批卡）
     path: "/home/you/.opencode/bin/opencode"
     permission_mode: "bypassPermissions"
     args: []
