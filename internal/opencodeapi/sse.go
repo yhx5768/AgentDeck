@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -391,6 +392,21 @@ func (h *Hub) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
+			if isControlEvent(ev.Type) {
+				// Control events cannot be re-derived from the transcript and
+				// opencode waits forever on the ones it raised: a dropped
+				// question.asked leaves the turn busy with no card and no 55s
+				// timeout (the timeout lives in the card handler). Give them a
+				// bounded blocking send instead of the lossy fast path. The
+				// cap keeps one stuck session from stalling the whole bus.
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
+				case <-time.After(2 * time.Second):
+					log.Printf("opencode event hub: dropped %s for %s (subscriber full)", ev.Type, sid)
+				}
+				return
+			}
 			select {
 			case ch <- ev:
 			case <-ctx.Done():
@@ -412,6 +428,21 @@ func (h *Hub) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// isControlEvent reports whether an event carries a state transition or a
+// prompt that opencode will wait on. Those must not be silently dropped by
+// the lossy per-session fan-out.
+func isControlEvent(t string) bool {
+	switch t {
+	case "permission.asked", "permission.updated",
+		"question.asked", "question.updated",
+		"session.idle", "session.next.idle", "session.status",
+		"session.error", "session.next.error",
+		"session.next.step.failed":
+		return true
+	}
+	return false
 }
 
 // SubscribeAll is a helper for callers that want every event, not per session.

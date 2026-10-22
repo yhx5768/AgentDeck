@@ -425,3 +425,26 @@ func TestEventPartDelta(t *testing.T) {
 		t.Fatal("part.updated must not decode as a delta")
 	}
 }
+
+// Control events drive prompt cards and turn boundaries; the lossy fast path
+// would silently strand a question (and the running turn) if one were dropped.
+// Delta traffic must keep the lossy path.
+func TestIsControlEvent(t *testing.T) {
+	for _, typ := range []string{
+		"permission.asked", "permission.updated",
+		"question.asked", "question.updated",
+		"session.idle", "session.next.idle", "session.status",
+		"session.error", "session.next.step.failed",
+	} {
+		if !isControlEvent(typ) {
+			t.Errorf("%s must be a control event (must not be dropped)", typ)
+		}
+	}
+	for _, typ := range []string{
+		"message.part.delta", "message.part.updated", "session.next.text.delta", "",
+	} {
+		if isControlEvent(typ) {
+			t.Errorf("%s is high-volume traffic and must stay on the lossy path", typ)
+		}
+	}
+}

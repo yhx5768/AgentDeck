@@ -1089,6 +1089,7 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 
 	turn := newOpenCodeTurn(srv, hub, m, sessionID)
 	turn.dir = resolvedCwd
+	turn.ctx = ctx
 	m.ocTurns.set(sessionID, turn)
 	defer m.ocTurns.clear(sessionID, turn)
 
@@ -1131,6 +1132,11 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	events, unsub := hub.Subscribe(ocSID)
 	defer unsub()
 	go turn.consume(events)
+	// The /event fan-out drops ordinary events when a session's buffer is full
+	// (token deltas can burst past 256). Prompt events must not be lost: a
+	// missed question keeps opencode blocked forever, with no card and no 55s
+	// timeout. This poller is the at-least-once safety net.
+	go turn.reconcileLoop()
 
 	// v1 prompt shape: {model, parts}. See opencodeapi.PromptInput for why the
 	// v2 envelope must not be used here.
@@ -1182,9 +1188,14 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	m.st.Upsert(sess, func(s *store.Session) { s.UpdatedAt = time.Now() })
 
 	switch {
-	case ctx.Err() != nil || turn.interrupted:
-		m.emit(sessionID, "status", map[string]string{"state": "interrupted"})
-		m.setIdle(sessionID, "interrupted")
+	case ctx.Err() != nil || turn.isInterrupted():
+		if abortErr := turn.abortFailure(); abortErr != "" {
+			m.emit(sessionID, "status", map[string]string{"state": "error", "error": abortErr})
+			m.setIdle(sessionID, abortErr)
+		} else {
+			m.emit(sessionID, "status", map[string]string{"state": "interrupted"})
+			m.setIdle(sessionID, "interrupted")
+		}
 	case turn.sessionErr != "":
 		errMsg := m.diagnoseOpenCodeRunError(sess, cli, turn.sessionErr)
 		log.Printf("opencode turn failed (session %s, opencode sid %s): %s", sessionID, ocSID, errMsg)

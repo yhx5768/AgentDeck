@@ -64,11 +64,19 @@ type QuestionReply struct {
 	Answers [][]string `json:"answers"`
 }
 
-// ListPermissionRequests returns pending approvals across all sessions — the
-// reconnect catch-up that mirrors cc-webui's own /permissions/pending.
-func (s *Server) ListPermissionRequests(ctx context.Context) ([]PermissionRequest, error) {
+// ListPendingPermissions returns the pending approvals of the directory's
+// project — the catch-up used to recover a `permission.asked` event that the
+// SSE bridge dropped.
+//
+// It goes to the flat v1 /permission route, NOT /api/permission/request: the
+// v2 route resolves `directory` against the serve process's own cwd, so a
+// session in another project reads an empty list (verified live: same query
+// param, flat route returns the request, v2 returns []). Getting this wrong
+// is silent — the card simply never appears.
+func (s *Server) ListPendingPermissions(ctx context.Context, directory string) ([]PermissionRequest, error) {
 	var out []PermissionRequest
-	err := s.do(ctx, http.MethodGet, "/api/permission/request", nil, &out)
+	err := s.do(ctx, http.MethodGet,
+		queryPath("/permission", map[string]any{"directory": directory}), nil, &out)
 	return out, err
 }
 
@@ -99,10 +107,17 @@ func (s *Server) ReplyPermission(ctx context.Context, directory, requestID strin
 	return s.do(ctx, http.MethodPost, path, r, nil)
 }
 
-// ListQuestionRequests returns pending user questions across all sessions.
-func (s *Server) ListQuestionRequests(ctx context.Context) ([]QuestionRequest, error) {
+// ListPendingQuestions returns the pending user questions of the directory's
+// project — the catch-up used to recover a `question.asked` event that the SSE
+// bridge dropped. A lost question card is worse than a lost permission card:
+// opencode's question Deferred waits forever, so the turn would stay busy.
+//
+// Same v1/v2 trap as ListPendingPermissions: only the flat /question route
+// honours `directory`; /api/question/request reads the serve process's cwd.
+func (s *Server) ListPendingQuestions(ctx context.Context, directory string) ([]QuestionRequest, error) {
 	var out []QuestionRequest
-	err := s.do(ctx, http.MethodGet, "/api/question/request", nil, &out)
+	err := s.do(ctx, http.MethodGet,
+		queryPath("/question", map[string]any{"directory": directory}), nil, &out)
 	return out, err
 }
 

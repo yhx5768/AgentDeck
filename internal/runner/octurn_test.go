@@ -303,3 +303,61 @@ func TestOpenCodeTurnSkipsReasoningDeltas(t *testing.T) {
 		t.Error("delta without a message id must not stream")
 	}
 }
+
+// The SSE bridge and the reconcile poller both observe the same opencode
+// requests. Only one of them may open a card / reply: a duplicate question card
+// answers the same request twice (the second POST 404s), and duplicate
+// permission cards double-dock the same approval.
+func TestOpenCodeTurnClaimPromptDedupes(t *testing.T) {
+	tu := &openCodeTurn{seenPrompts: map[string]bool{}}
+	if !tu.claimPrompt("q", "que_1") {
+		t.Fatal("first claim of a question must win")
+	}
+	if tu.claimPrompt("q", "que_1") {
+		t.Fatal("second claim of the same question must lose")
+	}
+	if !tu.claimPrompt("p", "que_1") {
+		t.Fatal("question and permission ids are separate namespaces")
+	}
+	// Distinct request ids are independent.
+	if !tu.claimPrompt("q", "que_2") {
+		t.Fatal("a different question id must be claimable")
+	}
+	if !tu.claimPrompt("p", "per_1") {
+		t.Fatal("permissions are tracked separately from questions")
+	}
+	if tu.claimPrompt("q", "") {
+		t.Fatal("an empty id cannot identify a request")
+	}
+	if !tu.promptClaimed("p", "per_1") {
+		t.Fatal("promptClaimed must reflect a prior claim")
+	}
+	if tu.promptClaimed("p", "missing") {
+		t.Fatal("unknown ids are not claimed")
+	}
+}
+
+// A stop that opencode never acknowledges must still release waitTurn, with the
+// failure recorded so the UI shows an error rather than a clean interrupt.
+func TestOpenCodeTurnForceStop(t *testing.T) {
+	tu := newOpenCodeTurn(nil, nil, nil, "s")
+	select {
+	case <-tu.stopCh:
+		t.Fatal("stopCh must start open")
+	default:
+	}
+	tu.forceStop("boom")
+	select {
+	case <-tu.stopCh:
+	default:
+		t.Fatal("forceStop must close stopCh")
+	}
+	if got := tu.abortFailure(); got != "boom" {
+		t.Fatalf("abortFailure = %q, want boom", got)
+	}
+	if !tu.isInterrupted() {
+		t.Fatal("forceStop must mark the turn interrupted")
+	}
+	// Closing twice must not panic (abort success + grace timeout can race).
+	tu.forceStop("again")
+}

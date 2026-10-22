@@ -68,11 +68,25 @@ type openCodeTurn struct {
 	drained chan struct{}
 	// doneCh is closed by finishTurn once no more card answers can land.
 	doneCh chan struct{}
+	// stopCh is closed by forceStop when the turn has to stop waiting even
+	// though opencode never reported idle.
+	stopCh chan struct{}
 	// turnDoneCh is closed when the session goes idle — the turn boundary on
 	// the v1 prompt path (prompt_async returns 204 immediately, so this event
 	// is the only completion signal).
 	turnDoneCh chan struct{}
 	turnOnce   sync.Once
+	// abortErr records why the last stop could not be delivered to opencode.
+	// Empty means the turn ended normally (or was aborted successfully).
+	abortErr string
+	// seenPrompts dedupes the SSE bridge and the reconcile poller, which can
+	// both observe the same opencode request. Keyed "q:"+id / "p:"+id.
+	seenPrompts map[string]bool
+	// ctx is the turn context; the reconcile poller stops with it.
+	ctx context.Context
+	// lastReconcileErr throttles list-failure logging to one line per distinct
+	// error (the poller runs every 2s).
+	lastReconcileErr string
 }
 
 type ocCard struct {
@@ -98,13 +112,118 @@ type ocCard struct {
 func newOpenCodeTurn(srv *opencodeapi.Server, hub *opencodeapi.Hub, m *Manager, sessionID string) *openCodeTurn {
 	return &openCodeTurn{
 		srv: srv, hub: hub, mgr: m, sessionID: sessionID,
-		tx:         opencodehist.NewToolTx(),
-		cards:      map[string]*ocCard{},
-		msgRoles:   map[string]string{},
-		partTypes:  map[string]string{},
-		drained:    make(chan struct{}),
-		doneCh:     make(chan struct{}),
-		turnDoneCh: make(chan struct{}),
+		tx:          opencodehist.NewToolTx(),
+		cards:       map[string]*ocCard{},
+		msgRoles:    map[string]string{},
+		partTypes:   map[string]string{},
+		seenPrompts: map[string]bool{},
+		drained:     make(chan struct{}),
+		doneCh:      make(chan struct{}),
+		stopCh:      make(chan struct{}),
+		turnDoneCh:  make(chan struct{}),
+	}
+}
+
+// claimPrompt reserves one opencode permission/question request. The SSE
+// bridge and the reconcile poller can both see the same request; only the
+// first caller may open a card or reply to it.
+func (t *openCodeTurn) claimPrompt(kind, rid string) bool {
+	if rid == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := kind + ":" + rid
+	if t.seenPrompts[key] {
+		return false
+	}
+	t.seenPrompts[key] = true
+	return true
+}
+
+// promptClaimed reports whether a request was already picked up, without
+// claiming it.
+func (t *openCodeTurn) promptClaimed(kind, rid string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.seenPrompts[kind+":"+rid]
+}
+
+// reconcileLoop recovers prompts whose SSE event was lost.
+//
+// opencode waits forever on a question Deferred, and the 55s budget lives in
+// the card handler — so a dropped `question.asked` means no card, no timeout,
+// and a session that stays "running" until someone aborts it. The /event bus
+// is intentionally lossy for delta traffic (256-entry per-session channel), so
+// this poller is the safety net that makes prompt delivery at-least-once.
+func (t *openCodeTurn) reconcileLoop() {
+	t.reconcileOnce()
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-t.doneCh:
+			return
+		case <-tick.C:
+			t.reconcileOnce()
+		}
+	}
+}
+
+func (t *openCodeTurn) reconcileOnce() {
+	listCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 5*time.Second)
+	}
+
+	ctx, cancel := listCtx()
+	questions, qerr := t.srv.ListPendingQuestions(ctx, t.dir)
+	cancel()
+	if qerr != nil {
+		t.noteReconcileErr("questions", qerr)
+	} else {
+		for _, qr := range questions {
+			if qr.SessionID != "" && qr.SessionID != t.ocSessionID {
+				continue
+			}
+			if t.promptClaimed("q", qr.ID) {
+				continue
+			}
+			log.Printf("opencode: recovering question %s for session %s (SSE event not seen)", qr.ID, t.sessionID)
+			go t.openQuestionCard(qr)
+		}
+	}
+
+	ctx, cancel = listCtx()
+	perms, perr := t.srv.ListPendingPermissions(ctx, t.dir)
+	cancel()
+	if perr != nil {
+		t.noteReconcileErr("permissions", perr)
+	} else {
+		for _, pr := range perms {
+			if pr.SessionID != "" && pr.SessionID != t.ocSessionID {
+				continue
+			}
+			if t.promptClaimed("p", pr.ID) {
+				continue
+			}
+			log.Printf("opencode: recovering permission %s for session %s (SSE event not seen)", pr.ID, t.sessionID)
+			go t.openPermissionCard(pr)
+		}
+	}
+}
+
+// noteReconcileErr logs a list failure once per distinct message. A dead
+// serve would otherwise print every 2s for the rest of the turn.
+func (t *openCodeTurn) noteReconcileErr(what string, err error) {
+	msg := err.Error()
+	t.mu.Lock()
+	dup := t.lastReconcileErr == msg
+	t.lastReconcileErr = msg
+	t.mu.Unlock()
+	if !dup {
+		log.Printf("opencode: list pending %s (session %s): %v", what, t.sessionID, err)
 	}
 }
 
@@ -370,6 +489,16 @@ const ocCardTimeout = 55 * time.Second
 // openPermissionCard bridges one `permission.asked` event onto the existing
 // cc-webui approval card, then answers opencode with the user's decision.
 func (t *openCodeTurn) openPermissionCard(pr opencodeapi.PermissionRequest) {
+	// A card opened after the turn is over would linger in a session the agent
+	// can no longer act on (the reconcile poller can race the turn's end).
+	select {
+	case <-t.doneCh:
+		return
+	default:
+	}
+	if !t.claimPrompt("p", pr.ID) {
+		return
+	}
 	// opencode 1.18.35's permission replies are directory-scoped, not
 	// session-scoped: the flat v1 /permission route has no session path
 	// segment, so t.dir is what pins the reply to this session's project.
@@ -404,6 +533,12 @@ func (t *openCodeTurn) openPermissionCard(pr opencodeapi.PermissionRequest) {
 
 	ch := t.mgr.PermissionWaitChannel(pr2.ID)
 	if ch == nil {
+		// Should not happen (we just registered it), but returning here would
+		// leave opencode waiting forever. Reject so the tool can move on.
+		if err := t.srv.ReplyPermission(context.Background(), t.dir, pr.ID,
+			opencodeapi.PermissionReply{Reply: "reject", Message: "审批卡注册失败"}); err != nil {
+			log.Printf("opencode permission reject failed (session %s, rid %s): %v", t.sessionID, pr.ID, err)
+		}
 		return
 	}
 	var d PermissionDecision
@@ -418,10 +553,13 @@ func (t *openCodeTurn) openPermissionCard(pr opencodeapi.PermissionRequest) {
 		}
 		// Reject rather than allow: a silent auto-approve after a timeout is
 		// the worst failure mode for an approval card.
-		_ = t.srv.ReplyPermission(context.Background(), t.dir, pr.ID,
-			opencodeapi.PermissionReply{Reply: "reject", Message: "用户未在时限内审批"})
+		if err := t.srv.ReplyPermission(context.Background(), t.dir, pr.ID,
+			opencodeapi.PermissionReply{Reply: "reject", Message: "用户未在时限内审批"}); err != nil {
+			log.Printf("opencode permission timeout-reject failed (session %s, rid %s): %v", t.sessionID, pr.ID, err)
+		}
 		return
 	case <-t.turnDone():
+		t.mgr.removePending(pr2.ID)
 		return
 	}
 
@@ -429,7 +567,9 @@ func (t *openCodeTurn) openPermissionCard(pr opencodeapi.PermissionRequest) {
 	if d.Behavior == "deny" && d.Message != "" {
 		reply.Message = d.Message
 	}
-	_ = t.srv.ReplyPermission(context.Background(), t.dir, pr.ID, reply)
+	if err := t.srv.ReplyPermission(context.Background(), t.dir, pr.ID, reply); err != nil {
+		log.Printf("opencode permission reply failed (session %s, rid %s): %v", t.sessionID, pr.ID, err)
+	}
 	t.mgr.BroadcastTransient(t.sessionID, "permission_resolved", map[string]any{
 		"type": "permission_resolved", "id": pid, "behavior": d.Behavior,
 	})
@@ -480,10 +620,24 @@ func permissionCardInput(pr opencodeapi.PermissionRequest) map[string]any {
 // description}] / multiple / custom) lines up with Claude's AskUserQuestion
 // input closely enough that the existing card parses it unchanged.
 func (t *openCodeTurn) openQuestionCard(qr opencodeapi.QuestionRequest) {
+	select {
+	case <-t.doneCh:
+		return
+	default:
+	}
+	if !t.claimPrompt("q", qr.ID) {
+		return
+	}
 	// Same as permissions: the flat v1 /question route is directory-scoped,
 	// so replies carry t.dir rather than a session id.
 	questions := qr.Questions
 	if len(questions) == 0 {
+		// No card is possible, so nothing would ever answer or time out the
+		// Deferred — reject right away instead of stranding the turn.
+		log.Printf("opencode question %s has no questions; rejecting (session %s)", qr.ID, t.sessionID)
+		if err := t.srv.RejectQuestion(context.Background(), t.dir, qr.ID); err != nil {
+			log.Printf("opencode question empty-reject failed (session %s, rid %s): %v", t.sessionID, qr.ID, err)
+		}
 		return
 	}
 	// Build the Claude-shaped input the frontend already understands.
@@ -493,6 +647,7 @@ func (t *openCodeTurn) openQuestionCard(qr opencodeapi.QuestionRequest) {
 	t.questionSeq++
 	pid := fmt.Sprintf("ocq-%d-%d", time.Now().UnixNano(), t.questionSeq)
 	t.mu.Unlock()
+	log.Printf("opencode question card (session %s, rid %s, %d question(s))", t.sessionID, qr.ID, len(questions))
 
 	// Tool name "AskUserQuestion" is the existing frontend's switch for the
 	// question card; using it keeps one renderer instead of two.
@@ -507,6 +662,9 @@ func (t *openCodeTurn) openQuestionCard(qr opencodeapi.QuestionRequest) {
 	t.mgr.createPending(t.sessionID, "AskUserQuestion", input, "", pid)
 	ch := t.mgr.PermissionWaitChannel(pid)
 	if ch == nil {
+		if err := t.srv.RejectQuestion(context.Background(), t.dir, qr.ID); err != nil {
+			log.Printf("opencode question reject failed (session %s, rid %s): %v", t.sessionID, qr.ID, err)
+		}
 		return
 	}
 	var d PermissionDecision
@@ -521,18 +679,26 @@ func (t *openCodeTurn) openQuestionCard(qr opencodeapi.QuestionRequest) {
 		}
 		// Reject, not answer: the model then sees "Unanswered" and can move
 		// on or re-ask. Denying a question is the honest outcome.
-		_ = t.srv.RejectQuestion(context.Background(), t.dir, qr.ID)
+		if err := t.srv.RejectQuestion(context.Background(), t.dir, qr.ID); err != nil {
+			// Leaving it pending would block the turn forever, and the 12h
+			// waitTurn safety net is far too long to be useful.
+			log.Printf("opencode question timeout-reject failed (session %s, rid %s): %v", t.sessionID, qr.ID, err)
+		}
 		return
 	case <-t.turnDone():
 		// Turn ended while the card was open (interrupt / server gone).
 		t.mgr.removePending(pid)
-		_ = t.srv.RejectQuestion(context.Background(), t.dir, qr.ID)
+		if err := t.srv.RejectQuestion(context.Background(), t.dir, qr.ID); err != nil {
+			log.Printf("opencode question turn-end reject failed (session %s, rid %s): %v", t.sessionID, qr.ID, err)
+		}
 		return
 	}
 
 	answers := openCodeAnswersFromClaude(d.Answers, questions)
 	if len(answers) == 0 {
-		_ = t.srv.RejectQuestion(context.Background(), t.dir, qr.ID)
+		if err := t.srv.RejectQuestion(context.Background(), t.dir, qr.ID); err != nil {
+			log.Printf("opencode question reject failed (session %s, rid %s): %v", t.sessionID, qr.ID, err)
+		}
 	} else if err := t.srv.ReplyQuestion(context.Background(), t.dir, qr.ID,
 		opencodeapi.QuestionReply{Answers: answers}); err != nil {
 		log.Printf("opencode question reply failed (session %s, rid %s): %v", t.sessionID, qr.ID, err)
@@ -669,11 +835,43 @@ func (t *openCodeTurn) failPendingCards() {
 	}
 }
 
-// interrupt is invoked when the user presses stop mid-turn.
+// interrupt is invoked when the user presses stop mid-turn. It marks the turn
+// interrupted; the idle event from opencode's abort is what unblocks waitTurn.
 func (t *openCodeTurn) interrupt() {
 	t.mu.Lock()
 	t.interrupted = true
 	t.mu.Unlock()
+}
+
+// forceStop releases waitTurn when opencode never acknowledged the abort.
+// abortErr records why, so the caller can surface an error instead of a clean
+// "interrupted".
+func (t *openCodeTurn) forceStop(errMsg string) {
+	t.mu.Lock()
+	t.interrupted = true
+	if errMsg != "" {
+		t.abortErr = errMsg
+	}
+	t.mu.Unlock()
+	select {
+	case <-t.stopCh:
+	default:
+		close(t.stopCh)
+	}
+}
+
+// abortFailure returns the reason a stop could not be delivered, or "".
+func (t *openCodeTurn) abortFailure() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.abortErr
+}
+
+// isInterrupted reports whether stop was pressed for this turn.
+func (t *openCodeTurn) isInterrupted() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.interrupted
 }
 
 // interruptOpenCodeTurn asks opencode to stop the session's running turn. It
@@ -684,16 +882,44 @@ func (m *Manager) interruptOpenCodeTurn(sessionID string) bool {
 	if t == nil {
 		return false
 	}
+	// Mark it first: opencode's idle event can race the abort's HTTP response,
+	// and the turn must still be reported as interrupted (not as a clean finish
+	// that could trigger a Session Goal).
+	t.interrupt()
 	// POST the abort so opencode actually stops the agent loop; the
 	// context cancel that follows only unwinds our own HTTP call.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := t.srv.Interrupt(ctx, t.dir, t.ocSessionID); err != nil {
-			log.Printf("opencode interrupt failed (session %s): %v", sessionID, err)
+		var err error
+		for attempt := 1; attempt <= 3; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err = t.srv.Interrupt(ctx, t.dir, t.ocSessionID)
+			cancel()
+			if err == nil {
+				break
+			}
+			log.Printf("opencode interrupt failed (session %s, attempt %d): %v", sessionID, attempt, err)
+			if attempt < 3 {
+				time.Sleep(300 * time.Millisecond)
+			}
+		}
+		if err != nil {
+			// We cannot stop the agent loop, but leaving the card dock and
+			// the "running" badge up forever is worse: release the wait and
+			// tell the user what happened.
+			t.forceStop("停止失败：" + err.Error())
+			return
+		}
+		// An acknowledged abort should produce idle within a moment. If it
+		// does not (opencode bug, dropped event), release the turn rather than
+		// leaving the stop button permanently inert.
+		select {
+		case <-t.doneCh:
+		case <-t.ctx.Done():
+		case <-time.After(10 * time.Second):
+			log.Printf("opencode abort acknowledged but session %s never went idle; releasing turn wait", sessionID)
+			t.forceStop("")
 		}
 	}()
-	t.interrupt()
 	return true
 }
 
@@ -720,6 +946,7 @@ func (t *openCodeTurn) waitTurn(ctx context.Context) {
 	select {
 	case <-t.turnDoneCh:
 	case <-t.doneCh:
+	case <-t.stopCh:
 	case <-ctx.Done():
 	case <-time.After(turnWaitTimeout):
 		return
