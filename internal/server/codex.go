@@ -39,7 +39,7 @@ func (s *Server) handleCodexModels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "a codex kind provider is required")
 		return
 	}
-	cat, err := codexhist.LoadCatalog(cli.Path, q.Get("fresh") == "1")
+	cat, err := codexhist.LoadCatalogFor(cli.Path, codexHome(cli), cli.ModelProvider, q.Get("fresh") == "1")
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

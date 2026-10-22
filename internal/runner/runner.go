@@ -880,7 +880,14 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 	if permMode != "" {
 		args = append(args, "--permission-mode", d.permissionMode(permMode))
 	}
-	model := prov.EffectiveModel(sess.ModelOverride)
+	// A cli that owns its model list (models_command) has no meaningful
+	// config-side default: the static provider list is only hint data. An
+	// empty override means "let the launcher pick", not "pin the first model
+	// config.yaml still remembers" (ducc's old [1m] aliases are now rejected).
+	model := sess.ModelOverride
+	if model == "" && len(cli.ModelsCommand) == 0 {
+		model = prov.EffectiveModel("")
+	}
 	if model != "" {
 		args = append(args, "--model", model)
 	}

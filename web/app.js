@@ -547,6 +547,7 @@ const state = {
   mcodeCatalog: {},   // "cli/provider" -> {ts, data:{provider_id,models:[…],default_model}|null}（带 TTL，见 mcodeCatalogFor）
   qoderCatalog: {},   // "cli/provider" -> {ts, data:{models:[…],efforts:[…]}|null}（带 TTL，见 qoderCatalogFor）
   codexCatalog: {},   // "cli/provider" -> {ts, data:{models:[…]}|null}（带 TTL，见 codexCatalogFor）
+  cliModels: {},      // "cli/provider" -> {ts, data:{models:[…]}|null}（models_command 驱动的 CLI，带 TTL）
   nearBottom: true,
   home: '',           // server home dir, for ~ path shortening
   drafts: {},         // sessionId -> {text, attachments}
@@ -2106,7 +2107,8 @@ function applyAttachGate() {
     const kind = provKind(provider);
     // opencode / mcode / qoder / codex 的模型清单是 CLI 侧的，config 里通常
     // 为空；这里异步拉一次再判，避免首屏附件按钮一直是禁用的。
-    if (kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex') {
+    if (kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex'
+      || (kind === 'claude' && cliHasModelsCommand(cli))) {
       modelsForProvider(provider, cli).then((models) => {
         // 期间可能已经切了会话/provider，判定必须落在当前这一组上。
         if (!state.current || state.current.cli !== cli || state.current.provider !== provider) return;
@@ -2374,6 +2376,29 @@ function codexEffortsFor(catalog, modelName) {
   return (m && m.efforts) || [];
 }
 
+// ---- models_command 驱动的模型目录（ducc 等 launcher）----
+// 有些 launcher 自己列出网关可用模型（`ducc models` 输出 "Available Models:"
+// + 逗号清单），账号/CLI 升级都会变。cli 配了 models_command 时，模型下拉改
+// 拉 /api/cli-models；config 里的静态 models 只留作输入模态提示。
+const CLI_MODELS_TTL = 10 * 60 * 1000;
+function cliHasModelsCommand(cliName) {
+  const c = state.clis.find((x) => x.name === cliName);
+  return !!(c && Array.isArray(c.models_command) && c.models_command.length);
+}
+async function cliModelsFor(cliName, providerName) {
+  const key = `${cliName}/${providerName}`;
+  const ent = state.cliModels[key];
+  if (ent && Date.now() - ent.ts < CLI_MODELS_TTL) return ent.data;
+  let data = null;
+  try {
+    data = await api(`/api/cli-models?cli=${encodeURIComponent(cliName)}&provider=${encodeURIComponent(providerName)}&fresh=1`);
+  } catch (_) {
+    // 命令跑不起来（CLI 升级/未登录）时退回 config 静态列表
+  }
+  state.cliModels[key] = { ts: Date.now(), data: data || null };
+  return data;
+}
+
 // 某 provider 的模型列表：opencode / mcode / qoder 走 CLI 侧目录，其余走 config
 // 静态列表。
 //
@@ -2409,6 +2434,12 @@ async function modelsForProvider(providerName, cliName) {
     const cat = await codexCatalogFor(cliName, providerName);
     if (cat && Array.isArray(cat.models) && cat.models.length) {
       return cat.models.map((m) => ({ name: m.id, input: m.input || [] }));
+    }
+  }
+  if (kind === 'claude' && cliName && cliHasModelsCommand(cliName)) {
+    const cat = await cliModelsFor(cliName, providerName);
+    if (cat && Array.isArray(cat.models) && cat.models.length) {
+      return cat.models.map((m) => ({ name: m.name, input: m.input || [] }));
     }
   }
   return providerModels(providerName);
@@ -2533,6 +2564,9 @@ function renderModelList(sel, models, value, defaultLabel) {
     sel.appendChild(opt);
   }
   sel.value = value || '';
+  // 旧会话可能带着 config 里已经下线的模型名（ducc 的 [1m] 别名）。目录里
+  // 没有这个值时 select 会落到空选中，这里退回「默认」，避免下拉显示空白。
+  if (value && sel.value !== value) sel.value = '';
 }
 
 // mcode 的 provider 不在 config 里静态列模型——可用集合由 mcode 自己的运行时
@@ -2541,7 +2575,8 @@ function renderModelList(sel, models, value, defaultLabel) {
 // provider 时，先发的请求后到也不能把下拉覆盖成上一个 provider 的模型。
 function fillModelSelect(sel, providerName, value, cliName, defaultLabel) {
   const kind = provKind(providerName);
-  if ((kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex') && cliName) {
+  if ((kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex'
+    || (kind === 'claude' && cliHasModelsCommand(cliName))) && cliName) {
     sel.dataset.provider = providerName;
     modelsForProvider(providerName, cliName).then((models) => {
       if (sel.dataset.provider !== providerName) return;
@@ -2568,6 +2603,7 @@ async function refreshProfiles() {
     state.mcodeCatalog = {}; // 同理：mcode provider 改名/新增后旧目录对不上
     state.qoderCatalog = {}; // 同理：qoder 目录按 cli/provider 缓存，改名后失效
     state.codexCatalog = {}; // 同理：codex 目录按 cli/provider 缓存，改名后失效
+    state.cliModels = {};    // 同理：models_command 目录按 cli/provider 缓存，改名后失效
     rerenderProfileSelects();
   } catch (_) {
     // 网络抖动忽略：下一轮轮询/广播再试
@@ -6357,7 +6393,8 @@ function renderModelOptions(sel, providerName) {
   // opencode / mcode / qoder 的模型不在 config 里静态声明（可用集合由 CLI 自己
   // 决定），异步拉目录后重建；dataset.provider 防止连点切换时旧请求覆盖新结果。
   const kind = provKind(providerName);
-  if (kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex') {
+  if (kind === 'opencode' || kind === 'mcode' || kind === 'qoder' || kind === 'codex'
+    || (kind === 'claude' && cliHasModelsCommand($('#ns-cli').value))) {
     const cliName = $('#ns-cli').value;
     sel.dataset.provider = providerName;
     modelsForProvider(providerName, cliName).then((models) => {

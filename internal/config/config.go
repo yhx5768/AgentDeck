@@ -49,7 +49,14 @@ type CLI struct {
 	// override is passed. It matters for launcher wrappers: any `-c` flag makes
 	// ducx drop the provider it would otherwise inject, so the id has to be
 	// repeated. Standard codex with its own config.toml can leave it empty.
-	ModelProvider string            `yaml:"model_provider" json:"model_provider,omitempty"`
+	ModelProvider string `yaml:"model_provider" json:"model_provider,omitempty"`
+	// ModelsCommand, when set, makes the client's model list come from running
+	// the CLI with these arguments instead of the static provider list. Both
+	// Baidu launchers print "Available Models:" followed by a comma list
+	// (`ducc models`, `ducx models`); the gateway catalogue changes with the
+	// account and CLI build, so a static list goes stale (ducc recently
+	// stopped recognizing the [1m] aliases it used to accept).
+	ModelsCommand []string          `yaml:"models_command" json:"models_command,omitempty"`
 	Env           map[string]string `yaml:"env" json:"-"` // never serialized to API clients
 }
 

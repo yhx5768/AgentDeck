@@ -69,6 +69,10 @@ clis:
 
   - name: "ducc"
     path: "/home/you/.baidu-cc/baidu-cc/bin/ducc"
+    # 模型清单从 CLI 自己的命令读取（`ducc models` → "Available Models: A, B, C"）。
+    # 网关模型随账号/CLI 升级变化，config 里的 models 写死会过期；provider 的
+    # models 只留作输入模态提示。留空则退回静态 models。
+    models_command: ["models"]
     permission_mode: "default"   # 默认走 Web 审批卡；选 bypassPermissions 才全放行
     args: []
     env: {}
@@ -187,8 +191,10 @@ providers:
 
   # codex 引擎示例：provider 名只需在 cc-webui 内唯一；凭据由 codex 自己的
   # config.toml / 登录态决定，config 的 env 不参与。models 留空即可——可用
-  # 模型与每个模型的推理档位由 CLI 的 `debug models --bundled` 提供
-  # （/api/codex-models），写死会随 CLI 升级/账号档位过期。
+  # 模型与每个模型的推理档位由 CLI 侧目录提供（/api/codex-models）：原生
+  # codex 读 `debug models --bundled`；ducx 这类 wrapper 读它自己的
+  # <home>/model-catalogs/<model_provider>-models.json（即 `ducx models`
+  # 打印的网关模型清单）。写死会随 CLI 升级/账号档位过期。
   - name: "codex"
     kind: "codex"
     env: {}

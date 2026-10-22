@@ -69,7 +69,7 @@ func (s *Server) validateEffort(cli *config.CLI, prov *config.Provider, model, e
 		if cli == nil {
 			return nil
 		}
-		cat, err := codexhist.LoadCatalog(cli.Path, false)
+		cat, err := codexhist.LoadCatalogFor(cli.Path, codexHome(cli), cli.ModelProvider, false)
 		if mm := cat.Find(m); err == nil && mm != nil && len(mm.Efforts) > 0 && !cat.EffortOK(m, effort) {
 			return fmt.Errorf("模型 %s 不支持推理档位 %q（可选：%s）", m, effort, strings.Join(mm.Efforts, ", "))
 		}

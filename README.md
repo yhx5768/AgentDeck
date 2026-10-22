@@ -275,7 +275,7 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 | GET | `/api/opencode-model-variants?cli=&provider=` | opencode 每个模型可用的 `--variant` 档位（与上一项共用同一次 CLI 调用与缓存） |
 | GET | `/api/mcode-models?fresh=` | mcode 可用模型 + 推理档位 + 输入模态（读 `~/.minimax/config.yaml`） |
 | GET | `/api/qoder-models?cli=&provider=` | qoder 可用模型 + 推理档位（`qoderclicn --list-models`，10 分钟缓存） |
-| GET | `/api/codex-models?cli=&provider=` | codex 可用模型 + 推理档位 + 输入模态（`codex debug models --bundled`，10 分钟缓存） |
+| GET | `/api/codex-models?cli=&provider=` | codex 可用模型 + 推理档位 + 输入模态（原生 codex 读 `debug models --bundled`；ducx 读 `<home>/model-catalogs/<provider>-models.json`，10 分钟缓存） |
 | POST | `/api/sessions/import` | 导入已有 session（按 cli 的 kind 决定读哪个引擎的历史） |
 | GET | `/api/stats?fresh=1` | 五引擎合并使用统计（默认走增量缓存） |
 | GET / PUT | `/api/notes` | 全局待办备忘（前端全量覆盖写） |

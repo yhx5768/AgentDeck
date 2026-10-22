@@ -197,6 +197,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/mcode-models", s.auth(s.handleMcodeModels))
 	s.mux.Handle("GET /api/mcode-sessions", s.auth(s.handleMcodeSessions))
 	s.mux.Handle("GET /api/mcode-sessions/preview", s.auth(s.handleMcodeSessionPreview))
+	s.mux.Handle("GET /api/cli-models", s.auth(s.handleCLIModels))
 	s.mux.Handle("GET /api/codex-models", s.auth(s.handleCodexModels))
 	s.mux.Handle("GET /api/codex-sessions", s.auth(s.handleCodexSessions))
 	s.mux.Handle("GET /api/codex-sessions/preview", s.auth(s.handleCodexSessionPreview))
@@ -326,11 +327,12 @@ func (s *Server) handleCLIs(w http.ResponseWriter, r *http.Request) {
 		Args            []string `json:"args"`
 		PermissionMode  string   `json:"permission_mode"`
 		PartialMessages bool     `json:"partial_messages"`
+		ModelsCommand   []string `json:"models_command,omitempty"`
 		EnvKeys         []string `json:"env_keys"`
 	}
 	out := []item{}
 	for _, c := range s.cfg().CLIs {
-		it := item{Name: c.Name, Kind: c.Kind, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode, PartialMessages: c.PartialMessages}
+		it := item{Name: c.Name, Kind: c.Kind, Path: c.Path, Args: c.Args, PermissionMode: c.PermissionMode, PartialMessages: c.PartialMessages, ModelsCommand: c.ModelsCommand}
 		it.EnvKeys = sortedKeys(c.Env)
 		out = append(out, it)
 	}
@@ -394,6 +396,7 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		Path           string   `json:"path"`
 		Args           []string `json:"args"`
 		PermissionMode string   `json:"permission_mode"`
+		ModelsCommand  []string `json:"models_command,omitempty"`
 		EnvKeys        []string `json:"env_keys"`
 	}
 	out := struct {
@@ -641,7 +644,7 @@ func (s *Server) resumeCommand(sess *store.Session) string {
 		}
 	}
 	model := ""
-	if prov != nil {
+	if prov != nil && (sess.ModelOverride != "" || cli == nil || len(cli.ModelsCommand) == 0) {
 		model = prov.EffectiveModel(sess.ModelOverride)
 	}
 	if cli != nil && prov != nil {
@@ -2095,6 +2098,22 @@ func (s *Server) modelKnown(cli *config.CLI, prov *config.Provider, model string
 	if cli == nil || prov == nil {
 		return false
 	}
+	// A cli with models_command owns the list: the command is authoritative
+	// (config.yaml's static entries are only input-modality hints). Only fall
+	// through to the other checks when the command itself cannot run.
+	if len(cli.ModelsCommand) > 0 {
+		if models, err := s.cliModels(cli, prov, false); err == nil {
+			for _, m := range models {
+				if m.Name == model {
+					return true
+				}
+			}
+			return false
+		} else {
+			log.Printf("cli model list unavailable, skipping model check for %q: %v", model, err)
+			return true
+		}
+	}
 	switch {
 	case cli.IsOpenCode():
 		cat, err := s.opencodeCatalog(cli, prov, false)
@@ -2128,7 +2147,7 @@ func (s *Server) modelKnown(cli *config.CLI, prov *config.Provider, model string
 		}
 		return false
 	case cli.IsCodex():
-		cat, err := codexhist.LoadCatalog(cli.Path, false)
+		cat, err := codexhist.LoadCatalogFor(cli.Path, codexHome(cli), cli.ModelProvider, false)
 		if err != nil {
 			log.Printf("codex model catalog unavailable, skipping model check for %q: %v", model, err)
 			return true

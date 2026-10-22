@@ -206,3 +206,41 @@ func TestUserTextSkipsImageWrappers(t *testing.T) {
 		t.Fatalf("userText = %q, want %q", got, want)
 	}
 }
+
+func TestLoadCatalogPrefersWrapperCatalog(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "model-catalogs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"models":[
+	  {"slug":"GLM-5.3","display_name":"GLM-5.3","visibility":"list","supported_in_api":true,
+	   "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],
+	   "input_modalities":["text"],"context_window":1000000},
+	  {"slug":"DeepSeek-V4-Pro","display_name":"DeepSeek-V4-Pro","visibility":"list","supported_in_api":true,
+	   "supported_reasoning_levels":[{"effort":"medium"}],"input_modalities":["text"]}
+	]}`
+	if err := os.WriteFile(filepath.Join(dir, "oneapi-models.json"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := LoadCatalogFor("ducx", home, "oneapi", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cat.Models) != 2 || cat.Models[0].ID != "GLM-5.3" {
+		t.Fatalf("catalog = %+v", cat.Models)
+	}
+	if !cat.EffortOK("GLM-5.3", "high") {
+		t.Fatalf("wrapper efforts missing: %+v", cat.Models[0])
+	}
+}
+
+func TestParseModelsCommand(t *testing.T) {
+	cat, err := parseModelsCommand([]byte("Available Models:\nGLM-5.3-Flash, DeepSeek-V4-Pro, gpt-6.1-sol\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cat.Models) != 3 || cat.Models[1].ID != "DeepSeek-V4-Pro" {
+		t.Fatalf("models = %+v", cat.Models)
+	}
+}
