@@ -878,6 +878,39 @@ func (t *openCodeTurn) isInterrupted() bool {
 // returns false for any session that is not a live opencode turn, so the
 // caller falls back to the process-kill path.
 func (m *Manager) interruptOpenCodeTurn(sessionID string) bool {
+	if t := m.ocTurnsV2.get(sessionID); t != nil {
+		// Mark first: the execution terminal event can race the interrupt's
+		// HTTP response, and the turn must still be reported as interrupted
+		// (a clean finish would fire Session Goal).
+		t.interrupt()
+		go func() {
+			var err error
+			for attempt := 1; attempt <= 3; attempt++ {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err = t.srv.Interrupt(ctx, t.ocSessionID)
+				cancel()
+				if err == nil {
+					break
+				}
+				log.Printf("opencode v2 interrupt failed (session %s, attempt %d): %v", sessionID, attempt, err)
+				if attempt < 3 {
+					time.Sleep(300 * time.Millisecond)
+				}
+			}
+			if err != nil {
+				t.forceStop("停止失败：" + err.Error())
+				return
+			}
+			select {
+			case <-t.doneCh:
+			case <-t.ctx.Done():
+			case <-time.After(10 * time.Second):
+				log.Printf("opencode v2 interrupt acknowledged but session %s never closed; releasing turn wait", sessionID)
+				t.forceStop("")
+			}
+		}()
+		return true
+	}
 	t := m.ocTurns.get(sessionID)
 	if t == nil {
 		return false

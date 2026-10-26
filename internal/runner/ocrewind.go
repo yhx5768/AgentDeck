@@ -49,7 +49,7 @@ func (m *Manager) RewindOpenCode(sess *store.Session, cli *config.CLI, prov *con
 
 	// A rewind runs outside any turn, so it acquires a serve process the same
 	// way a turn does and releases it right after.
-	srv, _, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, sess.Cwd)
+	h, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, sess.Cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +57,25 @@ func (m *Manager) RewindOpenCode(sess *store.Session, cli *config.CLI, prov *con
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	if h.V2 != nil {
+		if messageID == "" {
+			return nil, errors.New("opencode v2 回滚需要用户消息 id")
+		}
+		staged, err := h.V2.StageRevert(ctx, sess.ClaudeSessionID, messageID)
+		if err != nil {
+			return nil, fmt.Errorf("opencode 预览回滚失败：%w", err)
+		}
+		if err := h.V2.CommitRevert(ctx, sess.ClaudeSessionID); err != nil {
+			return nil, fmt.Errorf("opencode 执行回滚失败：%w", err)
+		}
+		res := &RewindResult{FilesChanged: len(staged.Files)}
+		for _, f := range staged.Files {
+			res.Files = append(res.Files, RewindFile{Path: f.Path, Hash: f.Hash, Time: f.Time})
+		}
+		return res, nil
+	}
+	srv := h.V1
 
 	// Stage first: it is the read-only half and tells us whether a revert is
 	// even possible before anything on disk changes.

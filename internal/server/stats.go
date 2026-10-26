@@ -15,15 +15,18 @@ import (
 	"cc-webui/internal/config"
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
+	"cc-webui/internal/opencodev2"
+	"cc-webui/internal/opencodever"
 	"cc-webui/internal/runner"
 	"cc-webui/internal/statsagg"
 )
 
 var (
-	statsMu            sync.Mutex
-	claudeStatsCache   = claudehist.NewStatsCache()
-	opencodeStatsCache = opencodehist.NewStatsCache()
-	mcodeStatsCache    = mcodehist.NewStatsCache()
+	statsMu              sync.Mutex
+	claudeStatsCache     = claudehist.NewStatsCache()
+	opencodeStatsCache   = opencodehist.NewStatsCache()
+	opencodeStatsCacheV2 = opencodev2.NewStatsCache()
+	mcodeStatsCache      = mcodehist.NewStatsCache()
 	// qoder reads the same transcript format as claude, from its own home
 	// directory, and reports under its own engine kind.
 	qoderStatsCache = claudehist.NewStatsCacheFor(config.KindQoder)
@@ -39,8 +42,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	statsMu.Lock()
 	fas := make([]statsagg.FileAgg, 0, 128)
 	fas = append(fas, claudeStatsCache.Refresh(claudehist.HistoryDir(""), fresh)...)
-	if cliPaths, dirs := s.opencodeStatsTargets(); len(cliPaths) > 0 {
-		fas = append(fas, opencodeStatsCache.Refresh(cliPaths, dirs, fresh)...)
+	if v1Paths, v2Paths, dirs := s.opencodeStatsTargets(); len(v1Paths)+len(v2Paths) > 0 {
+		if len(v1Paths) > 0 {
+			fas = append(fas, opencodeStatsCache.Refresh(v1Paths, dirs, fresh)...)
+		}
+		if len(v2Paths) > 0 {
+			fas = append(fas, opencodeStatsCacheV2.Refresh(v2Paths, dirs, fresh)...)
+		}
 	}
 	// mcode keeps one store under its runtime data dir, shared by every
 	// configured mcode cli, so a single configured cli is enough to include
@@ -175,7 +183,7 @@ func (s *Server) hasQoderCLI() bool {
 // 而 CLI 没有"列出全部桶"的入口。所以桶集合从 cc-webui 已知的 cwd 推导：服务器
 // 自身 cwd + 全部已管理会话的 cwd（归一到 git 仓库根，顺带保留 cwd 本身——它也
 // 可能是嵌套仓库的桶根）。
-func (s *Server) opencodeStatsTargets() (cliPaths []string, bucketDirs []string) {
+func (s *Server) opencodeStatsTargets() (v1Paths, v2Paths []string, bucketDirs []string) {
 	cfg := s.cfg()
 	seenPath := map[string]bool{}
 	for i := range cfg.CLIs {
@@ -184,10 +192,14 @@ func (s *Server) opencodeStatsTargets() (cliPaths []string, bucketDirs []string)
 			continue
 		}
 		seenPath[cli.Path] = true
-		cliPaths = append(cliPaths, cli.Path)
+		if opencodever.IsV2(cli.Path, cli.OpenCodeAPI) {
+			v2Paths = append(v2Paths, cli.Path)
+		} else {
+			v1Paths = append(v1Paths, cli.Path)
+		}
 	}
-	if len(cliPaths) == 0 {
-		return nil, nil
+	if len(v1Paths)+len(v2Paths) == 0 {
+		return nil, nil, nil
 	}
 
 	var candidates []string
@@ -220,7 +232,7 @@ func (s *Server) opencodeStatsTargets() (cliPaths []string, bucketDirs []string)
 		add(gitRoot(d))
 		add(d)
 	}
-	return cliPaths, bucketDirs
+	return v1Paths, v2Paths, bucketDirs
 }
 
 type rootEntry struct {

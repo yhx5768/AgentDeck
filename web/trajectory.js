@@ -133,8 +133,11 @@ function trajProject(ev) {
     }
     case 'assistant': {
       const m = d.message || {};
-      const mid = m.id || 'seq' + ev.seq;
       const blocks = Array.isArray(m.content) ? m.content : [];
+      // 纯 usage 携带事件（mcode/codex/opencodev2 每步一条 content 为空的
+      // assistant 事件）不是消息，别在台账里留一条 "(空)"。
+      if (blocks.length === 0) return;
+      const mid = m.id || 'seq' + ev.seq;
       const text = blocks.filter((b) => b.type === 'text').map((b) => b.text || '').join('\n');
       const thinking = blocks.filter((b) => b.type === 'thinking').map((b) => b.thinking || '').join('\n');
       let rec = traj.byMsgId[mid];

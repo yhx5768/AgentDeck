@@ -35,3 +35,34 @@ func (r *ocTurnRegistry) clear(sessionID string, t *openCodeTurn) {
 	}
 	r.mu.Unlock()
 }
+
+// ocTurnRegistryV2 is the OpenCode 2 counterpart (separate type because the
+// turn driver and its interrupt path differ).
+type ocTurnRegistryV2 struct {
+	mu    sync.Mutex
+	turns map[string]*openCodeTurnV2
+}
+
+func newOcTurnRegistryV2() *ocTurnRegistryV2 {
+	return &ocTurnRegistryV2{turns: map[string]*openCodeTurnV2{}}
+}
+
+func (r *ocTurnRegistryV2) set(sessionID string, t *openCodeTurnV2) {
+	r.mu.Lock()
+	r.turns[sessionID] = t
+	r.mu.Unlock()
+}
+
+func (r *ocTurnRegistryV2) get(sessionID string) *openCodeTurnV2 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.turns[sessionID]
+}
+
+func (r *ocTurnRegistryV2) clear(sessionID string, t *openCodeTurnV2) {
+	r.mu.Lock()
+	if r.turns[sessionID] == t {
+		delete(r.turns, sessionID)
+	}
+	r.mu.Unlock()
+}

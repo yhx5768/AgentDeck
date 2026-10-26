@@ -16,6 +16,8 @@ import (
 
 	"cc-webui/internal/config"
 	"cc-webui/internal/opencodeapi"
+	"cc-webui/internal/opencodev2"
+	"cc-webui/internal/opencodever"
 )
 
 // opencodeServePool owns the `opencode serve` child processes, one per
@@ -37,9 +39,41 @@ type opencodeServePool struct {
 	servers map[string]*serveEntry
 }
 
+// ocPoolHandle is one pooled serve process, whichever protocol it speaks.
+// Exactly one of V1 (with Hub) / V2 is set.
+type ocPoolHandle struct {
+	V1  *opencodeapi.Server
+	Hub *opencodeapi.Hub
+	V2  *opencodev2.Server
+}
+
+func (h *ocPoolHandle) pid() int {
+	if h == nil {
+		return 0
+	}
+	if h.V1 != nil {
+		return h.V1.PID()
+	}
+	if h.V2 != nil {
+		return h.V2.PID()
+	}
+	return 0
+}
+
+func (h *ocPoolHandle) close() {
+	if h == nil {
+		return
+	}
+	if h.V1 != nil {
+		h.V1.Close()
+	}
+	if h.V2 != nil {
+		h.V2.Close()
+	}
+}
+
 type serveEntry struct {
-	srv  *opencodeapi.Server
-	hub  *opencodeapi.Hub
+	h    *ocPoolHandle
 	stop context.CancelFunc
 	refs int
 	// lastUse drives idle shutdown: a serve process holds provider
@@ -147,7 +181,7 @@ const serveIdleTimeout = 30 * time.Minute
 
 // acquire returns a running serve for this env signature, starting one if
 // needed. The returned release func must be called when the turn ends.
-func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *config.Provider, model, workDir string) (*opencodeapi.Server, *opencodeapi.Hub, func(), error) {
+func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *config.Provider, model, workDir string) (*ocPoolHandle, func(), error) {
 	key := serveKey(cli, prov, model)
 
 	p.mu.Lock()
@@ -156,7 +190,7 @@ func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *
 	for k, e := range p.servers {
 		if e.refs == 0 && now.Sub(e.lastUse) > serveIdleTimeout {
 			e.stop()
-			e.srv.Close()
+			e.h.close()
 			delete(p.servers, k)
 			log.Printf("opencode serve idle-reaped (%s)", k)
 		}
@@ -165,7 +199,7 @@ func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *
 		e.refs++
 		e.lastUse = now
 		p.mu.Unlock()
-		return e.srv, e.hub, p.release(key), nil
+		return e.h, p.release(key), nil
 	}
 	p.mu.Unlock()
 
@@ -183,13 +217,25 @@ func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *
 		envMap["OPENCODE_CONFIG_DIR"] = dir
 	}
 
-	srv, err := opencodeapi.Start(cli.Path, envMapToSlice(envMap), workDir)
-	if err != nil {
-		return nil, nil, nil, err
+	h := &ocPoolHandle{}
+	var cancel context.CancelFunc
+	if opencodever.IsV2(cli.Path, cli.OpenCodeAPI) {
+		srv, err := opencodev2.Start(cli.Path, envMapToSlice(envMap), workDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		h.V2 = srv
+		cancel = func() {}
+	} else {
+		srv, err := opencodeapi.Start(cli.Path, envMapToSlice(envMap), workDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		hubCtx, hubCancel := context.WithCancel(context.Background())
+		hub := opencodeapi.NewHub(srv)
+		go hub.Run(hubCtx)
+		h.V1, h.Hub, cancel = srv, hub, hubCancel
 	}
-	hubCtx, cancel := context.WithCancel(context.Background())
-	hub := opencodeapi.NewHub(srv)
-	go hub.Run(hubCtx)
 
 	p.mu.Lock()
 	// Another turn raced us to the same key; keep the first and drop ours.
@@ -198,14 +244,14 @@ func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *
 		e.lastUse = now
 		p.mu.Unlock()
 		cancel()
-		srv.Close()
-		return e.srv, e.hub, p.release(key), nil
+		h.close()
+		return e.h, p.release(key), nil
 	}
-	p.servers[key] = &serveEntry{srv: srv, hub: hub, stop: cancel, refs: 1, lastUse: now}
+	p.servers[key] = &serveEntry{h: h, stop: cancel, refs: 1, lastUse: now}
 	p.mu.Unlock()
-	p.recordServePID(srv.PID())
+	p.recordServePID(h.pid())
 	log.Printf("opencode serve started (%s)", serveLabel(key))
-	return srv, hub, p.release(key), nil
+	return h, p.release(key), nil
 }
 
 func (p *opencodeServePool) release(key string) func() {
@@ -228,7 +274,7 @@ func (p *opencodeServePool) Close() {
 	defer p.mu.Unlock()
 	for k, e := range p.servers {
 		e.stop()
-		e.srv.Close()
+		e.h.close()
 		delete(p.servers, k)
 	}
 }
@@ -316,6 +362,10 @@ func serveKey(cli *config.CLI, prov *config.Provider, model string) string {
 		}
 	}
 	sort.Strings(parts)
+	// The protocol generation is part of the identity: upgrading the binary in
+	// place must not reuse a server process spawned by the other protocol.
+	ver := opencodever.Resolve(cli.Path, cli.OpenCodeAPI)
 	return cli.Path + "\x00" + cli.Name + "\x00" + strings.Join(cli.Args, "\x00") +
-		"\x00" + prov.Name + "\x00" + model + "\x00" + strings.Join(parts, "\x00")
+		"\x00" + prov.Name + "\x00" + model + "\x00v" + strconv.Itoa(int(ver)) +
+		"\x00" + strings.Join(parts, "\x00")
 }
