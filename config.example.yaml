@@ -83,6 +83,13 @@ clis:
                                    # 不钉规则（走 opencode 默认的 ask，前端弹审批卡）
     path: "/home/you/.opencode/bin/opencode"
     permission_mode: "bypassPermissions"
+    # opencode 有 v1 / v2 两代协议（v2 是破坏性的 server API 重写，安装器会覆盖
+    # 同一个路径）。默认 auto：跑 `<path> --version` 自动识别（1.x → v1，
+    # 2.x → v2）。识别结果按二进制 mtime 缓存，升级后无需重启。可显式指定：
+    #   opencode_api: auto | v1 | v2
+    # 目前 v2 已接入回放 / 导入 / 会话列表 / 模型目录；v2 的实况对话尚未接入
+    # （发消息会报错，可临时设 v1 或换回 v1 二进制）。
+    opencode_api: "auto"
     args: []
     env: {}
 

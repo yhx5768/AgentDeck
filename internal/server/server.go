@@ -1356,8 +1356,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		switch s.engineOf(sess) {
 		case config.KindOpenCode:
 			if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
-				if oc, err := opencodehist.FetchSession(cli.Path, sess.ClaudeSessionID); err == nil {
-					extEvents = oc.ToEvents()
+				if evs, err := ocReplayEvents(cli, sess.ClaudeSessionID); err == nil {
+					extEvents = evs
 				} else {
 					log.Printf("opencode replay %s: %v", sess.ClaudeSessionID, err)
 				}
@@ -1750,13 +1750,13 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		oc, err := opencodehist.FetchSession(cli.Path, body.ClaudeSessionID)
+		modelID, err := ocImportModel(cli, body.ClaudeSessionID)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "opencode session not found: "+err.Error())
 			return
 		}
-		if oc.ModelID != "" && prov.ModelByName(oc.ModelID) != nil {
-			sess.ModelOverride = oc.ModelID
+		if modelID != "" && prov.ModelByName(modelID) != nil {
+			sess.ModelOverride = modelID
 		}
 		if err := s.st.Upsert(sess, nil); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -1826,13 +1826,13 @@ func (s *Server) opencodeCatalog(cli *config.CLI, prov *config.Provider, force b
 		delete(s.ocCatalog, key)
 	} else if expired && !s.ocRefreshing[key] {
 		s.ocRefreshing[key] = true
-		go s.refreshOpenCodeCatalog(cli.Path, prov.Name, key)
+		go s.refreshOpenCodeCatalog(cli, prov.Name, key)
 	}
 	s.ocCatalogMu.Unlock()
 	if cold {
 		// Nothing to serve yet: one blocking read is unavoidable, so make it
 		// the cheap one (the CLI's own on-disk cache, no network).
-		return s.fetchOpenCodeCatalog(cli.Path, prov.Name, key, false)
+		return s.fetchOpenCodeCatalog(cli, prov.Name, key, false)
 	}
 	// Fresh or merely stale — either way the caller gets the entry it already
 	// have right now. The refresh kicked above lands for the next reader.
@@ -1840,13 +1840,13 @@ func (s *Server) opencodeCatalog(cli *config.CLI, prov *config.Provider, force b
 }
 
 // refreshOpenCodeCatalog runs the network-refreshing read off the request path.
-func (s *Server) refreshOpenCodeCatalog(cliPath, providerID, key string) {
+func (s *Server) refreshOpenCodeCatalog(cli *config.CLI, providerID, key string) {
 	defer func() {
 		s.ocCatalogMu.Lock()
 		delete(s.ocRefreshing, key)
 		s.ocCatalogMu.Unlock()
 	}()
-	cat, err := opencodehist.ProviderCatalog(cliPath, providerID, true)
+	cat, err := readOpenCodeCatalog(cli, providerID, true)
 	s.ocCatalogMu.Lock()
 	defer s.ocCatalogMu.Unlock()
 	if err != nil {
@@ -1862,8 +1862,8 @@ func (s *Server) refreshOpenCodeCatalog(cliPath, providerID, key string) {
 // fetchOpenCodeCatalog is the blocking half of opencodeCatalog: it runs the
 // CLI, stores the result, and remembers the failure so a broken provider is
 // not re-invoked on every request.
-func (s *Server) fetchOpenCodeCatalog(cliPath, providerID, key string, refresh bool) (*opencodehist.Catalog, error) {
-	cat, err := opencodehist.ProviderCatalog(cliPath, providerID, refresh)
+func (s *Server) fetchOpenCodeCatalog(cli *config.CLI, providerID, key string, refresh bool) (*opencodehist.Catalog, error) {
+	cat, err := readOpenCodeCatalog(cli, providerID, refresh)
 	s.ocCatalogMu.Lock()
 	defer s.ocCatalogMu.Unlock()
 	if err != nil {
@@ -1984,13 +1984,13 @@ func (s *Server) handleOpenCodeSessions(w http.ResponseWriter, r *http.Request) 
 		err  error
 	)
 	if cwd == "" {
-		list, err = opencodehist.ListAll(cli.Path)
+		list, err = ocListAll(cli)
 		if err != nil {
 			log.Printf("opencode 跨项目枚举失败，回落到服务进程所在项目桶：%v", err)
-			list, err = opencodehist.List(cli.Path, "")
+			list, err = ocList(cli, "")
 		}
 	} else {
-		list, err = opencodehist.List(cli.Path, listDir)
+		list, err = ocList(cli, listDir)
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -2030,17 +2030,17 @@ func (s *Server) handleOpenCodeSessionPreview(w http.ResponseWriter, r *http.Req
 		writeErr(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	oc, err := opencodehist.FetchSession(cli.Path, id)
+	sid, cwd, updated, msgs, err := ocPreview(cli, id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "opencode session not found: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id": oc.ID,
-		"cwd":        oc.Directory,
-		"branch":     gitBranch(oc.Directory),
-		"updated_at": oc.UpdatedAt,
-		"messages":   oc.Preview(8),
+		"session_id": sid,
+		"cwd":        cwd,
+		"branch":     gitBranch(cwd),
+		"updated_at": updated,
+		"messages":   msgs,
 	})
 }
 

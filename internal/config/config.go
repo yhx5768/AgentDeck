@@ -56,8 +56,13 @@ type CLI struct {
 	// (`ducc models`, `ducx models`); the gateway catalogue changes with the
 	// account and CLI build, so a static list goes stale (ducc recently
 	// stopped recognizing the [1m] aliases it used to accept).
-	ModelsCommand []string          `yaml:"models_command" json:"models_command,omitempty"`
-	Env           map[string]string `yaml:"env" json:"-"` // never serialized to API clients
+	ModelsCommand []string `yaml:"models_command" json:"models_command,omitempty"`
+	// OpenCodeAPI forces which opencode protocol generation this binary speaks
+	// ("auto" / "v1" / "v2"). Empty means auto-detect by running
+	// `<path> --version`; v2 is a breaking rewrite with a different server API
+	// and CLI surface, so the version has to be known before any call.
+	OpenCodeAPI string            `yaml:"opencode_api" json:"opencode_api,omitempty"`
+	Env         map[string]string `yaml:"env" json:"-"` // never serialized to API clients
 }
 
 // Model is one model within a provider, with optional per-model env and

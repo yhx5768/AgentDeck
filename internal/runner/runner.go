@@ -22,6 +22,7 @@ import (
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodeapi"
 	"cc-webui/internal/opencodehist"
+	"cc-webui/internal/opencodever"
 	"cc-webui/internal/store"
 )
 
@@ -767,6 +768,19 @@ func (m *Manager) runTurn(sessionID string, msg Message) {
 	m.emit(sessionID, "status", map[string]string{"state": "turn_start"})
 
 	if cli.IsOpenCode() {
+		// OpenCode 2's server API is a breaking rewrite (path prefixes, Basic
+		// auth, a different event vocabulary); the live turn over it is not
+		// wired yet. Reads (replay/import/session list/model catalog) already
+		// route through opencodev2, so a v2 binary is usable for everything
+		// except starting a new turn. Fail loudly instead of driving a v2
+		// server with v1 calls (which would hang on a 401 with no explanation).
+		if opencodever.IsV2(cli.Path, cli.OpenCodeAPI) {
+			const msgText = "OpenCode v2 的实况对话尚未接入（回放/导入/会话列表/模型目录已支持 v2）。" +
+				"可在 config.yaml 该 cli 上设 `opencode_api: v1` 用 v1 协议，或换回 v1 二进制。"
+			m.emit(sessionID, "status", map[string]string{"state": "error", "error": msgText})
+			m.setIdle(sessionID, msgText)
+			return
+		}
 		m.runOpenCodeTurn(sessionID, msg, sess, cli, prov, resolvedCwd)
 		return
 	}

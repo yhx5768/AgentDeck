@@ -42,7 +42,9 @@ func fakeOpenCodeCLI(t *testing.T, output string) (path string, calls func() []s
 	dir := t.TempDir()
 	path = filepath.Join(dir, "opencode")
 	logPath := filepath.Join(dir, "calls.log")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logPath + "\ncat <<'EOF'\n" + output + "EOF\n"
+	// The `--version` probe (opencodever detection) is not part of what these
+	// tests measure, so it answers v1 and is left out of the call log.
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.18.35; exit 0; fi\nprintf '%s\\n' \"$*\" >> " + logPath + "\ncat <<'EOF'\n" + output + "EOF\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake cli: %v", err)
 	}
