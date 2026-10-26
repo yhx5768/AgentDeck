@@ -98,6 +98,7 @@
           <span id="status-badge" class="status-badge"></span>
           <input id="session-cwd" class="cwd cwd-input" title="工作区目录（可编辑，项目迁移后改这里）" spellcheck="false" autocomplete="off">
           <div class="header-actions">
+            <button id="btn-workspace" class="icon-btn" title="工作区文件面板（文件树 + 预览）"><i data-lucide="panel-right"></i></button>
             <button id="btn-resident" class="icon-btn resident-icon-btn" title="常驻：保持进程在线，可被其他会话发消息"><i data-lucide="bot"></i></button>
             <button id="btn-resume" class="icon-btn" title="复制终端恢复该会话的命令"><i data-lucide="terminal"></i></button>
             <button id="btn-stop" class="icon-btn stop-btn hidden" title="停止生成"><i data-lucide="square"></i></button>
@@ -292,6 +293,37 @@
       </div>
     </div>
   </main>
+
+  <!-- 工作区面板：Codex app 风格的右侧文件区（文件树 + 文件预览 + 改动视图）。
+       默认收起，点聊天区右上角的「工作区」按钮展开；宽度可拖拽。 -->
+  <aside id="ws-panel" class="hidden" aria-label="工作区文件">
+    <div id="ws-splitter" class="ws-splitter" title="拖拽调整宽度" aria-hidden="true"></div>
+    <div id="ws-viewer">
+      <div class="ws-viewer-head">
+        <div class="ws-crumbs" id="ws-crumbs"></div>
+        <div class="ws-viewer-actions">
+          <button id="ws-diff" class="icon-btn hidden" data-tip="显示改动：与 git HEAD 的差异（未暂存 + 已暂存），再点一次回到预览" title="显示改动（git diff）"><i data-lucide="git-compare"></i></button>
+          <button id="ws-source" class="icon-btn hidden" data-tip="查看源代码：切到纯文本，再点一次回到渲染" title="查看源代码（切回渲染）"><i data-lucide="code"></i></button>
+          <button id="ws-refresh" class="icon-btn hidden" data-tip="重新读取：磁盘上的内容更新了就点它" title="重新读取文件"><i data-lucide="refresh-cw"></i></button>
+          <button id="ws-open" class="icon-btn hidden" data-tip="用系统默认程序打开：在你的编辑器里接着改" title="用系统默认程序打开"><i data-lucide="external-link"></i></button>
+          <button id="ws-close" class="icon-btn" data-tip="关闭工作区面板" title="关闭面板"><i data-lucide="x"></i></button>
+        </div>
+      </div>
+      <div id="ws-viewer-body" class="ws-viewer-body"></div>
+    </div>
+    <div id="ws-tree-pane">
+      <div class="ws-tree-head">
+        <button id="ws-tree-toggle" class="icon-btn ws-tree-toggle" data-tip="收起文件树，把宽度让给预览区" title="收起/展开文件树"><i data-lucide="panel-right-close"></i></button>
+        <div class="ws-tree-title" id="ws-tree-root"></div>
+        <button id="ws-tree-changed" class="ws-changed" data-tip="只看有改动的文件（再点一次看全部）" title="只看有改动的文件"></button>
+      </div>
+      <div class="ws-tree-search">
+        <i data-lucide="search"></i>
+        <input id="ws-filter" placeholder="筛选文件…" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="ws-tree" class="ws-tree"></div>
+    </div>
+  </aside>
 
   <!-- mobile-only UI overlays -->
   <div id="drawer-overlay" class="overlay hidden" aria-hidden="true"></div>
@@ -617,5 +649,6 @@
 
 <script src="/trajectory.js"></script>
 <script src="/app.js"></script>
+<script src="/workspace.js"></script>
 </body>
 </html>

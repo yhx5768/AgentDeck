@@ -3414,3 +3414,232 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 .goal-limits { display: flex; gap: 12px; }
 .goal-limits label { flex: 1; }
 .goal-limits input { width: 100%; }
+
+/* ---------- 工作区面板（Codex app 风格的右侧文件区） ----------
+   面板是 #app 的第三个 flex 子项：[侧栏 | 主区 | 面板]。
+   内部两栏：左边文件预览，右边文件树（跟 Codex 桌面端一样，树在最右）。 */
+#ws-panel {
+  flex: 0 0 auto;
+  width: 720px;
+  min-width: 360px;
+  display: flex;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  overflow: hidden;
+}
+#ws-panel.hidden { display: none; }
+
+/* 主区与面板之间的拖拽条 */
+.ws-splitter {
+  flex: 0 0 4px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 20;
+  transition: background var(--t-fast) var(--ease);
+}
+.ws-splitter::after { content: ""; position: absolute; inset: 0 -3px; }
+.ws-splitter:hover,
+.ws-splitter.dragging { background: var(--accent-dim); }
+
+/* ---- 文件预览 ---- */
+#ws-viewer { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ws-viewer-head {
+  flex: none;
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  /* 面板贴顶，标题行要避开 iOS 状态栏 */
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-2));
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.ws-crumbs {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 1px;
+  overflow-x: auto; white-space: nowrap;
+  scrollbar-width: none;
+}
+.ws-crumbs::-webkit-scrollbar { display: none; }
+.ws-crumb {
+  background: none; border: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--dim);
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex: none;
+}
+.ws-crumb:hover { background: var(--bg3); color: var(--fg); }
+.ws-crumb.active { color: var(--fg); font-weight: 600; }
+.ws-crumb-sep { color: var(--dim); opacity: .55; flex: none; }
+.ws-viewer-actions { flex: none; display: flex; gap: 2px; }
+.ws-viewer-body { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-3); }
+.ws-viewer-body:empty { padding: 0; }
+
+/* ---- 文件树 ---- */
+#ws-tree-pane {
+  flex: 0 0 260px;
+  min-width: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg2);
+  border-left: 1px solid var(--border);
+}
+.ws-tree-head {
+  flex: none;
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+}
+.ws-tree-title {
+  flex: 1; min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-changed {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-full);
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.ws-changed:hover { border-color: var(--border); }
+.ws-changed.active { border-color: var(--accent); color: var(--accent); }
+.ws-tree-search {
+  flex: none;
+  display: flex; align-items: center; gap: var(--sp-1);
+  padding: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+}
+.ws-tree-search svg { width: 13px; height: 13px; color: var(--dim); flex: none; }
+.ws-tree-search input { flex: 1; min-width: 0; font-size: var(--fs-sm); }
+.ws-tree { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-1) 0; }
+
+.ws-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px var(--sp-2) 3px 0;
+  font-size: var(--fs-sm);
+  color: var(--fg);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ws-row:hover { background: var(--bg3); }
+.ws-row.ws-dir .ws-name { font-weight: 500; }
+.ws-icon { width: 14px; height: 14px; flex: none; opacity: .72; }
+.ws-chevron { width: 12px; height: 12px; flex: none; opacity: .6; }
+.ws-name { overflow: hidden; text-overflow: ellipsis; }
+.ws-tag {
+  font-size: 10px; line-height: 1.5;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+/* git 状态徽章：跟侧栏的 .ws-badge（胶囊计数）不是一回事，名字刻意区分开 */
+.ws-git-badge {
+  margin-left: auto;
+  font-size: 10px; line-height: 1.5;
+  font-weight: 600;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--bg3);
+  color: var(--dim);
+  flex: none;
+}
+.ws-git-new { background: var(--accent-dim); color: var(--accent); }
+.ws-git-m { background: rgba(210, 153, 34, .16); color: var(--orange); }
+.ws-git-a { background: rgba(26, 127, 55, .16); color: var(--green); }
+.ws-git-d { background: rgba(207, 34, 46, .14); color: var(--red); }
+.ws-git-r { background: rgba(130, 80, 223, .16); color: var(--thinking); }
+[data-theme="dark"] .ws-git-m { background: rgba(210, 153, 34, .2); }
+[data-theme="dark"] .ws-git-a { background: rgba(63, 185, 80, .18); }
+[data-theme="dark"] .ws-git-d { background: rgba(248, 81, 73, .18); }
+[data-theme="dark"] .ws-git-r { background: rgba(163, 113, 247, .2); }
+.ws-loading, .ws-skip-note { font-size: var(--fs-xs); color: var(--dim); padding: 2px 0; }
+
+/* ---- 预览内容 ---- */
+.ws-empty { padding: var(--sp-4); color: var(--dim); font-size: var(--fs-sm); }
+.ws-error { color: var(--red); }
+.ws-md { font-size: var(--fs-sm); line-height: var(--lh-normal); word-break: break-word; }
+.ws-md h1, .ws-md h2, .ws-md h3 { line-height: 1.3; }
+.ws-plain, .ws-code, .ws-diff {
+  margin: 0;
+  padding: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 2;
+}
+.ws-code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; }
+.ws-image { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+.ws-note { padding: var(--sp-2) var(--sp-3); color: var(--dim); font-size: var(--fs-xs); }
+.ws-diff span { display: block; }
+.ws-diff-add { color: var(--green); background: rgba(26, 127, 55, .09); }
+.ws-diff-del { color: var(--red); background: rgba(207, 34, 46, .09); }
+.ws-diff-hunk { color: var(--accent); }
+.ws-diff-meta { color: var(--dim); }
+[data-theme="dark"] .ws-diff-add { background: rgba(63, 185, 80, .12); }
+[data-theme="dark"] .ws-diff-del { background: rgba(248, 81, 73, .12); }
+
+/* 窄屏：面板改成全屏浮层，别把主对话挤成一条缝 */
+@media (max-width: 900px) {
+  #ws-panel {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 100vw !important;
+    min-width: 0;
+    z-index: 120;
+  }
+  .ws-splitter { display: none; }
+  #ws-tree-pane { flex-basis: 44%; }
+}
+
+/* 链接指向的行：在代码/纯文本视图上盖一条色带（内容不切行，靠行高定位） */
+.ws-code, .ws-plain { position: relative; }
+.ws-line-mark {
+  position: absolute;
+  left: 0; right: 0;
+  background: var(--accent-dim);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.ws-line-hint { color: var(--accent); }
+
+/* ---------- 工作区面板：悬浮说明 + 文件树折叠 ---------- */
+/* 自己画的 tooltip：原生 title 要悬停一秒才出、样式不受控，触屏上也不出现 */
+.ws-tip {
+  position: fixed;
+  z-index: 190; /* 在浮层(150)/横幅(150)之上、弹窗(200)之下 */
+  max-width: 280px;
+  padding: 5px 9px;
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* 文件树折叠：只留一条窄条 + 展开按钮，预览区吃掉整块宽度 */
+#ws-tree-pane.collapsed { flex-basis: 40px; }
+#ws-tree-pane.collapsed .ws-tree-head {
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+}
+#ws-tree-pane.collapsed .ws-tree-title,
+#ws-tree-pane.collapsed .ws-changed,
+#ws-tree-pane.collapsed .ws-tree-search,
+#ws-tree-pane.collapsed .ws-tree { display: none; }
+.ws-tree-toggle { flex: none; }

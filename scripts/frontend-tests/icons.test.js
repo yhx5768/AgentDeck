@@ -8,7 +8,7 @@
 // 实际踩过的两次：maximize-2（HTML 全屏按钮）、message-circle-question（待回答
 // toast 的问号图标，从上线起就是空的）。
 //
-// 规则：app.js / index.html 里出现的每个 data-lucide 字面量都必须在白名单里。
+// 规则：app.js / index.html / workspace.js 里出现的每个 data-lucide 字面量都必须在白名单里。
 // 不确定某个容器有没有调 renderIcons，就别用 <i data-lucide>，直接写原始内联
 // SVG 常量（CODE_COPY_ICON / HTML_FS_ICON 那样）。
 const fs = require('fs');
@@ -25,12 +25,30 @@ if (!m) throw new Error('抠不到 renderIcons 的 wanted 白名单');
 const whitelist = new Set([...m[1].matchAll(/'([\w-]+)'/g)].map((x) => x[1]));
 
 const used = new Map();
-for (const [name, s] of [['app.js', app], ['index.html', html]]) {
+// lucide 打包里真实存在的图标名（kebab）：模板表达式里捞出来的字面量要过这一关，
+// 否则 data-lucide="${t === 'dark' ? 'sun' : 'moon'}" 里的 'dark' 会被当成图标。
+const lucideSrc = fs.readFileSync(path.join(WEB, 'vendor', 'lucide.min.js'), 'utf8');
+const lucideNames = new Set();
+for (const m of lucideSrc.matchAll(/([A-Z][A-Za-z0-9]*):/g)) {
+  lucideNames.add(m[1].replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase());
+}
+
+// workspace.js / trajectory.js 里的图标同样要过白名单——它们也会走 renderIcons。
+const wsSrc = stripJs(fs.readFileSync(path.join(WEB, 'workspace.js'), 'utf8'));
+for (const [name, s] of [['app.js', app], ['index.html', html], ['workspace.js', wsSrc]]) {
   for (const re of s.matchAll(/data-lucide=(?:"([^"]+)"|'([^']+)'|`([^`]+)`)/g)) {
     const v = re[1] || re[2] || re[3];
-    if (!v || v.includes('${')) continue; // 模板拼出来的名字运行时才知道，放行
-    if (!used.has(v)) used.set(v, new Set());
-    used.get(v).add(name);
+    // 模板拼出来的名字运行时才知道：把表达式里的候选字面量都收进来
+    // （比如 data-lucide="${isImg ? 'file-image' : 'file-code'}"），
+    // 否则这几个图标漏进白名单，运行时就是一个空壳。
+    const names = v && v.includes('${')
+      ? [...v.matchAll(/'([\w-]+)'/g)].map((x) => x[1])
+      : (v ? [v] : []);
+    for (const n of names) {
+      if (!lucideNames.has(n)) continue; // 不是图标名（比如三元里的 'dark'）
+      if (!used.has(n)) used.set(n, new Set());
+      used.get(n).add(name);
+    }
   }
 }
 

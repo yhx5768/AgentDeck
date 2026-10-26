@@ -38,7 +38,8 @@ AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流
 | 会话分叉 | claude / qoder 可把当前 transcript 复制成新会话，从同一上下文另开一条分支（不动原会话）。 |
 | 轨迹视图 | 会话内「轨迹」tab 把同一份事件流投影成按轮(turn)分组的台账：折叠/展开轮次、按角色（用户/助手/工具）筛选、关键词搜索，点开单条记录看 summary / preview / raw 三档详情。对话流之外的另一种审阅视角。 |
 | 使用统计 | 统计本机全部会话（Claude Code、opencode、mcode、qoder、codex 五个引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/当前连续/最长连续/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。opencode 走它的 CLI 官方面（`session list` 只看得见当前目录所属的项目桶，故枚举全部项目额外走一条只读 `opencode db` 查询，实测只读不写，失败自动退回按桶列举）；mcode 读它自己的 `messages.jsonl` transcript（mcode 没有 `session list`/`export` 这类 CLI 面）；qoder 与 Claude Code 同构，读 `~/.qoder-cn/projects` 的 jsonl；codex 读 `$CODEX_HOME/sessions` 的 rollout（ducx 为 `~/.baidu-cx`）。增量缓存——首次全量扫描较慢，之后秒回。注意 qoder 的 `usage` 不上报 token 数（计费走 `credits`），所以对 qoder 会话而言消息数/工具数/活跃天数都准，token 类指标对它无意义。 |
-| 本地文件与图片预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`），右侧面板只读打开并自动跳转到对应行号。模型回复里 `![](/abs/path.png)` 这类本地图片经 `/api/image` 代理显示，同样限制在会话工作区内。 |
+| 本地文件与图片预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`）**直接开右侧工作区面板**预览该文件并定位到那一行（工作区外的文件退回旧的预览浮层）。模型回复里 `![](/abs/path.png)` 这类本地图片经 `/api/image` 代理显示，同样限制在会话工作区内。 |
+| 工作区面板 | 聊天区右侧可展开一个文件区（照 Codex 桌面端的布局做）：右边是工作区文件树（懒加载、可筛选、可只看有改动的文件），左边是文件预览——Markdown 渲染、代码高亮、图片直看，带面包屑与「显示更改 / 查看源代码 / 刷新 / 用系统默认程序打开」。改动视图走 `git diff`，被改过的文件在树上带 M/新 标记。全部路径严格限制在**当前会话的工作区**内，`..`、绝对路径与符号链接逃逸一律拒绝。 |
 | 全局待办备忘 | 与单个会话无关的 checklist，存在服务端 `data/notes.json`，换设备/重启都不丢。 |
 | 任务完成通知 | 任务跑完（或出错）时弹系统横幅通知 + 播放提示音，点击通知直达对应会话。侧边栏「设置」里可分别开关，配置存 localStorage 跟着浏览器走，不同终端各自配置。 |
 | TUI 与 Web 自由切换 | 每个会话都有 session id，点「resume」复制命令即可回到 TUI 继续跟进，Web 里做的一切状态都在。claude/qoder 的命令带 `--model`/档位，provider env 非空时再带一个物化好的 `--settings`；opencode 是 `-s <sid>`，mcode 是 `--session <mvs_…>`，codex 是 `resume <sid>` 带模型/档位/沙箱。 |
@@ -281,6 +282,11 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 | GET / PUT | `/api/notes` | 全局待办备忘（前端全量覆盖写） |
 | GET | `/api/files?path=` | 读取本地文件（限会话工作区内） |
 | GET | `/api/image?path=` | 读取本地图片（限会话工作区内，服务模型回复里的本地图片） |
+| GET | `/api/sessions/{id}/workspace/tree?path=` | 工作区面板：列一层目录（`path` 相对会话 cwd） |
+| GET | `/api/sessions/{id}/workspace/file?path=` | 工作区面板：读一个文件（限该会话工作区内） |
+| GET | `/api/sessions/{id}/workspace/status` | 工作区面板：git 改动清单（给文件树打标记） |
+| GET | `/api/sessions/{id}/workspace/diff?path=` | 工作区面板：某文件的 git diff（未跟踪文件按新增整段返回） |
+| POST | `/api/sessions/{id}/workspace/open` | 工作区面板：用系统默认程序打开文件 `{path}` |
 
 ---
 

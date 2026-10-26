@@ -625,6 +625,10 @@ function renderIcons(root) {
     'settings-2', 'arrow-up', 'settings', 'bar-chart-3',
     'menu', 'more-vertical', 'send-horizontal', 'folder',
     'panel-left-close', 'panel-left-open', 'list-collapse',
+    // 工作区面板（右侧文件区）：开关按钮 + 文件树/预览里的图标
+    'panel-right', 'git-compare', 'external-link', 'code',
+    'file-code', 'file-image', 'chevron-right', 'refresh-cw',
+    'panel-right-close', 'panel-right-open', // 文件树折叠/展开
     'bot', 'users',
     'list-todo', 'circle', 'circle-check',
     'target', // Session Goals 的目标条靶心（§12）
@@ -2020,6 +2024,7 @@ async function openSession(id) {
   if (s.unread) patchSessionFlag(s.id, { unread: false }); // 点开即视为已查看：蓝点恢复灰
   renderSessionList();
   renderWsActivity();
+  if (typeof wsOnSessionChange === 'function') wsOnSessionChange(); // 工作区面板跟着换工作区
   connectEvents(id);
   fetchPendingPermissions(id); // 重连/刷新后补回未决审批卡（transient 事件不进回放）
   refreshSessionEffort(); // opencode 会话按模型 variants 重建推理等级下拉（异步）
@@ -4214,12 +4219,18 @@ function renderFileContent(body, data, line) {
   if (target) target.scrollIntoView({ block: 'center' });
 }
 
-// 点击消息里的本地文件链接 → 侧栏预览
+// 点击消息里的本地文件链接 → 优先开工作区面板（Codex app 那种右侧文件区）。
+// 文件落在当前会话工作区内时，面板能直接预览它，还能顺带在文件树里定位；
+// 落在工作区外的（别的会话的项目）退回旧的文件预览浮层——/api/files 允许读
+// 任一会话的 cwd，而工作区面板的接口只认当前会话。
 $('#messages').addEventListener('click', (e) => {
   const a = e.target.closest('a[data-file-path]');
   if (!a) return;
   e.preventDefault();
-  openFileViewer(a.dataset.filePath, parseInt(a.dataset.fileLine || '0', 10));
+  const path = a.dataset.filePath;
+  const line = parseInt(a.dataset.fileLine || '0', 10);
+  if (typeof wsOpenPath === 'function' && wsOpenPath(path, line)) return;
+  openFileViewer(path, line);
 });
 
 // 代码块复制按钮（md() 注入；主对话气泡和轨迹详情里的代码块都走这里）
@@ -4709,6 +4720,12 @@ function renderEvent(ev, box) {
     } else if (d.state === 'turn_end' || d.state === 'interrupted') {
       liveFinalizeAll(); // 中断时部分 block 永远等不到完整事件，固化已生成的内容
       updateStatusUI({ running: false, queued: 0 });
+      // 一轮跑完，agent 可能改了一堆文件：刷新工作区面板的 git 改动标记，
+      // 并把正在预览的文件重新读一遍（内容变了才重绘）。
+      if (!state.renderingHistory && typeof wsRefreshStatus === 'function') {
+        wsRefreshStatus();
+        if (typeof wsRefreshCurrentFile === 'function') wsRefreshCurrentFile(true);
+      }
       // Submit any message held while this turn was running. 历史回放里的旧
       // turn_end 不算数——由 flushHistory 在回放结束后按最新状态统一补交。
       if (!state.renderingHistory) {
