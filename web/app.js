@@ -2743,12 +2743,25 @@ function resetChatForReplay() {
 // ---------- session stats (轮数 / 步数 / 累计耗时 / 最近一轮 tok/s) ----------
 // 轮数 = user 事件数；步数 = assistant 消息里的 tool_use 块数；
 // 耗时 = 首尾事件时间差（随实时事件增长）。
-// `last*` 只统计最后一条 user 之后的事件，用来算最近一轮的输出速度。
+// `last*` 只统计「最近一轮」的事件，用来算输出速度：分子是该轮各步
+// output_tokens 之和，分母是 LLM 时间（不含工具执行），见 updateStatsUI。
 function freshStats() {
   return {
     turns: 0, steps: 0, firstTs: 0, lastTs: 0, llmMs: 0, toolMs: 0, llmEstMs: 0, toolEstMs: 0, prevTs: 0,
     lastOut: 0, lastLlmMs: 0, lastLlmEstMs: 0, lastSeen: {},
   };
+}
+
+// 开一轮新的统计窗口。两个触发点都重置，取「后到者」为准：
+// - status.turn_start：worker 真正开始跑这一轮时才发，排队期间不会出现。
+// - user 事件：轮次边界兜底（导入的会话可能没有 status 事件）。
+// 为什么不能只认 user：user 事件在入队时就落盘广播，排在正在跑的那一轮
+// 前面——若只认 user，上一轮剩余的 assistant 事件会被算进新一轮。
+function resetLastTurn(st) {
+  st.lastOut = 0;
+  st.lastLlmMs = 0;
+  st.lastLlmEstMs = 0;
+  st.lastSeen = {};
 }
 
 function trackStats(ev) {
@@ -2761,10 +2774,9 @@ function trackStats(ev) {
   }
   if (ev.kind === 'user') {
     st.turns++;
-    st.lastOut = 0;
-    st.lastLlmMs = 0;
-    st.lastLlmEstMs = 0;
-    st.lastSeen = {};
+    resetLastTurn(st);
+  } else if (ev.kind === 'status' && ev.data && ev.data.state === 'turn_start') {
+    resetLastTurn(st);
   } else if (ev.kind === 'stream' && ev.data && ev.data.type === 'assistant') {
     const msg = ev.data.message || {};
     const content = msg.content;
@@ -2791,8 +2803,9 @@ function trackStats(ev) {
     st.lastLlmMs += api;
   }
   // 无 result 事件的会话（如 claude jsonl 重放的历史）退化为时间差估算：
-  // assistant 前的间隙 ≈ LLM 耗时，tool_result 前的间隙 ≈ 工具耗时。
-  // 单段封顶 2 分钟，避免权限确认等待等长停顿把估算打爆。
+  // assistant 前的间隙 ≈ LLM 耗时（上一事件到本条消息落定 = 首字延迟 +
+  // 生成时间），tool_result 前的间隙 ≈ 工具耗时。单段封顶 2 分钟，避免
+  // 权限确认等待等长停顿把估算打爆。
   if (ev.kind === 'stream' && ev.data && ts && st.prevTs) {
     const gap = Math.min(Math.max(0, ts - st.prevTs), 120000);
     if (ev.data.type === 'assistant') {
@@ -2835,9 +2848,11 @@ function updateStatsUI() {
   }
   const dur = st.lastTs > st.firstTs ? fmtDuration(st.lastTs - st.firstTs) : '—';
   el.textContent = `${out} · 累计 ${dur}`;
-  // 最近一轮的输出速度：分母优先用 result 的精确 API 时间，回放里没有
-  // result 就退回相邻事件间隙的估算（前缀 ~ 标明）。没有 usage 的引擎
-  // （opencode 的流事件不带 usage）自然不显示。
+  // 最近一轮的输出速度 = 该轮 output_tokens ÷ LLM 时间。
+  // 分母是「API 时间」：工具执行不含在内，但含每步的首字延迟（预填 + 首
+  // token 往返），所以它是端到端有效吞吐，略低于纯解码速度。精确值取
+  // result.duration_api_ms；回放里没有 result 就退回相邻事件间隙的估算
+  // （前缀 ~ 标明）。没有 usage 的引擎（opencode 的流事件不带 usage）不显示。
   const lastMs = st.lastLlmMs || st.lastLlmEstMs || 0;
   if (st.lastOut > 0 && lastMs > 0) {
     const tps = st.lastOut / (lastMs / 1000);
