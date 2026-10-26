@@ -176,9 +176,9 @@ func TestPermissionCardInput(t *testing.T) {
 	}
 }
 
-// opencode binds model + variant at session-creation time, so a hot-switched
-// profile has to be pushed explicitly or the UI silently lies about which
-// model is answering.
+// The model + reasoning variant are carried on the v1 prompt body, so the
+// profile is re-read every turn (the v2 session-level model switch is
+// unusable for v1-created sessions).
 func TestOpenCodeModelRef(t *testing.T) {
 	prov := &config.Provider{Name: "sensenova"}
 	if got := openCodeModelRef(prov, "", "max"); got != nil {
@@ -191,31 +191,6 @@ func TestOpenCodeModelRef(t *testing.T) {
 	got = openCodeModelRef(prov, "m1", "max")
 	if got.Variant != "max" {
 		t.Errorf("variant = %q, want max", got.Variant)
-	}
-}
-
-func TestSameModelRef(t *testing.T) {
-	base := opencodeapi.ModelRef{ID: "m1", ProviderID: "p", Variant: "high"}
-	same := []opencodeapi.ModelRef{
-		{ID: "m1", ProviderID: "p", Variant: "high"},
-	}
-	for _, s := range same {
-		if !sameModelRef(base, s) {
-			t.Errorf("expected %+v == %+v", base, s)
-		}
-	}
-	// Every field is load-bearing: a changed effort must count as a change,
-	// or dragging the effort dropdown would never reach opencode.
-	diff := []opencodeapi.ModelRef{
-		{ID: "m2", ProviderID: "p", Variant: "high"},
-		{ID: "m1", ProviderID: "q", Variant: "high"},
-		{ID: "m1", ProviderID: "p", Variant: "low"},
-		{},
-	}
-	for _, d := range diff {
-		if sameModelRef(base, d) {
-			t.Errorf("expected %+v != %+v", base, d)
-		}
 	}
 }
 

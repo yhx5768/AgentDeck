@@ -183,7 +183,7 @@ AgentDeck 有五个引擎，由 `config.yaml` 里 cli/provider 的 `kind` 决定
 五个引擎的内部事件格式不完全相同，但都经各自的适配层转成同一套 canonical 事件再渲染，所以工具卡片、轨迹视图、回放/实时一致性在前端是共用一套逻辑的。`qoder`（Qoder CLI CN）是 Claude Code 的 fork，事件格式与 transcript 布局都与 `claude` 同构，只是没有 `--verbose`、档位 flag 叫 `--reasoning-effort`、权限模式用下划线拼写，历史放在 `~/.qoder-cn` 下——因此它复用 `internal/claudehist`，不需要单独适配层。`opencode` 与 `mcode` 各有一套独立协议和适配层；`codex`（及百度二次封装的 `ducx`）又一套独立协议：`exec --json` 的 JSONL 事件 + rollout 文件回放，由 `internal/codexhist` 适配；模型目录来自 `codex debug models --bundled`。
 
 - **持久化边界**：AgentDeck 自己只落盘 `user`、`status`、`rewind` 三类事件；assistant / tool / thinking 等 stream 事件不落盘，每次 SSE 连接时从各引擎自己的 transcript 现场解析后合并回放。所以历史只有一份权威副本（在 CLI 那边），服务重启不丢，也不会出现两份互相打架的记录。
-- **续接**：claude/qoder 首轮从 `system/init` 捕获 `session_id`，后续 `--resume`；opencode 建会话时拿到 `ses_…` 并每轮按当前选择 `ensureModel`；mcode 用 `--session`；codex 用 `exec resume`。因此**在同一引擎内切换 CLI / Provider / Model / 权限模式不会丢失上下文**（会话不跨引擎迁移）。
+- **续接**：claude/qoder 首轮从 `system/init` 捕获 `session_id`，后续 `--resume`；opencode 建会话时拿到 `ses_…` 并每轮在 v1 prompt body 里带上当前 model/variant；mcode 用 `--session`；codex 用 `exec resume`。因此**在同一引擎内切换 CLI / Provider / Model / 权限模式不会丢失上下文**（会话不跨引擎迁移）。
 - **停止**：claude/qoder/mcode/codex 杀掉当前进程组；opencode 调 serve 的 `interrupt` 接口。
 - **轮次边界**：claude/qoder/mcode/codex 以子进程结束或 `result`/`turn.completed` 为准；opencode 是共享长驻进程，靠 `/event` 里的 `session.status`（busy → idle）关闭轮次。
 - **回滚**：claude 默认注入 `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`，每轮结束扫描 transcript 捕获该用户消息的 `uuid`（= 文件 checkpoint 标识）写回事件。⏪ 时先 `claude --rewind-files <uuid>` 恢复文件，再备份并截断 transcript 与 AgentDeck 事件日志，消息文本回填输入框。回滚第一条消息后 transcript 变空，下一轮自动开新 session。opencode 则用它自己的 `revert/stage` + `revert/commit`，对话与文件由 opencode 的存储回滚。
@@ -210,7 +210,7 @@ Claude Code 的 `~/.claude/settings.json` 里的 `env` 段会覆盖进程继承�
 1. 合并当前会话的生效 env（cli → provider → model，后者覆盖前者）。
 2. 合并结果非空时，物化为 `data/settings/<cli>__<provider>__<model>.json`（权限 0600），以 `--settings <绝对路径>` 传给 claude/qoder——命令行 settings 优先级最高，可以压过 `settings.json`。env 为空的 provider（如 `ducc-models`）端点由 CLI 自己解析，不物化也不传这个文件（否则命令会钉死在本机 data 目录的绝对路径上，换机器即失效）。
 3. 同时把生效 env 注入进程环境变量，供其他 CLI 兼容层使用。
-4. **推理档位**：`CLAUDE_CODE_EFFORT_LEVEL`（常见于用户全局 settings）会压过 `--effort`，所以会话指定的档位还会写进物化 settings 的 env（文件名带 `__effort-<level>`，不同档位不共用文件）。codex 走 `-c model_reasoning_effort`；opencode 走模型自身的 variant（建会话/每轮 `ensureModel` 时写入）；qoder 走 `--reasoning-effort`；mcode 走 `--effort`。
+4. **推理档位**：`CLAUDE_CODE_EFFORT_LEVEL`（常见于用户全局 settings）会压过 `--effort`，所以会话指定的档位还会写进物化 settings 的 env（文件名带 `__effort-<level>`，不同档位不共用文件）。codex 走 `-c model_reasoning_effort`；opencode 走模型自身的 variant（建会话时带上、之后每轮在 v1 prompt body 里覆盖）；qoder 走 `--reasoning-effort`；mcode 走 `--effort`。
 5. opencode / mcode / qoder / codex 的凭据来自各自 CLI 的登录态或 `auth.json`，config 的 env 对它们不生效（codex/ducx 例外地需要 `-c` 时同时钉住 `model_provider`，否则 ducx 会退回官方端点）。
 
 ---

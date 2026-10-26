@@ -315,6 +315,15 @@ type PromptInput struct {
 	Parts []PromptPart `json:"parts"`
 	// System overrides the agent's system prompt (rarely needed).
 	System string `json:"system,omitempty"`
+	// Variant is the per-model reasoning-depth key, carried at the top level of
+	// the v1 body (not inside `model`). This is how cc-webui applies a
+	// hot-switched effort: the v2 `POST /api/session/{id}/model` route writes a
+	// `session_message` row whose session_id is FOREIGN KEY'd to `session_v2`,
+	// and sessions created through the v1 `POST /session` route live only in
+	// the legacy `session` table — so that route answers 500 and the whole turn
+	// dies. The v1 prompt runs the turn with model+variant and updates the
+	// session's recorded model as a side effect (verified live).
+	Variant string `json:"variant,omitempty"`
 }
 
 // ModelV1 is opencode's v1 model reference ({providerID, modelID}), distinct
@@ -438,23 +447,25 @@ func urlEscape(s string) string {
 }
 
 // SwitchModel changes the model (and reasoning variant) of an existing
-// session: POST /api/session/{id}/model {model:{id,providerID,variant}},
-// verified live against 1.18.35 (204, and GET /session/{id} reflects it).
+// session: POST /api/session/{id}/model {model:{id,providerID,variant}}.
 //
-// This exists because opencode binds the model at session-creation time, so a
-// cc-webui profile change (model / provider / effort) would otherwise never
-// reach an already-created session — the other three engines re-read
-// sess.ModelOverride on every turn. The turn path calls this whenever the
-// session's effective model differs from what opencode currently has.
+// DO NOT call this from the turn path. It only works for sessions that live in
+// opencode's `session_v2` table: the route writes a `model-switched` row into
+// `session_message`, whose session_id is FOREIGN KEY'd to `session_v2`. Every
+// cc-webui session is created through the v1 `POST /session` route and lives
+// only in the legacy `session` table, so the insert fails with
+// "FOREIGN KEY constraint failed" and the endpoint answers 500 (observed live
+// on 1.18.35). Hot-switched model + variant ride the v1 prompt body instead —
+// see PromptInput.Variant. Kept only as a wrapper for the route.
 func (s *Server) SwitchModel(ctx context.Context, sessionID string, m ModelRef) error {
 	return s.do(ctx, http.MethodPost,
 		queryPath(fmt.Sprintf("/api/session/%s/model", sessionID), nil),
 		map[string]any{"model": m}, nil)
 }
 
-// SessionModel reads the model a session is currently running on, so the turn
-// can tell "already switched" from "needs switching". Returns the zero ModelRef
-// when the server does not report one.
+// SessionModel reads the model a session is currently running on (GET
+// /session/{id}, the v1 route — it answers for legacy sessions too). Returns
+// the zero ModelRef when the server does not report one.
 func (s *Server) SessionModel(ctx context.Context, sessionID string) (ModelRef, error) {
 	var out Session
 	if err := s.do(ctx, http.MethodGet,

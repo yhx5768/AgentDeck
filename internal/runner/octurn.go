@@ -261,43 +261,6 @@ func (t *openCodeTurn) createSession(sess *store.Session, cli *config.CLI, prov 
 	return created.ID, nil
 }
 
-// ensureModel aligns an existing opencode session with the session's current
-// cc-webui profile.
-//
-// This is the opencode counterpart of the other engines re-reading
-// sess.ModelOverride on every turn: opencode binds the model (and the
-// reasoning variant) when the session is created, so a profile change made
-// after the first turn — switching model, switching provider, dragging the
-// effort dropdown — would never reach opencode, and the UI would silently lie
-// about which model is answering. POST /api/session/{id}/model fixes that.
-//
-// Returns the model that is now in effect (opencode's answer wins, so a
-// provider that silently substituted a model still reads correctly).
-func (t *openCodeTurn) ensureModel(ctx context.Context, prov *config.Provider, model, effort string) (string, error) {
-	want := openCodeModelRef(prov, model, effort)
-	if want == nil {
-		// No model configured: leave the session's own recorded model alone
-		// rather than resetting it to opencode's default.
-		return "", nil
-	}
-	cur, err := t.srv.SessionModel(ctx, t.ocSessionID)
-	if err == nil && sameModelRef(cur, *want) {
-		return cur.ID, nil
-	}
-	if err := t.srv.SwitchModel(ctx, t.ocSessionID, *want); err != nil {
-		return "", fmt.Errorf("切换 opencode 模型失败：%w", err)
-	}
-	log.Printf("opencode session %s model %s/%s -> %s/%s (variant %q)",
-		t.ocSessionID, cur.ProviderID, cur.ID, want.ProviderID, want.ID, want.Variant)
-	return want.ID, nil
-}
-
-// sameModelRef reports whether two model references address the same model and
-// carry the same reasoning variant.
-func sameModelRef(a, b opencodeapi.ModelRef) bool {
-	return a.ID == b.ID && a.ProviderID == b.ProviderID && a.Variant == b.Variant
-}
-
 // openCodeModelV1 composes the v1 prompt's model reference
 // ({providerID, modelID}), which is a different shape from the v2 ModelRef
 // used by session create / model switch.

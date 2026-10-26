@@ -1127,20 +1127,15 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	}
 	turn.ocSessionID = ocSID
 
-	// Adopted session: align opencode's model with the session's current
-	// cc-webui profile. opencode binds the model at creation time, so without
-	// this a hot-switched model / provider / effort would silently keep using
-	// the old one — the other three engines re-read sess.ModelOverride on
-	// every turn, and opencode would be the odd one out. A freshly created
-	// session already carries the right model from the create call above.
-	if adopted {
-		if _, err := turn.ensureModel(ctx, prov, model, sess.EffortOverride); err != nil {
-			cancel()
-			m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
-			m.setIdle(sessionID, err.Error())
-			return
-		}
-	}
+	// A hot-switched model / provider / effort reaches opencode through the
+	// prompt body below (model + variant), NOT through a session-level model
+	// switch. opencode's v2 `POST /api/session/{id}/model` writes a
+	// `session_message` row whose session_id is FOREIGN KEY'd to `session_v2`,
+	// but cc-webui sessions are created via the v1 `POST /session` route and
+	// live only in the legacy `session` table, so that route answers 500
+	// ("FOREIGN KEY constraint failed") and the turn dies with it. The v1
+	// prompt both runs the turn on the requested model+variant and updates the
+	// session's recorded model, so passing them every turn is sufficient.
 
 	// Subscribe before prompting so no event of this turn can slip through the
 	// gap between the POST starting and the stream being read.
@@ -1166,6 +1161,12 @@ func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Ses
 	}
 	if ref := openCodeModelV1(prov, model); ref != nil {
 		prompt.Model = ref
+		// Reasoning depth rides the v1 body's top-level `variant`. Only sent
+		// alongside a model: without one opencode falls back to the session's
+		// own model, which carries its own variant.
+		if sess.EffortOverride != "" {
+			prompt.Variant = sess.EffortOverride
+		}
 	}
 	// Attachments ride as file parts. This is the channel the old
 	// `opencode run -f` path lacked: there, an uploaded image had to degrade
