@@ -407,6 +407,14 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	if _, err := m.st.AppendEvent(sessionID, "user", map[string]string{"text": echoText}); err != nil {
 		return err
 	}
+	// A prompt just arrived, so this session just had activity: bump UpdatedAt
+	// here, not only when the turn ends. The sidebar sorts by this field, and
+	// without the bump a session that was idle for a while stays parked at its
+	// last reply time — it runs somewhere far down the list right after the
+	// user hits send. Turn end bumps it again (runStreamJSONTurn and friends).
+	if err := m.st.TouchUpdatedAt(sessionID); err != nil {
+		log.Printf("bump updated_at for %s: %v", sessionID, err)
+	}
 	events, _ := m.st.Events(sessionID)
 	if n := len(events); n > 0 {
 		r0 := m.rt(sessionID)

@@ -313,6 +313,17 @@ func (s *Store) setFlag(id string, mutate func(*Session)) error {
 	return s.saveLocked()
 }
 
+// TouchUpdatedAt bumps the session's UpdatedAt for an existing session and
+// rewrites db.json. Unlike Upsert it never resurrects a session that was
+// deleted meanwhile (the runner passes a snapshot taken before the delete
+// could land). The runner calls it when a prompt is enqueued: the sidebar
+// sorts by this field, so without the bump a session keeps its old position
+// (sorted by its last reply) for the whole turn right after the user hits
+// send.
+func (s *Store) TouchUpdatedAt(id string) error {
+	return s.setFlag(id, func(cur *Session) { cur.UpdatedAt = time.Now() })
+}
+
 // SetUnread sets the unread flag on an existing session. Used by the runner
 // when a turn ends so the session shows a blue dot on every client until one
 // of them opens it.

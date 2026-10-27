@@ -5202,14 +5202,33 @@ async function sendMessage() {
   await postMessage({ text, images, files });
 }
 
+// 用户发出一条消息 = 这个会话刚刚有活动，侧栏立刻把它挪到最前。
+// 服务端在 Enqueue 里也会把 updated_at 推到当前时间（跨端/刷新后仍然对），
+// 这里只是不做本地乐观更新就得等 5s 轮询才换位置。
+function bumpSessionActivity(id) {
+  const now = new Date().toISOString();
+  const s = (state.sessions || []).find((x) => x.id === id);
+  if (s) {
+    s.updated_at = now;
+    // 服务端 Enqueue 已把它排进队列，状态点顺手翻成运行中，不用等下一拍
+    // 轮询（真正的 status 下一拍拉回来，有排队时再显示 queued）。
+    if (s.status) { s.status.running = true; s.status.queued = 0; }
+  }
+  if (state.current && state.current.id === id) state.current.updated_at = now;
+  renderSessionList();
+  renderWsActivity();
+}
+
 // POST a message and optimistically render its user bubble.
 async function postMessage(payload) {
   appendOptimisticUser(payload.text, payload.images, payload.files);
+  const sid = state.current.id;
   try {
-    await api(`/api/sessions/${state.current.id}/messages`, {
+    await api(`/api/sessions/${sid}/messages`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    bumpSessionActivity(sid);
     updateStatusUI({ running: true, queued: 0 });
   } catch (e) {
     // Send failed: drop the optimistic bubble and surface the error so the

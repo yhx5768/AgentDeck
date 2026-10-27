@@ -3,7 +3,9 @@ package runner
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"cc-webui/internal/config"
 	"cc-webui/internal/store"
 )
 
@@ -84,6 +86,37 @@ func TestSetIdleUnread(t *testing.T) {
 	m.setIdle(sid, "boom")
 	if !st.Get(sid).Unread {
 		t.Fatal("error turn end must mark unread")
+	}
+}
+
+// TestEnqueueBumpsUpdatedAt pins that a prompt counts as activity at enqueue
+// time, not only when the turn ends. The sidebar sorts sessions by UpdatedAt,
+// so without the enqueue bump a session that sat idle for a while keeps its
+// old position (sorted by its last reply) for the whole run, however high the
+// user just pushed it.
+func TestEnqueueBumpsUpdatedAt(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	const sid = "s1"
+	base := time.Now().Add(-time.Hour)
+	if err := st.Upsert(&store.Session{ID: sid, Name: "t", UpdatedAt: base}, nil); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	m := NewManager(config.NewManager("", &config.Config{}), st)
+	// Pretend a turn is already in flight: Enqueue then just appends to the
+	// queue instead of spawning a worker, which would need a real CLI.
+	r := m.rt(sid)
+	r.mu.Lock()
+	r.working = true
+	r.mu.Unlock()
+
+	if err := m.Enqueue(sid, Message{Text: "hi"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if got := st.Get(sid).UpdatedAt; !got.After(base) {
+		t.Fatalf("Enqueue 没刷新 UpdatedAt: %v", got)
 	}
 }
 
