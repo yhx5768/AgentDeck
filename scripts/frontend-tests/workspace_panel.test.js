@@ -89,6 +89,11 @@ const TREE_ROOT = [
 const TREE_DOCS = [
   { name: 'notes.md', path: 'docs/notes.md', dir: false, size: 202, mtime: 1 },
 ];
+// 整树搜索的假结果：一个从未展开过的深层文件（回归：懒加载树搜不到）。
+const SEARCH_HITS = [
+  { name: 'riskminer-tool-20261026.zip', path: 'work/projects/risk-identification/deliverables/riskminer-skills/riskminer-tool-20261026.zip', dir: false, size: 1, mtime: 1, ignored: false },
+  { name: 'secret.env', path: 'secret.env', dir: false, size: 1, mtime: 1, ignored: true },
+];
 
 const calls = [];
 
@@ -111,6 +116,11 @@ async function api(url) {
     return { path: 'docs/notes.md', name: 'notes.md', abs: '/tmp/wsdemo/docs/notes.md',
              content: '# 会议纪要\\n\\n正文', binary: false, truncated: false, size: 20, mtime: 1 };
   }
+  if (url.includes('/workspace/search')) {
+    const q = decodeURIComponent((url.split('q=')[1] || '')).toLowerCase();
+    const entries = window.__search.filter((e) => e.path.toLowerCase().includes(q) || e.name.toLowerCase().includes(q));
+    return { q, entries, truncated: false };
+  }
   if (url.includes('/workspace/diff')) {
     return { repo: true, path: 'docs/notes.md', unstaged: '@@ -1 +1 @@\\n-old\\n+new', staged: '', diff: '@@ -1 +1 @@\\n-old\\n+new', untracked: false };
   }
@@ -128,11 +138,15 @@ ${grabFn('wsExt')}
 ${grabFn('wsIsImage')}
 ${grabFn('wsIsCode')}
 ${grabFn('wsIsMarkdown')}
-${grabFn('wsNameMatch')}
-${grabFn('wsSubtreeHit')}
 ${grabFn('wsStatusBadge')}
 ${grabFn('wsRenderTree')}
+${grabFn('wsBuildRow')}
 ${grabFn('wsRenderDir')}
+${grabFn('wsRenderSearch')}
+${grabFn('wsAbortSearch')}
+${grabFn('wsSearchNow')}
+${grabFn('wsScheduleSearch')}
+${grabFn('wsClearFilter')}
 ${grabFn('wsLoadDir')}
 ${grabFn('wsToggleDir')}
 ${grabFn('wsOpenFile')}
@@ -150,7 +164,7 @@ ${grabFn('wsRefreshStatus')}
 ${grabFn('wsRevealDir')}
 ${grabFn('wsTreeCollapsed')}
 ${grabFn('wsInitTips')}
-window.__ws = { wsState, wsRenderTree, wsLoadDir, wsToggleDir, wsOpenFile, wsRenderViewer, wsShowDiff, wsOpenPath, wsToggle, wsTreeCollapsed, wsInitTips };
+window.__ws = { wsState, wsRenderTree, wsLoadDir, wsToggleDir, wsOpenFile, wsRenderViewer, wsShowDiff, wsOpenPath, wsToggle, wsTreeCollapsed, wsInitTips, wsSearchNow };
 `;
 
 const dom = new JSDOM(
@@ -181,8 +195,9 @@ const win = dom.window;
 win.__calls = calls;
 win.__treeRoot = TREE_ROOT;
 win.__treeDocs = TREE_DOCS;
+win.__search = SEARCH_HITS;
 win.eval(setup);
-const { wsState, wsRenderTree, wsLoadDir, wsToggleDir, wsOpenFile, wsRenderViewer, wsShowDiff, wsOpenPath, wsTreeCollapsed } = win.__ws;
+const { wsState, wsRenderTree, wsLoadDir, wsToggleDir, wsOpenFile, wsRenderViewer, wsShowDiff, wsOpenPath, wsTreeCollapsed, wsSearchNow } = win.__ws;
 const $ = (sel) => win.document.querySelector(sel);
 const rows = () => [...win.document.querySelectorAll('#ws-tree .ws-row')].map((r) => r.dataset.path);
 
@@ -211,12 +226,34 @@ test('点目录会建节点、发请求并展开出子行（回归：点目录�
   assert.ok(rows().includes('docs/notes.md'), '展开后应出现 docs/notes.md 行，实际：' + JSON.stringify(rows()));
 });
 
-test('筛选只留命中的节点', () => {
+test('筛选走整树搜索：没展开过的深层文件按文件名也能找到', async () => {
   wsState.dirs = { '': { entries: TREE_ROOT, loaded: true, expanded: true } };
-  wsState.filter = 'readme';
-  wsRenderTree();
-  assert.deepStrictEqual(rows(), ['README.md']);
+  wsState.filter = 'riskminer-tool';
+  await wsSearchNow('riskminer-tool');
+  assert.deepStrictEqual(rows(),
+    ['work/projects/risk-identification/deliverables/riskminer-skills/riskminer-tool-20261026.zip']);
   wsState.filter = '';
+  wsRenderTree();
+});
+
+test('筛选支持完整相对路径，并显示 git 忽略标记', async () => {
+  wsState.filter = 'work/projects/risk-identification';
+  await wsSearchNow(wsState.filter);
+  assert.ok(rows().includes('work/projects/risk-identification/deliverables/riskminer-skills/riskminer-tool-20261026.zip'),
+    '输入完整相对路径也要能命中：' + JSON.stringify(rows()));
+  wsState.filter = '';
+  wsRenderTree();
+});
+
+test('git 忽略的文件仍然渲染，并带「git 忽略」标记', () => {
+  wsState.dirs = { '': { entries: SEARCH_HITS, loaded: true, expanded: true } };
+  wsState.filter = '';
+  wsRenderTree();
+  const row = win.document.querySelector('.ws-row[data-path="secret.env"]');
+  assert.ok(row, '被忽略的文件不能被隐藏');
+  const tag = row.querySelector('.ws-tag-ignored');
+  assert.ok(tag, '应带 git 忽略标记');
+  assert.strictEqual(tag.textContent, 'git 忽略');
 });
 
 test('只看改动时只留有 git 标记的文件', () => {

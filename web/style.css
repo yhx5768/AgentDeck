@@ -3539,7 +3539,12 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0 4px;
+  flex: none;
 }
+/* 被 .gitignore 忽略：仍然列出来，只打标，别让用户以为文件没了 */
+.ws-tag-ignored { margin-left: auto; color: var(--orange); border-color: rgba(210, 153, 34, .35); }
+/* 搜索结果：不缩进，展示完整相对路径，名字吃掉剩余宽度 */
+.ws-search-hit .ws-name { flex: 1; min-width: 0; }
 /* git 状态徽章：跟侧栏的 .ws-badge（胶囊计数）不是一回事，名字刻意区分开 */
 .ws-git-badge {
   margin-left: auto;

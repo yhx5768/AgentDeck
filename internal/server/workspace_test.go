@@ -323,3 +323,70 @@ func TestWorkspaceOpenRejectsBadPaths(t *testing.T) {
 		t.Errorf("空路径: status = %d, want 400", w.Code)
 	}
 }
+
+// 搜索必须递归整棵树：文件树是懒加载的，没展开过的深层文件也得能找到，
+// 而且输入完整相对路径时不能一条都匹配不上。
+func TestWorkspaceSearchFindsDeepFilesByPath(t *testing.T) {
+	s, ws := wsTestServer(t)
+	deep := filepath.Join(ws, "work", "projects", "risk-identification", "deliverables",
+		"riskminer-skills", "riskminer-tool-20261026.zip")
+	writeFile(t, deep, []byte("zip"))
+
+	want := "work/projects/risk-identification/deliverables/riskminer-skills/riskminer-tool-20261026.zip"
+	for _, q := range []string{"riskminer-tool-20261026", "work/projects/risk-identification"} {
+		w := wsCall(t, s.handleWorkspaceSearch, "/api/sessions/s1/workspace/search?q="+q, "s1")
+		if w.Code != http.StatusOK {
+			t.Fatalf("q=%s: status = %d, body=%s", q, w.Code, w.Body.String())
+		}
+		entries, _ := wsJSON(t, w)["entries"].([]any)
+		found := false
+		for _, raw := range entries {
+			e, _ := raw.(map[string]any)
+			if e["path"] == want && e["dir"] == false {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("q=%s: entries = %v, want %s", q, entries, want)
+		}
+	}
+}
+
+// .gitignore 忽略的文件：树和搜索都要显示（只是打标），不能替用户藏起来。
+func TestWorkspaceShowsGitIgnoredFiles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	s, ws := wsTestServer(t)
+	if out, err := exec.Command("git", "-C", ws, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v (%s)", err, out)
+	}
+	writeFile(t, filepath.Join(ws, ".gitignore"), []byte("secret*\n"))
+	writeFile(t, filepath.Join(ws, "secret.env"), []byte("TOKEN=1"))
+	writeFile(t, filepath.Join(ws, "visible.txt"), []byte("hi"))
+
+	w := wsGet(t, s, "/api/sessions/s1/workspace/tree", "s1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("tree status = %d, body=%s", w.Code, w.Body.String())
+	}
+	byName := map[string]map[string]any{}
+	for _, raw := range wsJSON(t, w)["entries"].([]any) {
+		e, _ := raw.(map[string]any)
+		byName[e["name"].(string)] = e
+	}
+	if e := byName["secret.env"]; e == nil || e["ignored"] != true {
+		t.Fatalf("secret.env = %v, want it listed with ignored=true", e)
+	}
+	if e := byName["visible.txt"]; e == nil || e["ignored"] != nil {
+		t.Fatalf("visible.txt = %v, want it listed without ignored", e)
+	}
+
+	w = wsCall(t, s.handleWorkspaceSearch, "/api/sessions/s1/workspace/search?q=secret", "s1")
+	entries, _ := wsJSON(t, w)["entries"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("search entries = %v, want ignored file included", entries)
+	}
+	if e, _ := entries[0].(map[string]any); e["ignored"] != true {
+		t.Fatalf("search result = %v, want ignored=true", e)
+	}
+}

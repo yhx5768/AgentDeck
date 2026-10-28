@@ -227,6 +227,7 @@ func (s *Server) routes() {
 	// 工作区面板（Codex app 风格的右侧文件区）：文件树 / 预览 / 改动 / 打开。
 	// 全部锚在当前会话的 cwd 之内，见 workspace.go。
 	s.mux.Handle("GET /api/sessions/{id}/workspace/tree", s.auth(s.handleWorkspaceTree))
+	s.mux.Handle("GET /api/sessions/{id}/workspace/search", s.auth(s.handleWorkspaceSearch))
 	s.mux.Handle("GET /api/sessions/{id}/workspace/file", s.auth(s.handleWorkspaceFile))
 	s.mux.Handle("GET /api/sessions/{id}/workspace/status", s.auth(s.handleWorkspaceStatus))
 	s.mux.Handle("GET /api/sessions/{id}/workspace/diff", s.auth(s.handleWorkspaceDiff))

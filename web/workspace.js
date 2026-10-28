@@ -21,6 +21,10 @@ const wsState = {
   line: 0,        // 链接指向的行号（消息里的 `path:12`），0 = 没指定
   mode: 'preview', // preview | source | diff
   diff: null,     // {unstaged, staged, untracked, repo}
+  search: { q: '', entries: [], loaded: false, loading: false, error: '', truncated: false },
+  searchTimer: 0,
+  searchSeq: 0,
+  searchAbort: null,
   width: 720,
 };
 
@@ -82,6 +86,13 @@ function wsEnsureRoot() {
   wsState.file = null;
   wsState.mode = 'preview';
   wsState.diff = null;
+  wsState.filter = '';
+  wsState.search = { q: '', entries: [], loaded: false, loading: false, error: '', truncated: false };
+  wsState.searchSeq++;
+  clearTimeout(wsState.searchTimer);
+  wsAbortSearch();
+  const filter = $('#ws-filter');
+  if (filter) filter.value = '';
   if (wsState.root) {
     wsLoadDir('', true);
   } else {
@@ -126,19 +137,6 @@ function wsToggleDir(path) {
   else wsRenderTree();
 }
 
-// 名字匹配（筛选用）：忽略大小写。
-function wsNameMatch(name) {
-  if (!wsState.filter) return true;
-  return name.toLowerCase().includes(wsState.filter.toLowerCase());
-}
-
-// 目录里是否「自己或后代」有命中项（只算已加载的部分）。
-function wsSubtreeHit(path) {
-  const node = wsState.dirs[path];
-  if (!node || !node.loaded) return false;
-  return node.entries.some((e) => wsNameMatch(e.name) || (e.dir && wsSubtreeHit(e.path)));
-}
-
 function wsStatusBadge(path) {
   const code = wsState.changes[path];
   if (!code) return '';
@@ -160,13 +158,61 @@ function wsRenderTree() {
     return;
   }
   const frag = document.createDocumentFragment();
-  wsRenderDir(frag, '', 0);
+  // 有筛选词时走整树搜索（服务端递归），而不是只筛已加载的节点——
+  // 没展开过的深层文件、输入完整相对路径，都必须能找到。
+  if (wsState.filter) wsRenderSearch(frag);
+  else wsRenderDir(frag, '', 0);
   host.appendChild(frag);
   renderIcons(host);
   $('#ws-tree-root').textContent = wsState.root;
   $('#ws-tree-root').title = wsState.root;
   const changed = Object.keys(wsState.changes).length;
   $('#ws-tree-changed').textContent = changed ? `${changed} 个改动` : '';
+}
+
+// wsBuildRow 造一行树节点。showPath=true 时显示完整相对路径（搜索结果用），
+// 否则只显示文件名（目录树里靠缩进表达层级）。
+function wsBuildRow(entry, depth, showPath) {
+  const row = document.createElement('div');
+  row.className = 'ws-row' + (entry.dir ? ' ws-dir' : ' ws-file');
+  row.dataset.path = entry.path;
+  row.dataset.dir = entry.dir ? '1' : '';
+  row.style.paddingLeft = (depth * 12 + 8) + 'px';
+  row.title = entry.path;
+
+  if (entry.dir) {
+    const child = wsState.dirs[entry.path];
+    const expanded = child && child.expanded;
+    row.innerHTML = `<i data-lucide="${expanded ? 'chevron-down' : 'chevron-right'}" class="ws-chevron"></i>` +
+      `<i data-lucide="folder" class="ws-icon"></i>`;
+  } else {
+    row.innerHTML = `<i data-lucide="${wsIsImage(entry.name) ? 'file-image' : wsIsCode(entry.name) ? 'file-code' : 'file-text'}" class="ws-icon"></i>`;
+  }
+  const name = document.createElement('span');
+  name.className = 'ws-name';
+  name.textContent = showPath ? entry.path : entry.name;
+  row.appendChild(name);
+  if (entry.skip) {
+    const skip = document.createElement('span');
+    skip.className = 'ws-tag';
+    skip.textContent = '忽略';
+    row.appendChild(skip);
+  }
+  if (entry.ignored) {
+    // .gitignore 里的文件照样显示，只是标出来，免得用户以为它进了版本库。
+    const tag = document.createElement('span');
+    tag.className = 'ws-tag ws-tag-ignored';
+    tag.textContent = 'git 忽略';
+    row.appendChild(tag);
+  }
+  const badge = entry.dir ? null : wsStatusBadge(entry.path);
+  if (badge) {
+    const b = document.createElement('span');
+    b.className = 'ws-git-badge ' + badge.cls;
+    b.textContent = badge.text;
+    row.appendChild(b);
+  }
+  return row;
 }
 
 function wsRenderDir(parent, path, depth) {
@@ -191,53 +237,130 @@ function wsRenderDir(parent, path, depth) {
   for (const entry of node.entries) {
     const changed = !!wsState.changes[entry.path];
     if (wsState.onlyChanged && !changed) continue;
-    if (!wsNameMatch(entry.name) && !(entry.dir && wsSubtreeHit(entry.path))) continue;
-
-    const row = document.createElement('div');
-    row.className = 'ws-row' + (entry.dir ? ' ws-dir' : ' ws-file');
-    row.dataset.path = entry.path;
-    row.dataset.dir = entry.dir ? '1' : '';
-    row.style.paddingLeft = (depth * 12 + 8) + 'px';
-    row.title = entry.path;
-
+    parent.appendChild(wsBuildRow(entry, depth, false));
     if (entry.dir) {
       const child = wsState.dirs[entry.path];
-      const expanded = child && child.expanded;
-      row.innerHTML = `<i data-lucide="${expanded ? 'chevron-down' : 'chevron-right'}" class="ws-chevron"></i>` +
-        `<i data-lucide="folder" class="ws-icon"></i>`;
-      const name = document.createElement('span');
-      name.className = 'ws-name';
-      name.textContent = entry.name;
-      row.appendChild(name);
-      if (entry.skip) {
-        const skip = document.createElement('span');
-        skip.className = 'ws-tag';
-        skip.textContent = '忽略';
-        row.appendChild(skip);
-      }
-      parent.appendChild(row);
-      if (expanded) {
+      if (child && child.expanded) {
         const kids = document.createElement('div');
         kids.className = 'ws-children';
         parent.appendChild(kids);
         wsRenderDir(kids, entry.path, depth + 1);
       }
-    } else {
-      row.innerHTML = `<i data-lucide="${wsIsImage(entry.name) ? 'file-image' : wsIsCode(entry.name) ? 'file-code' : 'file-text'}" class="ws-icon"></i>`;
-      const name = document.createElement('span');
-      name.className = 'ws-name';
-      name.textContent = entry.name;
-      row.appendChild(name);
-      const badge = wsStatusBadge(entry.path);
-      if (badge) {
-        const b = document.createElement('span');
-        b.className = 'ws-git-badge ' + badge.cls;
-        b.textContent = badge.text;
-        row.appendChild(b);
-      }
-      parent.appendChild(row);
     }
   }
+}
+
+// wsRenderSearch 渲染整树搜索的扁平结果（不缩进，直接显示完整相对路径）。
+function wsRenderSearch(parent) {
+  const res = wsState.search || {};
+  if (res.error) {
+    const err = document.createElement('div');
+    err.className = 'ws-empty ws-error';
+    err.textContent = res.error;
+    parent.appendChild(err);
+    return;
+  }
+  if (!res.loaded) {
+    const loading = document.createElement('div');
+    loading.className = 'ws-loading';
+    loading.textContent = '搜索中…';
+    parent.appendChild(loading);
+    return;
+  }
+  const hits = res.entries.filter((e) => !wsState.onlyChanged || !!wsState.changes[e.path]);
+  if (!hits.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ws-empty';
+    empty.textContent = '没有匹配的文件（已包含 git 忽略的文件）';
+    parent.appendChild(empty);
+    return;
+  }
+  for (const entry of hits) {
+    const row = wsBuildRow(entry, 0, true);
+    row.classList.add('ws-search-hit');
+    parent.appendChild(row);
+  }
+  if (res.truncated) {
+    const note = document.createElement('div');
+    note.className = 'ws-skip-note';
+    note.textContent = '结果过多，只显示前 ' + hits.length + ' 条';
+    parent.appendChild(note);
+  }
+}
+
+// wsAbortSearch 取消上一次还没回来的搜索：大仓库一次全树扫描要一两秒，
+// 连打几个字符不取消的话会叠着跑，服务端也白扫。
+function wsAbortSearch() {
+  if (wsState.searchAbort) {
+    try { wsState.searchAbort.abort(); } catch (_) { /* 已结束也无所谓 */ }
+    wsState.searchAbort = null;
+  }
+}
+
+// wsSearchNow 拉一次整树搜索。seq 防抖 + 丢弃过期响应：快速连打时
+// 先发的请求可能后回来，不判序号会把旧结果盖在新筛选词上。
+async function wsSearchNow(q) {
+  if (!wsState.sid || !q) return;
+  wsAbortSearch();
+  const seq = ++wsState.searchSeq;
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  wsState.searchAbort = ctrl;
+  try {
+    const res = await api(
+      `/api/sessions/${wsState.sid}/workspace/search?q=${encodeURIComponent(q)}`,
+      ctrl ? { signal: ctrl.signal } : {});
+    if (seq !== wsState.searchSeq || wsState.filter !== q) return;
+    wsState.search = {
+      q,
+      entries: res.entries || [],
+      loaded: true,
+      loading: false,
+      error: '',
+      truncated: !!res.truncated,
+    };
+  } catch (err) {
+    if (seq !== wsState.searchSeq || wsState.filter !== q) return;
+    wsState.search = {
+      q,
+      entries: [],
+      loaded: true,
+      loading: false,
+      error: err.message || String(err),
+      truncated: false,
+    };
+  }
+  wsRenderTree();
+}
+
+// wsScheduleSearch 输入即触发，但停手 300ms 才发请求（打字时别一个字符一次）。
+function wsScheduleSearch() {
+  clearTimeout(wsState.searchTimer);
+  const q = wsState.filter;
+  if (!q) {
+    wsAbortSearch();
+    wsState.search = { q: '', entries: [], loaded: false, loading: false, error: '', truncated: false };
+    wsState.searchSeq++;
+    wsRenderTree();
+    return;
+  }
+  // 筛选词一改，旧结果立刻作废、旧请求立刻取消。
+  if (wsState.search.q !== q) {
+    wsAbortSearch();
+    wsState.search = { q, entries: [], loaded: false, loading: true, error: '', truncated: false };
+  }
+  wsRenderTree();
+  wsState.searchTimer = setTimeout(() => wsSearchNow(q), 300);
+}
+
+// 清空筛选：点搜索结果里的目录时用，先回到文件树再逐级展开。
+function wsClearFilter() {
+  wsState.filter = '';
+  wsState.search = { q: '', entries: [], loaded: false, loading: false, error: '', truncated: false };
+  wsState.searchSeq++;
+  clearTimeout(wsState.searchTimer);
+  wsAbortSearch();
+  const input = $('#ws-filter');
+  if (input) input.value = '';
 }
 
 // ---------- 文件预览 ----------
@@ -600,7 +723,7 @@ function wsInit() {
   if (filter) {
     filter.oninput = () => {
       wsState.filter = filter.value.trim();
-      wsRenderTree();
+      wsScheduleSearch();
     };
   }
 
@@ -641,8 +764,17 @@ function wsInit() {
       const row = ev.target.closest('.ws-row');
       if (!row) return;
       const path = row.dataset.path || '';
-      if (row.dataset.dir === '1') wsToggleDir(path);
-      else wsOpenFile(path);
+      if (row.dataset.dir === '1') {
+        // 搜索结果里的目录：先退出搜索、回到文件树，再逐级展开到它。
+        if (wsState.filter) {
+          wsClearFilter();
+          wsRevealDir(path);
+        } else {
+          wsToggleDir(path);
+        }
+      } else {
+        wsOpenFile(path);
+      }
     };
   }
 

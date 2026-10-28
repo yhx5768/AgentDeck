@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,6 +32,15 @@ const (
 	wsMaxFileBytes = 4 << 20
 	// wsMaxEntries 单目录最多返回的条目数，防止一次拉爆几千个文件。
 	wsMaxEntries = 2000
+	// wsMaxSearchResults / wsMaxSearchScanned：搜索的返回条数与扫描上限。
+	// 搜索是递归遍历整棵树（文件树本身是懒加载的）。上限不能太小：实测
+	// ~/Projects/reading 的 work/ 下就有 66 万项，5 万的上限会连目标文件
+	// 所在目录都没走到就返回「没找到」。到上限/超时都带 truncated 回来。
+	wsMaxSearchResults = 200
+	wsMaxSearchScanned = 1000000
+	// wsSearchTimeout 单次搜索的墙上时间上限。超大仓库（或网络盘）里宁可
+	// 返回部分结果，也别让请求一直挂着。
+	wsSearchTimeout = 6 * time.Second
 	// wsGitTimeout git 子进程超时。
 	wsGitTimeout = 10 * time.Second
 )
@@ -52,12 +62,13 @@ var (
 
 // wsEntry 是文件树里的一个节点。
 type wsEntry struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"` // 相对会话 cwd 的路径（前端只认相对路径）
-	Dir   bool   `json:"dir"`
-	Size  int64  `json:"size"`
-	Mtime int64  `json:"mtime"` // unix 秒
-	Skip  bool   `json:"skip,omitempty"`
+	Name    string `json:"name"`
+	Path    string `json:"path"` // 相对会话 cwd 的路径（前端只认相对路径）
+	Dir     bool   `json:"dir"`
+	Size    int64  `json:"size"`
+	Mtime   int64  `json:"mtime"` // unix 秒
+	Skip    bool   `json:"skip,omitempty"`
+	Ignored bool   `json:"ignored,omitempty"` // 被 .gitignore 忽略（仍然展示，只是打标）
 }
 
 // workspaceSession 取出路由上的会话和它的 cwd 根目录。
@@ -194,12 +205,158 @@ func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 		entries = entries[:wsMaxEntries]
 		truncated = true
 	}
+	// git 忽略的文件**照样列出来**（面板不是 git，隐藏掉反而让人以为文件没了），
+	// 只是打一个标记，让用户知道它不会进版本库。
+	s.markIgnored(root, entries)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"root":      root,
 		"path":      filepath.ToSlash(rel),
 		"entries":   entries,
 		"truncated": truncated,
 	})
+}
+
+// handleWorkspaceSearch 在整个工作区里递归搜索：GET /api/sessions/{id}/workspace/search?q=
+//
+// 文件树是懒加载的，前端原来那种「只筛已加载节点」的做法，找没展开过的
+// 深层文件必然找不到（输入完整相对路径更是一条都匹配不上，因为筛的是
+// entry.name）。这里由服务端走一遍树，名字和相对路径都参与匹配，
+// 被 .gitignore 忽略的文件也会返回（面板不替用户藏东西）。
+func (s *Server) handleWorkspaceSearch(w http.ResponseWriter, r *http.Request) {
+	_, root, ok := s.workspaceSession(w, r)
+	if !ok {
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"q": "", "entries": []wsEntry{}, "truncated": false})
+		return
+	}
+	qLower := strings.ToLower(filepath.ToSlash(q))
+	results := make([]wsEntry, 0, 32)
+	scanned := 0
+	truncated := false
+
+	// 查询里带路径时（典型：用户从别处复制了一整条相对路径），只走那条
+	// 路径的子树。66 万项的 work/ 全量扫要 1.7s，而直接定位到目录前缀
+	// 是毫秒级；裸文件名的搜索仍然走全树。
+	walkRoot := root
+	if i := strings.LastIndex(filepath.ToSlash(q), "/"); i > 0 {
+		if p, err := s.wsResolve(root, q[:i]); err == nil {
+			// 只在前缀确实落在 root 之内时缩范围（root 自己是符号链接时
+			// resolved 路径和 root 前缀对不上，退回全树扫，别算错相对路径）。
+			if rel, relErr := filepath.Rel(root, p); relErr == nil &&
+				rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				if info, statErr := os.Stat(p); statErr == nil && info.IsDir() {
+					walkRoot = p
+				}
+			}
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), wsSearchTimeout)
+	defer cancel()
+	walkErr := filepath.WalkDir(walkRoot, func(p string, d fs.DirEntry, err error) error {
+		// 每 256 项看一次取消/超时：前端换了筛选词会把旧请求 abort 掉，
+		// 旧遍历必须及时停下，否则连打几个字符就是几次全树扫描叠在一起。
+		if scanned%256 == 0 && ctx.Err() != nil {
+			truncated = true
+			return fs.SkipAll
+		}
+		if err != nil {
+			// 单个目录没权限不该让整次搜索失败，跳过它继续。
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if p == root || p == walkRoot {
+			return nil
+		}
+		if d.IsDir() && wsSkipDirs[d.Name()] {
+			return fs.SkipDir
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			// 符号链接不跟：跳出去就破坏了「只在这个工作区里」的边界。
+			return nil
+		}
+		scanned++
+		if scanned > wsMaxSearchScanned {
+			truncated = true
+			return fs.SkipAll
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(rel)
+		if !strings.Contains(strings.ToLower(relSlash), qLower) &&
+			!strings.Contains(strings.ToLower(d.Name()), qLower) {
+			return nil
+		}
+		e := wsEntry{
+			Name: d.Name(),
+			Path: relSlash,
+			Dir:  d.IsDir(),
+		}
+		if info, infoErr := d.Info(); infoErr == nil {
+			e.Size = info.Size()
+			e.Mtime = info.ModTime().Unix()
+		}
+		results = append(results, e)
+		if len(results) >= wsMaxSearchResults {
+			truncated = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if r.Context().Err() != nil {
+		// 客户端已经断开（换了筛选词），别再往回写响应。
+		return
+	}
+	if walkErr != nil {
+		writeErr(w, http.StatusForbidden, "工作区不可读")
+		return
+	}
+	s.markIgnored(root, results)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"q":         q,
+		"entries":   results,
+		"truncated": truncated,
+	})
+}
+
+// markIgnored 给「被 .gitignore 忽略」的条目打标。
+//
+// 用一条 `git check-ignore --stdin -z` 批量判断（一次子进程），失败就静默返回：
+// 不是 git 仓库、没装 git 都只是少了标记，不影响文件本身可见。
+func (s *Server) markIgnored(root string, entries []wsEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		paths = append(paths, e.Path)
+	}
+	out, code, err := s.wsGitRawInput(root, strings.Join(paths, "\x00")+"\x00", "check-ignore", "--stdin", "-z")
+	if err != nil || (code != 0 && code != 1) {
+		return
+	}
+	if out == "" {
+		return
+	}
+	ignored := make(map[string]bool, len(entries))
+	for _, p := range strings.Split(out, "\x00") {
+		if p = strings.TrimSpace(p); p != "" {
+			ignored[filepath.ToSlash(p)] = true
+		}
+	}
+	for i := range entries {
+		// 已经因 wsSkipDirs 打了「忽略」的目录不再叠一个 git 忽略标记。
+		if !entries[i].Skip && ignored[entries[i].Path] {
+			entries[i].Ignored = true
+		}
+	}
 }
 
 // handleWorkspaceFile 读文件：GET /api/sessions/{id}/workspace/file?path=<相对路径>
@@ -434,6 +591,11 @@ func (s *Server) wsGit(root string, args ...string) (string, error) {
 
 // wsGitRaw 跑 git 并把退出码也带回来（--no-index 找到差异时退出码是 1，不是失败）。
 func (s *Server) wsGitRaw(root string, args ...string) (string, int, error) {
+	return s.wsGitRawInput(root, "", args...)
+}
+
+// wsGitRawInput 与 wsGitRaw 相同，但把 stdin 喂给 git（check-ignore --stdin 用）。
+func (s *Server) wsGitRawInput(root, stdin string, args ...string) (string, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), wsGitTimeout)
 	defer cancel()
 	full := append([]string{"-C", root}, args...)
@@ -442,6 +604,9 @@ func (s *Server) wsGitRaw(root string, args ...string) (string, int, error) {
 		"GIT_OPTIONAL_LOCKS=0", // 只读命令，别跟用户的 git 操作抢索引锁
 		"LC_ALL=C",             // 输出稳定，别跟系统语言走
 	)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
