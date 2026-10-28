@@ -239,6 +239,25 @@ test('打开文件后面包屑和正文都出来，markdown 走 md()', async () 
   assert.ok($('#ws-diff').classList.contains('hidden') === false, '改动按钮应可见');
 });
 
+// 全局 reset 是 `* { margin: 0; padding: 0; }`，所以 Markdown 正文的段间距一旦
+// 不在 .ws-md 里补，整篇就会黏成一片（用户反馈过「行间距太小、太挤」）。
+// jsdom 不做布局，这里只钉「规则写没写、写在哪个选择器上」。
+test('markdown 正文有行距和块间距（reset 之后要自己补）', () => {
+  const css = fs.readFileSync(path.join(WEB, 'style.css'), 'utf8');
+  const rule = (sel) => {
+    const m = css.match(new RegExp(sel + '[^{]*\\{([^}]*)\\}'));
+    assert.ok(m, 'style.css 里应有 ' + sel + ' 规则');
+    return m[1];
+  };
+  const md = rule('\\.ws-md');
+  assert.ok(/line-height:\s*var\(--lh-relaxed\)/.test(md), '.ws-md 行距应放宽到 --lh-relaxed');
+  assert.ok(/font-size:\s*var\(--fs-base\)/.test(md), '.ws-md 字号不应比聊天区小一档');
+  assert.ok(/margin:/.test(rule('\\.ws-md p')), '段落之间要有间距');
+  assert.ok(/margin:/.test(rule('\\.ws-md h1')), '标题要有间距');
+  assert.ok(/margin:/.test(rule('\\.ws-md ul')), '列表要有间距');
+  assert.ok(/padding|background/.test(rule('\\.ws-md pre')), '代码块要有壳，不能是裸文本');
+});
+
 test('改动视图按 +/-/@@ 给不同的 class', async () => {
   await wsShowDiff();
   const diff = $('#ws-viewer-body').innerHTML;
