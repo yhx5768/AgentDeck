@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -357,6 +358,53 @@ func (s *Server) markIgnored(root string, entries []wsEntry) {
 			entries[i].Ignored = true
 		}
 	}
+}
+
+// handleWorkspaceDownload 下载文件：GET /api/sessions/{id}/workspace/download?path=<相对路径>
+//
+// 与预览不同，下载不截断、不拒绝二进制，交给浏览器直接存盘。走 http.ServeContent
+// 以支持 Range / If-Modified-Since，大文件不会一次性读进内存。鉴权与其它
+// /api/* 一样由 mux 上的 s.auth 覆盖（cookie 或 ?token=）。
+func (s *Server) handleWorkspaceDownload(w http.ResponseWriter, r *http.Request) {
+	_, root, ok := s.workspaceSession(w, r)
+	if !ok {
+		return
+	}
+	rel := r.URL.Query().Get("path")
+	if rel == "" {
+		writeErr(w, http.StatusBadRequest, "需要文件路径")
+		return
+	}
+	resolved, err := s.wsResolve(root, rel)
+	if err != nil {
+		wsWriteResolveError(w, err)
+		return
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "文件不存在")
+		return
+	}
+	if info.IsDir() {
+		writeErr(w, http.StatusBadRequest, "目标是目录")
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeErr(w, http.StatusBadRequest, "非常规文件")
+		return
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		writeErr(w, http.StatusForbidden, "文件不可读")
+		return
+	}
+	defer f.Close()
+	name := filepath.Base(resolved)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
 // handleWorkspaceFile 读文件：GET /api/sessions/{id}/workspace/file?path=<相对路径>

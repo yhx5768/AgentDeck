@@ -163,8 +163,10 @@ ${grabFn('wsRevealFile')}
 ${grabFn('wsRefreshStatus')}
 ${grabFn('wsRevealDir')}
 ${grabFn('wsTreeCollapsed')}
+${grabFn('wsDownloadURL')}
+${grabFn('wsDownload')}
 ${grabFn('wsInitTips')}
-window.__ws = { wsState, wsRenderTree, wsLoadDir, wsToggleDir, wsOpenFile, wsRenderViewer, wsShowDiff, wsOpenPath, wsToggle, wsTreeCollapsed, wsInitTips, wsSearchNow };
+window.__ws = { wsState, wsRenderTree, wsLoadDir, wsToggleDir, wsOpenFile, wsRenderViewer, wsShowDiff, wsOpenPath, wsToggle, wsTreeCollapsed, wsInitTips, wsSearchNow, wsDownloadURL };
 `;
 
 const dom = new JSDOM(
@@ -187,6 +189,7 @@ const dom = new JSDOM(
        <button id="ws-diff" class="hidden"></button>
        <button id="ws-source" class="hidden"></button>
        <button id="ws-refresh" class="hidden"></button>
+       <button id="ws-download" class="hidden"></button>
        <button id="ws-open" class="hidden"></button>
      </div>
    </body></html>`,
@@ -197,7 +200,7 @@ win.__treeRoot = TREE_ROOT;
 win.__treeDocs = TREE_DOCS;
 win.__search = SEARCH_HITS;
 win.eval(setup);
-const { wsState, wsRenderTree, wsLoadDir, wsToggleDir, wsOpenFile, wsRenderViewer, wsShowDiff, wsOpenPath, wsTreeCollapsed, wsSearchNow } = win.__ws;
+const { wsState, wsRenderTree, wsLoadDir, wsToggleDir, wsOpenFile, wsRenderViewer, wsShowDiff, wsOpenPath, wsTreeCollapsed, wsSearchNow, wsDownloadURL } = win.__ws;
 const $ = (sel) => win.document.querySelector(sel);
 const rows = () => [...win.document.querySelectorAll('#ws-tree .ws-row')].map((r) => r.dataset.path);
 
@@ -254,6 +257,13 @@ test('git 忽略的文件仍然渲染，并带「git 忽略」标记', () => {
   const tag = row.querySelector('.ws-tag-ignored');
   assert.ok(tag, '应带 git 忽略标记');
   assert.strictEqual(tag.textContent, 'git 忽略');
+});
+
+test('下载地址走会话工作区接口并对路径编码', () => {
+  wsState.sid = 's1';
+  assert.strictEqual(
+    wsDownloadURL('work/a b.zip'),
+    '/api/sessions/s1/workspace/download?path=work%2Fa%20b.zip');
 });
 
 test('只看改动时只留有 git 标记的文件', () => {

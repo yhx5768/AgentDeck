@@ -420,6 +420,7 @@ function wsRenderViewer() {
   $('#ws-diff').classList.add('hidden');
   $('#ws-source').classList.add('hidden');
   $('#ws-open').classList.add('hidden');
+  $('#ws-download').classList.add('hidden');
   $('#ws-refresh').classList.add('hidden');
   $('#ws-diff').classList.remove('active');
   $('#ws-source').classList.remove('active');
@@ -456,6 +457,7 @@ function wsRenderViewer() {
   }
 
   $('#ws-open').classList.remove('hidden');
+  $('#ws-download').classList.remove('hidden');
   if (!file.binary) {
     $('#ws-diff').classList.remove('hidden');
     $('#ws-source').classList.remove('hidden');
@@ -660,7 +662,24 @@ async function wsRefreshStatus() {
   }
 }
 
-// ---------- 打开（系统默认程序） ----------
+// ---------- 打开 / 下载 ----------
+
+// wsDownloadURL 下载地址：鉴权走登录时种下的 HttpOnly cookie（与 /api/image
+// 同一条路），所以这里不需要、也拿不到 token。
+function wsDownloadURL(path) {
+  return `/api/sessions/${encodeURIComponent(wsState.sid)}/workspace/download?path=${encodeURIComponent(path)}`;
+}
+
+function wsDownload() {
+  const f = wsState.file;
+  if (!f || !f.path || f.loading || f.error) return;
+  const a = document.createElement('a');
+  a.href = wsDownloadURL(f.path);
+  a.download = f.name || f.path.split('/').pop();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 async function wsOpenExternally() {
   const f = wsState.file;
@@ -718,6 +737,9 @@ function wsInit() {
 
   const open = $('#ws-open');
   if (open) open.onclick = () => wsOpenExternally();
+
+  const download = $('#ws-download');
+  if (download) download.onclick = () => wsDownload();
 
   const filter = $('#ws-filter');
   if (filter) {

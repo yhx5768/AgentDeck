@@ -390,3 +390,55 @@ func TestWorkspaceShowsGitIgnoredFiles(t *testing.T) {
 		t.Fatalf("search result = %v, want ignored=true", e)
 	}
 }
+
+// 下载：完整内容、attachment 头、二进制不拒绝；越界/不存在分别 403/404。
+func TestWorkspaceDownload(t *testing.T) {
+	s, ws := wsTestServer(t)
+	writeFile(t, filepath.Join(ws, "a.bin"), []byte{0x00, 0x01, 0xff})
+	outside := filepath.Join(filepath.Dir(ws), "outside", "secret.txt")
+	writeFile(t, outside, []byte("secret"))
+
+	w := wsCall(t, s.handleWorkspaceDownload, "/api/sessions/s1/workspace/download?path=a.bin", "s1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, "a.bin") {
+		t.Fatalf("Content-Disposition = %q", cd)
+	}
+	if got := w.Body.Bytes(); len(got) != 3 || got[2] != 0xff {
+		t.Fatalf("body = %v, want full binary content", got)
+	}
+
+	if w := wsCall(t, s.handleWorkspaceDownload, "/api/sessions/s1/workspace/download?path=../outside/secret.txt", "s1"); w.Code != http.StatusForbidden {
+		t.Fatalf("越界下载 status = %d, want 403", w.Code)
+	}
+	if w := wsCall(t, s.handleWorkspaceDownload, "/api/sessions/s1/workspace/download?path=nope", "s1"); w.Code != http.StatusNotFound {
+		t.Fatalf("不存在 status = %d, want 404", w.Code)
+	}
+}
+
+// 下载接口必须走鉴权中间件：没 token 401，带 token 才放行。
+func TestWorkspaceDownloadRequiresAuth(t *testing.T) {
+	s, ws := wsTestServer(t)
+	s.cfg().GatewayToken = "tok"
+	writeFile(t, filepath.Join(ws, "a.txt"), []byte("hi"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/workspace/download?path=a.txt", nil)
+	req.SetPathValue("id", "s1")
+	w := httptest.NewRecorder()
+	s.auth(s.handleWorkspaceDownload).ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("无 token status = %d, want 401", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/sessions/s1/workspace/download?path=a.txt&token=tok", nil)
+	req.SetPathValue("id", "s1")
+	w = httptest.NewRecorder()
+	s.auth(s.handleWorkspaceDownload).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("带 token status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+}
