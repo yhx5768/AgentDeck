@@ -119,15 +119,26 @@ type Server struct {
 	static fs.FS
 	mux    *http.ServeMux
 
-	// ocCatalog memoizes `opencode models --verbose` per cli+provider. One
-	// entry answers both the model dropdown and the effort dropdown, so the
+	// ocCatalog memoizes a provider's model catalog per cli+provider (v1:
+	// `opencode models --verbose`; v2: `opencode api model.list --standalone`).
+	// One entry answers both the model dropdown and the effort dropdown, so the
 	// CLI runs at most once per key per TTL no matter how many endpoints or
 	// browsers ask.
 	ocCatalogMu sync.Mutex
 	ocCatalog   map[string]ocCatalogEntry
-	// ocRefreshing marks keys with a background --refresh already in flight,
-	// so a burst of requests cannot stampede the CLI or models.dev.
+	// ocRefreshing marks keys with a background catalog re-read already in
+	// flight (v1 adds --refresh to reach models.dev; v2's list is always live),
+	// so a burst of requests cannot stampede the CLI.
 	ocRefreshing map[string]bool
+	// ocProviders holds the last successful provider-id list per opencode cli;
+	// the discovery loop merges it into the live config so logged-in
+	// integrations show up without config.yaml entries. A cli whose read fails
+	// keeps its previous list (transient CLI errors must not empty the picker).
+	ocProvidersMu sync.Mutex
+	ocProviders   map[string][]string
+	// ocDiscoverKick wakes the discovery loop early (config reload added or
+	// renamed an opencode cli); buffered so a kick never blocks the caller.
+	ocDiscoverKick chan struct{}
 	// codexCaches holds one incremental stats cache per codex home (ducx and
 	// native codex keep separate rollout trees).
 	codexCaches map[string]*codexhist.StatsCache
@@ -155,8 +166,10 @@ const variantsTTL = 10 * time.Minute
 func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS) *Server {
 	s := &Server{
 		cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux(),
-		ocCatalog:    map[string]ocCatalogEntry{},
-		ocRefreshing: map[string]bool{},
+		ocCatalog:      map[string]ocCatalogEntry{},
+		ocRefreshing:   map[string]bool{},
+		ocProviders:    map[string][]string{},
+		ocDiscoverKick: make(chan struct{}, 1),
 	}
 	s.routes()
 	return s
@@ -361,7 +374,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		Models  []model  `json:"models"`
 	}
 	out := []prov{}
-	for _, p := range s.cfg().Providers {
+	for _, p := range s.cfg().AllProviders() {
 		// Pre-initialize to an empty slice, not nil: a nil slice marshals to
 		// JSON `null`, and the frontend indexes into this list unguarded
 		// (provider.models[0], provider.models.find). A provider with no
@@ -417,7 +430,7 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		it.EnvKeys = sortedKeys(c.Env)
 		out.CLIs = append(out.CLIs, it)
 	}
-	for _, p := range s.cfg().Providers {
+	for _, p := range s.cfg().AllProviders() {
 		// Empty slice, not nil — see handleProviders: a nil marshals to
 		// JSON null and the UI indexes into models unguarded.
 		item := prov{Name: p.Name, Kind: p.Kind, Models: []model{}}
@@ -561,11 +574,17 @@ func cliProfile(cli *config.CLI) claudehist.Profile {
 }
 
 // firstProviderOfKind returns the first configured provider of the engine
-// kind, or nil.
+// kind, falling back to discovered ones, or nil.
 func (s *Server) firstProviderOfKind(kind string) *config.Provider {
-	for i := range s.cfg().Providers {
-		if s.cfg().Providers[i].Kind == kind {
-			return &s.cfg().Providers[i]
+	cfg := s.cfg()
+	for i := range cfg.Providers {
+		if cfg.Providers[i].Kind == kind {
+			return &cfg.Providers[i]
+		}
+	}
+	for i := range cfg.DiscoveredProviders {
+		if cfg.DiscoveredProviders[i].Kind == kind {
+			return &cfg.DiscoveredProviders[i]
 		}
 	}
 	return nil
@@ -1939,8 +1958,8 @@ func (s *Server) handleOpenCodeModels(w http.ResponseWriter, r *http.Request) {
 // supports.
 //
 // It reads the same memo as /api/opencode-models — both answers come from one
-// `opencode models --verbose` call, so opening a session costs no extra CLI
-// run for the effort keys.
+// catalog read (v1 `opencode models --verbose`, v2 `api model.list`), so
+// opening a session costs no extra CLI run for the effort keys.
 func (s *Server) handleOpenCodeModelVariants(w http.ResponseWriter, r *http.Request) {
 	cat := s.catalogForRequest(w, r)
 	if cat == nil {

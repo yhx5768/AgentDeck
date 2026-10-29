@@ -116,6 +116,58 @@ func TestManagerReloadParseErrorKeepsOld(t *testing.T) {
 	}
 }
 
+func TestManagerDiscoveredProvidersSurviveReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, path, minimalYaml)
+	boot, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(path, boot)
+
+	discovered := []Provider{
+		{Name: "cline-pass", Kind: KindOpenCode},
+		{Name: "opencode-go", Kind: KindOpenCode},
+	}
+	if !m.SetDiscoveredProviders(discovered) {
+		t.Fatal("first discovery must report a change")
+	}
+	if m.SetDiscoveredProviders(discovered) {
+		t.Fatal("re-setting the same set must not report a change")
+	}
+	cfg := m.Get()
+	if prov := cfg.ProviderByName("cline-pass"); prov == nil || prov.Kind != KindOpenCode {
+		t.Fatalf("discovered provider not addressable: %+v", prov)
+	}
+	if got := len(cfg.AllProviders()); got != 3 {
+		t.Fatalf("AllProviders = %d, want 3", got)
+	}
+
+	if _, err := m.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if prov := m.Get().ProviderByName("cline-pass"); prov == nil {
+		t.Fatal("discovered provider lost by hot reload")
+	}
+
+	// A config-declared provider always shadows a discovered entry of the same
+	// name, including after a reload; AllProviders must not list it twice.
+	m.SetDiscoveredProviders([]Provider{{Name: "default", Kind: KindOpenCode}})
+	for _, phase := range []string{"set", "reload"} {
+		if phase == "reload" {
+			if _, err := m.Reload(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if p := m.Get().ProviderByName("default"); p == nil || p.ModelByName("opus") == nil {
+			t.Fatalf("after %s the discovered entry shadowed the declared provider: %+v", phase, p)
+		}
+		if got := len(m.Get().AllProviders()); got != 1 {
+			t.Fatalf("after %s AllProviders listed the shadowed entry twice: %d", phase, got)
+		}
+	}
+}
+
 func TestManagerWatchReloadsOnChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, path, minimalYaml)

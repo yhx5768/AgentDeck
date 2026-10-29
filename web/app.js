@@ -2325,8 +2325,10 @@ function mcodeEffortsFor(catalog, providerName, modelName) {
 }
 
 // ---- opencode 模型目录 ----
-// opencode 的可用模型不在 config 里静态声明，而是 CLI 自己的注册表
-// （`opencode models <provider> --verbose`）：模型上下线、套餐变化都由上游决定，
+// opencode 的可用模型不在 config 里静态声明，而是 CLI 自己的注册表：v1 是
+// `opencode models <provider> --verbose`（--refresh 才回 models.dev），v2 是
+// `opencode api model.list --standalone`（没有 --refresh，目录本来就是活的；
+// 版本由 opencodever 按二进制识别）。模型上下线、套餐变化都由上游决定，
 // 写死必然过期。下拉改取这份目录（见 ocModelsFor），effort 下拉取同一份目录里的
 // variants（ocVariantsFor）——服务端两个端点共用一个 memo，所以一次拉取两样都有。
 // 缓存策略与 mcode / qoder 目录一致（10 分钟 TTL）。

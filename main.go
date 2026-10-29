@@ -69,14 +69,22 @@ func main() {
 
 	srv := server.New(cm, st, mgr, static)
 
+	// opencode providers that were logged into via the CLI are not listed in
+	// config.yaml; the discovery loop merges them into the live config and
+	// broadcasts config_changed so the picker refreshes without a reload.
+	go srv.StartProviderDiscovery(server.OpenCodeDiscoveryInterval)
+
 	// Respawn resident-mode sessions (peer-messaging reachable) in the
 	// background; staggered internally to avoid a boot storm.
 	go mgr.RestoreResidents()
 
 	// Hot-reload config.yaml (clis/providers/models); on every successful
-	// reload, tell connected clients so the UI refreshes model lists. The
-	// initial config itself is served via cm for later reads.
-	go cm.Watch(3*time.Second, mgr.BroadcastConfigChanged)
+	// reload, tell connected clients so the UI refreshes model lists, and kick
+	// provider discovery in case the opencode cli set changed.
+	go cm.Watch(3*time.Second, func() {
+		mgr.BroadcastConfigChanged()
+		srv.KickProviderDiscovery()
+	})
 
 	fmt.Printf("cc-webui\n")
 	fmt.Printf("  listen:      %s\n", cfg.Listen)

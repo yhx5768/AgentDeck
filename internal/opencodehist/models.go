@@ -38,7 +38,9 @@ type Catalog struct {
 }
 
 // ProviderCatalog reads one provider's catalog with `opencode models
-// <providerID> --verbose`.
+// <providerID> --verbose`. This is the v1 surface; OpenCode 2 dropped both
+// --verbose and --refresh and is served from `opencode api model.list
+// --standalone` by opencodev2.ProviderCatalog instead.
 //
 // refresh adds the CLI's own --refresh, which is the only thing that re-reads
 // models.dev: a plain `opencode models` is served from the on-disk cache at

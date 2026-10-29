@@ -177,6 +177,13 @@ type Config struct {
 	CLIs         []CLI      `yaml:"clis"`
 	Providers    []Provider `yaml:"providers"`
 
+	// DiscoveredProviders are runtime entries for engines whose providers live
+	// outside config.yaml — currently the provider ids an opencode cli reports
+	// as logged in/configured. The server's discovery loop fills this in, the
+	// manager carries it across hot reloads, and a config-declared provider of
+	// the same name shadows the discovered one. Never read from the file.
+	DiscoveredProviders []Provider `yaml:"-" json:"-"`
+
 	// HTMLRenderHint controls whether cc-webui appends its own "this UI can
 	// render a whole HTML page" instruction to every turn's system prompt.
 	// nil (unset) means ON — it is what enables the feature, so defaulting it
@@ -283,10 +290,46 @@ func (c *Config) CLIByName(name string) *CLI {
 }
 
 func (c *Config) ProviderByName(name string) *Provider {
+	if c == nil {
+		return nil
+	}
 	for i := range c.Providers {
 		if c.Providers[i].Name == name {
 			return &c.Providers[i]
 		}
 	}
+	// Runtime-discovered providers (opencode's logged-in integrations) come
+	// after the declared ones: config always wins on a name collision.
+	for i := range c.DiscoveredProviders {
+		if c.DiscoveredProviders[i].Name == name {
+			return &c.DiscoveredProviders[i]
+		}
+	}
 	return nil
+}
+
+// AllProviders returns config-declared providers followed by runtime-discovered
+// ones. Provider pickers render this list; ProviderByName already consults both.
+// A discovered entry whose name is also declared is skipped — config wins, and
+// showing both would duplicate the row (a reload can leave such an entry in the
+// manager's discovered set until the next discovery pass).
+func (c *Config) AllProviders() []Provider {
+	if c == nil {
+		return nil
+	}
+	out := make([]Provider, 0, len(c.Providers)+len(c.DiscoveredProviders))
+	out = append(out, c.Providers...)
+	if len(c.DiscoveredProviders) == 0 {
+		return out
+	}
+	declared := make(map[string]bool, len(c.Providers))
+	for i := range c.Providers {
+		declared[c.Providers[i].Name] = true
+	}
+	for i := range c.DiscoveredProviders {
+		if !declared[c.DiscoveredProviders[i].Name] {
+			out = append(out, c.DiscoveredProviders[i])
+		}
+	}
+	return out
 }

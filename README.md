@@ -24,7 +24,7 @@ AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流
 |---|---|
 | 单二进制部署 | `go build` 生成一个可执行文件，前端资源已用 `go:embed` 打包，无需 Node 构建。 |
 | 五引擎 | cli/provider 的 `kind` 选 `claude`（缺省）、`opencode`、`mcode`、`qoder` 或 `codex`，同一套界面里管理不同引擎的会话。会话绑定单一引擎，创建/修改/导入时 cli 与 provider 的 kind 必须一致。 |
-| 多 CLI / Provider / Model | 配置文件定义多个 CLI 与 API 后端；会话内一键热切换 CLI、Provider、Model、权限模式与推理档位（opencode 的对应概念是 variant）。opencode / mcode / qoder / codex 的模型清单由各自 CLI 动态提供，写死会过期。 |
+| 多 CLI / Provider / Model | 配置文件定义多个 CLI 与 API 后端；会话内一键热切换 CLI、Provider、Model、权限模式与推理档位（opencode 的对应概念是 variant）。opencode / mcode / qoder / codex 的模型清单由各自 CLI 动态提供，写死会过期；opencode 里登录的 provider 还会被自动发现，一般不用在配置里手写。 |
 | 导入已有会话 | 扫描各引擎自己的历史目录（`~/.claude/projects`、`~/.qoder-cn/projects`、opencode / mcode 的会话库、codex 的 rollout 目录），把本地历史会话一键接进 Web UI 继续聊。 |
 | 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚。claude：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 transcript 一并截断，消息文本回填输入框。opencode：走它自己的 revert 快照（stage + commit），对话由 opencode 的存储回滚。Bash 改的文件不在 checkpoint 内。其余引擎隐藏入口。 |
 | 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。CLI 开启 `partial_messages` 后支持打字机式逐 token 增量渲染（claude 的 `--include-partial-messages`，opencode 走 `message.part.delta`）。会话信息条显示轮数、步数、累计耗时与最近一轮 tok/s。 |
@@ -147,7 +147,8 @@ providers:
         env:
           CLAUDE_CODE_AUTO_COMPACT_WINDOW: "1000000"
 
-  - name: "kimi-for-coding"      # opencode 的 provider 名必须等于 opencode 的 providerID
+  - name: "kimi-for-coding"      # opencode 的 provider 名必须等于 opencode 的 providerID；
+                                 # 登录的集成会被自动发现，这条是可选的显式声明
     kind: "opencode"
     env: {}                      # 凭据走 opencode 登录态
     models: []                   # 留空：模型清单由 CLI 动态提供

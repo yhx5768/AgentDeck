@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -13,6 +14,12 @@ import (
 type Manager struct {
 	path string
 	cur  atomic.Pointer[Config]
+
+	// mu serializes the two write paths (Reload and SetDiscoveredProviders) so
+	// a discovery result cannot be lost under a concurrent hot reload. Reads
+	// stay lock-free through cur.
+	mu         sync.Mutex
+	discovered []Provider
 }
 
 // NewManager wraps a boot config loaded from path.
@@ -35,15 +42,55 @@ func (m *Manager) Reload() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	boot := m.Get()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	boot := m.cur.Load()
 	cfg.Listen = boot.Listen
 	cfg.DataDir = boot.DataDir
 	if cfg.TokenGenerated { // no explicit token in file/env: keep boot's
 		cfg.GatewayToken = boot.GatewayToken
 		cfg.TokenGenerated = boot.TokenGenerated
 	}
+	// Discovery is runtime state, not file state: a reload must not wipe the
+	// opencode providers the server already found.
+	cfg.DiscoveredProviders = m.discovered
 	m.cur.Store(cfg)
 	return cfg, nil
+}
+
+// SetDiscoveredProviders installs the providers found in the engines' own
+// runtime config (currently opencode logins) on the live config. The set is
+// carried across later Reloads until the next Set. It reports whether anything
+// changed so callers broadcast config_changed only on real updates.
+func (m *Manager) SetDiscoveredProviders(ps []Provider) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sameProviders(m.discovered, ps) {
+		return false
+	}
+	// Copy: the caller's slice may be reused after return, and this snapshot is
+	// shared by the live config and future Reloads. It is never mutated in
+	// place — each Set replaces it wholesale.
+	m.discovered = append([]Provider(nil), ps...)
+	next := *m.cur.Load()
+	next.DiscoveredProviders = m.discovered
+	m.cur.Store(&next)
+	return true
+}
+
+// sameProviders compares the fields discovery actually sets. Discovered
+// entries are always kind-only (no env, no models), so this is enough to tell
+// "same set" apart from a real change.
+func sameProviders(a, b []Provider) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name || a[i].Kind != b[i].Kind {
+			return false
+		}
+	}
+	return true
 }
 
 // Watch polls the config file every interval; when it changed, Reloads and
