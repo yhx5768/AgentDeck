@@ -2,7 +2,8 @@
 //
 // 和 html_frame.test.js 同一个套路：真代码 + 真委托，只把 mermaid 库换成 stub。
 // jsdom 做不了 SVG 布局，所以这里验的是——```mermaid 围栏有没有升级成带按钮的壳、
-// 渲染/源码切换、失败时源码仍然可见、切主题会重画、封顶 CSS 写在了正确的元素上。
+// 渲染/源码切换、失败时源码仍然可见、切主题会重画、全屏搬运与遮罩生命周期、
+// 封顶 CSS 写在了正确的元素上。
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
@@ -28,9 +29,12 @@ const st = document.createElement('style');
 st.textContent = ':root{--bg:#fff;--bg2:#f6f8fa;--bg3:#eaeef2;--border:#d0d7de;--fg:#1f2328;--dim:#656d76;--accent:#0969da;--red:#cf222e;--font-sans:sans-serif}';
 document.head.appendChild(st);
 ` + src.slice(0, mdCut) + `
+${grabListener("if (e.target.closest('.html-fs-close'))")}
+${grabListener("if (e.key === 'Escape' && isHtmlFullscreen())")}
 ${grabListener("const btn = e.target.closest('.mermaid-artifact-toggle');")}
 window.__x = { md, buildMermaidArtifactNode, mountMermaid, unmountMermaid, paintMermaid,
-               ensureMermaid, mermaidConfig, syncMermaidThemes };
+               ensureMermaid, mermaidConfig, syncMermaidThemes,
+               enterHtmlFullscreen, exitHtmlFullscreen, isHtmlFullscreen, htmlFsLayer };
 `;
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>',
@@ -158,6 +162,68 @@ function makeMermaid() {
     ok('svg 按自然尺寸渲染、宽图靠框内横向滚动',
        /\.mermaid-frame-box svg\s*\{[^}]*max-width:\s*none/.test(css));
     ok('svg 跟随主题变量而不是硬编码色', !/#(?:fff|000)\b/i.test((css.match(/\.mermaid-error\s*\{[^}]*\}/) || [''])[0]));
+  }
+
+  section('[7] 全屏查看（与 HTML 共用遮罩，搬 box 而非重建）');
+  {
+    const a = makeMermaid();
+    ok('未渲染时全屏按钮被 CSS 藏起（.rendered 才显示）',
+       /\.code-block-artifact\.rendered \.html-artifact-fs\s*\{[^}]*display:\s*inline-flex/.test(css));
+    ok('工具条里有全屏按钮（与 HTML 同一套 class/图标）',
+       !!a.querySelector('.html-artifact-fs svg'));
+    clickEl(a.querySelector('.mermaid-artifact-toggle'));
+    await tick(); await tick();
+    ok('全屏按钮在 MERMAID 标签左边',
+       [...a.querySelector('.html-artifact-bar').children].map((x) => x.className).join('|') ===
+       'html-artifact-fs|html-artifact-tag|mermaid-artifact-toggle');
+    const box = a.querySelector('.mermaid-frame-box');
+    const svg = box.querySelector('svg');
+    clickEl(a.querySelector('.html-artifact-fs'));
+    ok('点按钮进全屏', X.isHtmlFullscreen());
+    const layer = X.htmlFsLayer();
+    ok('box 搬进遮罩', layer.querySelector('.html-fs-body').contains(box));
+    ok('box 已离开 wrap', !a.contains(box));
+    ok('svg 还是同一个节点（不重建、不重画）',
+       layer.querySelector('.mermaid-frame-box svg') === svg);
+    ok('标题是 Mermaid 预览', layer.querySelector('.html-fs-title').textContent === 'Mermaid 预览');
+    ok('锁住背景滚动', win.document.body.classList.contains('html-fs-open'));
+
+    // 全屏中切主题：box 不在 wrap 里，paintMermaid 必须从遮罩里找回它
+    const before = renderCalls;
+    X.syncMermaidThemes();
+    await tick(); await tick();
+    ok('全屏中换主题仍能重画', renderCalls === before + 1, renderCalls + ' vs ' + before);
+    ok('重画后图还在遮罩里', !!layer.querySelector('.mermaid-frame-box svg'));
+
+    win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    ok('Esc 退出全屏', !X.isHtmlFullscreen());
+    ok('box 原路搬回 wrap', a.contains(box) && !!a.querySelector('.mermaid-frame-box svg'));
+    X.unmountMermaid(a);
+  }
+
+  section('[8] 全屏中点「源码」先收遮罩');
+  {
+    const a = makeMermaid();
+    clickEl(a.querySelector('.mermaid-artifact-toggle'));
+    await tick(); await tick();
+    clickEl(a.querySelector('.html-artifact-fs'));
+    ok('先进全屏', X.isHtmlFullscreen());
+    clickEl(a.querySelector('.mermaid-artifact-toggle')); // 点「源码」
+    ok('遮罩已收', !X.isHtmlFullscreen());
+    ok('遮罩里无残留', !X.htmlFsLayer().querySelector('.mermaid-frame-box'));
+    ok('背景已解锁', !win.document.body.classList.contains('html-fs-open'));
+    ok('artifact 退回未渲染', !a.classList.contains('rendered'));
+    ok('源码回来了、图已拆掉', !!a.querySelector('pre') && !a.querySelector('.mermaid-frame-box svg'));
+  }
+
+  section('[9] 全屏 CSS 契约');
+  {
+    const rule = css.match(/\.html-fs \.mermaid-frame-box\s*\{([^}]*)\}/);
+    ok('全屏下解除封顶', !!rule && /max-height:\s*none/.test(rule[1]));
+    ok('全屏下框不自己滚（滚动交给 .html-fs-body）',
+       !!rule && /overflow:\s*visible/.test(rule[1]));
+    ok('搬离 .code-block-mermaid 后仍有底色/内边距',
+       !!rule && /background:\s*var\(--bg\)/.test(rule[1]) && /padding:\s*12px/.test(rule[1]));
   }
 
   console.log(`\nmermaid: ${pass} 通过 / ${fail} 失败`);

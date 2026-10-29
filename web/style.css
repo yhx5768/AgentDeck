@@ -1396,6 +1396,14 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   -webkit-overflow-scrolling: touch;
 }
 .html-fs .html-frame-box { max-height: none; overflow: visible; }
+/* Mermaid 的框搬进遮罩后不再匹配 .code-block-mermaid 前缀，底色/内边距得单独
+   补一份；全屏下同样解除封顶与框内滚动，超宽图交给 .html-fs-body 滚。 */
+.html-fs .mermaid-frame-box {
+  background: var(--bg);
+  padding: 12px;
+  max-height: none;
+  overflow: visible;
+}
 /* 遮罩打开时锁住背景滚动，否则 wheel 会同时滚两层 */
 body.html-fs-open { overflow: hidden; }
 /* 页面若没跑起来脚本，留个最小高度，避免整块塌成一条线看不出点过 */

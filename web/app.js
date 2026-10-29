@@ -197,6 +197,13 @@ function buildMermaidArtifactNode(pre) {
   btn.type = 'button';
   btn.title = '复制代码';
   btn.innerHTML = CODE_COPY_ICON;
+  // 全屏：大图在聊天宽度里只能框内滚，铺满窗口才看得全。与 HTML 共用遮罩。
+  const fs = document.createElement('button');
+  fs.className = 'html-artifact-fs';
+  fs.type = 'button';
+  fs.title = '全屏查看';
+  fs.setAttribute('aria-label', '全屏查看');
+  fs.innerHTML = HTML_FS_ICON;
   const toggle = document.createElement('button');
   toggle.className = 'mermaid-artifact-toggle';
   toggle.type = 'button';
@@ -207,7 +214,7 @@ function buildMermaidArtifactNode(pre) {
   tag.textContent = 'MERMAID';
   const bar = document.createElement('div');
   bar.className = 'html-artifact-bar';
-  bar.append(tag, toggle);
+  bar.append(fs, tag, toggle); // toggle 靠 margin-left:auto 顶到右边
   const box = document.createElement('div');
   box.className = 'mermaid-frame-box';
   const art = document.createElement('div');
@@ -224,6 +231,10 @@ function buildMermaidArtifactNode(pre) {
 let mermaidLoadPromise = null;
 let mermaidSeq = 0;
 const mermaidMounted = new Set(); // 已渲染的 wrap，切主题时重画
+
+// 全屏遮罩当前承载的 box（HTML 的 .html-frame-box 或 Mermaid 的 .mermaid-frame-box）。
+// 声明放这里是因为 Mermaid 的换主题重画也要在 box 被搬进遮罩时找回它。
+let htmlFsReturn = null;
 
 function mermaidConfig() {
   const cs = getComputedStyle(document.documentElement);
@@ -272,7 +283,8 @@ function ensureMermaid() {
 // 把源码画进 box。返回是否成功；失败时 box 里留一行错误说明，源码保持可见。
 async function paintMermaid(wrap) {
   const pre = wrap.querySelector('pre');
-  const box = wrap.querySelector('.mermaid-frame-box');
+  // 全屏时 box 已被搬进遮罩、不在 wrap 里；换主题重画要找回它继续画。
+  const box = wrap.querySelector('.mermaid-frame-box') || fullscreenBoxFor(wrap);
   if (!pre || !box) return false;
   const src = (pre.textContent || '').trim();
   if (!src) return false;
@@ -327,6 +339,9 @@ async function mountMermaid(wrap) {
 }
 
 function unmountMermaid(wrap) {
+  // 全屏里正是这个块时先收遮罩：box 在遮罩里，下面按 wrap 查会落空，整个函数
+  // 提前 return——表现为「全屏中点源码没反应」。
+  if (htmlFsReturn && htmlFsReturn.wrap === wrap) exitHtmlFullscreen();
   // 让还在飞的 paintMermaid 作废，别等它回来把图又塞回去。
   wrap.dataset.mermaidGen = String(++mermaidSeq);
   const box = wrap.querySelector('.mermaid-frame-box');
@@ -437,10 +452,11 @@ function mountHtmlFrame(wrap) {
 }
 
 function unmountHtmlFrame(wrap) {
-  // 必须先收全屏：enterHtmlFullscreen 把 .html-frame-box 搬进了遮罩，此时它在
-  // wrap 之外，下面那句 querySelector 会找不到而整个函数提前 return——表现为
-  // 「全屏中点源码没反应，iframe 留在遮罩里」。
-  exitHtmlFullscreen();
+  // 必须先收全屏：enterHtmlFullscreen 把 box 搬进了遮罩，此时它在 wrap 之外，
+  // 下面那句 querySelector 会找不到而整个函数提前 return——表现为「全屏中点
+  // 源码没反应，iframe 留在遮罩里」。只在全屏里正是自己时才收，别把别的块的
+  // 全屏顺手关掉。
+  if (htmlFsReturn && htmlFsReturn.wrap === wrap) exitHtmlFullscreen();
   const box = wrap.querySelector('.html-frame-box');
   if (!box) return;
   // 拆掉而不是隐藏：iframe 常驻会一直占着内存和 rAF，页面里的定时器也不停。
@@ -451,25 +467,32 @@ function unmountHtmlFrame(wrap) {
   if (toggle) toggle.textContent = '渲染';
 }
 
-// 全屏：把承载 iframe 的 .html-frame-box 整体搬进 fixed 遮罩。
-// 搬节点而不是重建 iframe —— 重建会把页面里的脚本状态、定时器、滚动位置全清掉。
+// 全屏：把承载 iframe / SVG 的 box 整体搬进 fixed 遮罩。HTML 与 Mermaid 共用。
+// 搬节点而不是重建 —— iframe 重建会把页面里的脚本状态、定时器、滚动位置全清掉。
 // 退出时原路搬回同一个父节点。
-let htmlFsReturn = null;
+function fullscreenBoxFor(wrap) {
+  return htmlFsReturn && htmlFsReturn.wrap === wrap ? htmlFsReturn.box : null;
+}
 
 function enterHtmlFullscreen(wrap) {
-  const box = wrap && wrap.querySelector('.html-frame-box');
-  const frame = box && box.querySelector('iframe.html-frame');
-  if (!box || !frame) return;
+  const box = wrap && (wrap.querySelector('.html-frame-box') || wrap.querySelector('.mermaid-frame-box'));
+  if (!box) return;
+  // 只有画好的东西才值得全屏：HTML 要有 iframe，Mermaid 要有 svg。
+  // （按钮本身由 .rendered 控制显隐，这里再兜一道，防止空框进遮罩。）
+  const isMermaid = box.classList.contains('mermaid-frame-box');
+  if (!box.querySelector(isMermaid ? 'svg' : 'iframe.html-frame')) return;
   // 已经在全屏里、又点了另一个块的按钮：先收掉再进新的，否则这一次点击是死的，
   // 用户只会以为按钮坏了。
   if (htmlFsReturn) {
-    if (htmlFsReturn.box === box) return; // 已经在全屏的就是它，别把自己搬自己
+    if (htmlFsReturn.wrap === wrap) return; // 已经在全屏的就是它，别把自己搬自己
     exitHtmlFullscreen();
   }
   const layer = htmlFsLayer();
   const body = layer.querySelector('.html-fs-body');
-  htmlFsReturn = { box, parent: box.parentNode, next: box.nextSibling };
+  htmlFsReturn = { wrap, box, parent: box.parentNode, next: box.nextSibling };
   body.appendChild(box);
+  const title = layer.querySelector('.html-fs-title');
+  if (title) title.textContent = isMermaid ? 'Mermaid 预览' : 'HTML 预览';
   layer.classList.remove('hidden');
   document.body.classList.add('html-fs-open');
   const close = layer.querySelector('.html-fs-close');
@@ -4261,7 +4284,7 @@ document.addEventListener('click', async (e) => {
   } catch (_) {}
 });
 
-// HTML 全屏开关（md 围栏和 render_html 工具块共用同一份工具条）
+// HTML / Mermaid 全屏开关（md 围栏和 render_html 工具块共用同一份工具条）
 document.addEventListener('click', (e) => {
   if (e.target.closest('.html-fs-close')) { exitHtmlFullscreen(); return; }
   const fs = e.target.closest('.html-artifact-fs');
@@ -4271,8 +4294,7 @@ document.addEventListener('click', (e) => {
   // 只有「在看的正是这个块」才收遮罩；在看别的块时要把全屏切过去，
   // 早先写成 if (isHtmlFullscreen()) exit... else enter...，结果全屏中点第二个块的
   // 按钮只会把遮罩关掉，永远切不过去。
-  const box = wrap.querySelector('.html-frame-box');
-  if (isHtmlFullscreen() && htmlFsReturn && htmlFsReturn.box === box) exitHtmlFullscreen();
+  if (isHtmlFullscreen() && htmlFsReturn && htmlFsReturn.wrap === wrap) exitHtmlFullscreen();
   else enterHtmlFullscreen(wrap);
 });
 document.addEventListener('keydown', (e) => {
