@@ -730,6 +730,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Model          string `json:"model"`
 		Effort         string `json:"effort"`
 		PermissionMode string `json:"permission_mode"`
+		// Resident/PeerName create the session already live as a peer (claude
+		// only) — the same end state as creating it and toggling 📡 right away,
+		// but in one round trip.
+		Resident bool   `json:"resident"`
+		PeerName string `json:"peer_name"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
@@ -759,6 +764,21 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind))
 		return
 	}
+	// Resident/peer messaging is a Claude Code protocol feature; no other engine
+	// may enable it. Mirrors the PATCH guard in handlePatchSession.
+	if (body.Resident || body.PeerName != "") && !cli.IsClaude() {
+		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻/peer 消息")
+		return
+	}
+	peerName := ""
+	if body.PeerName != "" {
+		cleaned := runner.CleanPeerName(body.PeerName)
+		if strings.TrimSpace(body.PeerName) != "" && cleaned == "" {
+			writeErr(w, http.StatusBadRequest, "地址名无效：不能以 / 开头")
+			return
+		}
+		peerName = cleaned
+	}
 	if body.Model != "" && !s.modelKnown(cli, prov, body.Model) {
 		writeErr(w, http.StatusBadRequest, "unknown model for provider "+body.Provider+": "+body.Model)
 		return
@@ -787,6 +807,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		ModelOverride:  body.Model,
 		EffortOverride: body.Effort,
 		PermissionMode: body.PermissionMode,
+		Resident:       body.Resident,
+		PeerName:       peerName,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -796,6 +818,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.st.Upsert(sess, nil); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Spawn the resident process now so the session is immediately addressable.
+	// The session is already persisted (resident flag included), so a spawn
+	// failure is not fatal: the next Enqueue or the boot RestoreResidents
+	// retries. Return the session rather than 502 so the client doesn't think
+	// creation failed and retry into a duplicate.
+	if sess.Resident {
+		if err := s.mgr.EnsureResident(sess.ID); err != nil {
+			log.Printf("start resident for new session %s: %v", sess.ID, err)
+		}
 	}
 	writeJSON(w, http.StatusOK, s.view(sess))
 }

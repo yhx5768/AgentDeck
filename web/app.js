@@ -6131,6 +6131,9 @@ $('#btn-new').onclick = async () => {
   fillProviderSelect($('#new-provider'), '', k0);
   fillModelSelect($('#new-model'), $('#new-provider').value, '', $('#new-cli').value);
   applyNewEngineUI(k0);
+  $('#new-resident').checked = false;
+  $('#new-peer-name').value = '';
+  $('#new-peer-wrap').classList.add('hidden');
   const cfg = await api('/api/config');
   $('#new-cwd').placeholder = cfg.default_cwd || '/path/to/project';
   openModal('#modal-new');
@@ -6138,10 +6141,23 @@ $('#btn-new').onclick = async () => {
 
 // quick-create 弹窗：clis 列表本就带 kind 后缀（fillCLISelect 标签），切 cli
 // 时 provider 归位同 kind 首个；effort 下拉由 refreshNewEffort 按模型 variants
-// 动态填充（原「opencode 无此概念」的固定隐藏不再适用）
+// 动态填充（原「opencode 无此概念」的固定隐藏不再适用）。常驻开关只有 claude
+// 引擎支持，其余隐藏（后端对其它 kind 的 resident/peer_name 直接 400）。
 function applyNewEngineUI(kind) {
   refreshNewEffort();
+  const claude = (kind || 'claude') === 'claude';
+  $('#new-resident-wrap').classList.toggle('hidden', !claude);
+  if (!claude) {
+    $('#new-resident').checked = false;
+    $('#new-peer-name').value = '';
+    $('#new-peer-wrap').classList.add('hidden');
+  }
 }
+
+$('#new-resident').addEventListener('change', (e) => {
+  $('#new-peer-wrap').classList.toggle('hidden', !e.target.checked);
+  if (e.target.checked) $('#new-peer-name').focus();
+});
 
 $('#new-cli').addEventListener('change', () => {
   const kind = cliKind($('#new-cli').value);
@@ -6160,6 +6176,7 @@ $('#new-provider').addEventListener('change', (e) => {
 $('#new-model').addEventListener('change', refreshNewEffort);
 
 $('#new-submit').onclick = async () => {
+  const resident = cliKind($('#new-cli').value) === 'claude' && $('#new-resident').checked;
   const body = {
     name: $('#new-name').value.trim(),
     cli: $('#new-cli').value,
@@ -6168,6 +6185,8 @@ $('#new-submit').onclick = async () => {
     model: $('#new-model').value,
     effort: $('#new-effort').value,
     permission_mode: $('#new-perm').value,
+    resident: resident || undefined,
+    peer_name: resident ? ($('#new-peer-name').value.trim() || undefined) : undefined,
   };
   try {
     const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
@@ -6418,6 +6437,11 @@ async function openNewSessionView(cwd) {
   inp.style.height = 'auto';
   state.nsAttached = [];
   renderNsAttached();
+  // 每次进入清空名称/常驻，避免上一次的输入残留到新会话
+  $('#ns-name').value = '';
+  $('#ns-resident-check').checked = false;
+  $('#ns-resident-name').value = '';
+  $('#ns-resident-name').classList.add('hidden');
   inp.focus();
 
   const cliSel = $('#ns-cli');
@@ -6453,9 +6477,17 @@ function renderProviderOptions(sel, kind) {
 }
 
 // 新建会话视图的引擎可见面：effort 下拉由 refreshNsEffort 按所选模型
-// variants 动态填充（opencode 无 variants 的模型自然隐藏）
+// variants 动态填充（opencode 无 variants 的模型自然隐藏）；常驻开关只有
+// claude 引擎支持（后端对其它 kind 的 resident/peer_name 直接 400），其余隐藏。
 function applyNsEngineUI(kind) {
   refreshNsEffort();
+  const claude = (kind || 'claude') === 'claude';
+  $('#ns-resident-wrap').classList.toggle('hidden', !claude);
+  if (!claude) {
+    $('#ns-resident-check').checked = false;
+    $('#ns-resident-name').value = '';
+    $('#ns-resident-name').classList.add('hidden');
+  }
 }
 
 function dropNsImages(msg) {
@@ -6520,6 +6552,10 @@ async function nsSend() {
   const model = $('#ns-model').value;
   const effort = $('#ns-effort').value;
   const perm = $('#ns-perm').value;
+  const nameInput = $('#ns-name').value.trim();
+  // 常驻只有 claude 支持；地址名留空则后端 effectivePeerName 回退到会话名
+  const resident = cliKind(cli) === 'claude' && $('#ns-resident-check').checked;
+  const peerName = resident ? $('#ns-resident-name').value.trim() : '';
   if (!cli || !provider || !model) { alert('请先选择配置'); return; }
 
   // Backend runner.Image expects {media_type, data} with data being raw
@@ -6534,17 +6570,26 @@ async function nsSend() {
     return;
   }
   const nAttach = state.nsAttached ? state.nsAttached.length : 0;
-  const name = content
+  const autoName = content
     ? (content.length > 30 ? content.slice(0, 30) + '…' : content)
     : (nAttach ? (images.length ? '[图片]' : '[附件]') : '新会话');
-  const sess = await api('/api/sessions', {
-    method: 'POST',
-    body: JSON.stringify({
-      name, cli, provider, model, cwd: nsPendingCwd,
-      effort: effort || undefined,
-      permission_mode: perm || undefined,
-    }),
-  });
+  const name = nameInput || autoName;
+  let sess;
+  try {
+    sess = await api('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({
+        name, cli, provider, model, cwd: nsPendingCwd,
+        effort: effort || undefined,
+        permission_mode: perm || undefined,
+        resident: resident || undefined,
+        peer_name: peerName || undefined,
+      }),
+    });
+  } catch (e) {
+    alert('新建会话失败：' + e.message);
+    return;
+  }
   $('#new-session-view').classList.add('hidden');
   const nsFiles = [...(state.nsAttached || [])];
   state.nsAttached = [];
@@ -6576,6 +6621,12 @@ async function nsSend() {
 }
 
 $('#ns-send').onclick = nsSend;
+// 勾选常驻才显示地址名输入（留空则取会话名）
+$('#ns-resident-check').onchange = (e) => {
+  const on = e.target.checked;
+  $('#ns-resident-name').classList.toggle('hidden', !on);
+  if (on) $('#ns-resident-name').focus();
+};
 $('#ns-input').onkeydown = (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();

@@ -2097,6 +2097,12 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   display: flex; flex-direction: column; gap: var(--sp-2);
   font-size: var(--fs-sm); color: var(--dim);
 }
+/* 常驻开关：一行两端对齐（文字 + 勾选框），别继承上面的纵向堆叠 */
+.modal-card label.modal-check {
+  flex-direction: row; align-items: center; justify-content: space-between;
+  cursor: pointer;
+}
+.modal-card label.modal-check input { width: auto; accent-color: var(--green); cursor: pointer; }
 .modal-actions {
   display: flex; justify-content: flex-end;
   gap: var(--sp-3);
@@ -2698,6 +2704,40 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   display: flex; align-items: center; gap: var(--sp-1);
   margin-left: auto;
 }
+
+/* 新建会话：名称 / 常驻 / 地址名（claude 才显示常驻开关）单独一行，
+   免得挤进 toolbar 后换行挤成一团 */
+.ns-meta {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  padding: var(--sp-1) var(--sp-1) 0;
+}
+.ns-name-input {
+  flex: none;
+  width: 136px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-family: var(--font-sans);
+  outline: none;
+  transition: border-color var(--t-fast);
+}
+.ns-name-input:focus { border-color: var(--accent); }
+.ns-name-input::placeholder { color: var(--dim); }
+.ns-resident-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--r-md);
+  color: var(--dim);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.ns-resident-toggle:hover { color: var(--fg); background: var(--bg3); }
+.ns-resident-toggle input { accent-color: var(--green); cursor: pointer; }
 
 /* attached thumbs below card */
 .ns-attached {

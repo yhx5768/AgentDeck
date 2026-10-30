@@ -262,6 +262,13 @@
             <div id="ns-slash-popup" class="slash-popup hidden"></div>
             <textarea id="ns-input" placeholder="有什么可以帮你的？" rows="4"></textarea>
           </div>
+          <div class="ns-meta">
+            <input id="ns-name" class="ns-name-input" spellcheck="false" placeholder="会话名称（可选）" title="会话名称；留空则由首条消息自动生成">
+            <label id="ns-resident-wrap" class="ns-resident-toggle hidden" title="常驻：保持进程在线，可被其他会话通过地址名发消息">
+              <input type="checkbox" id="ns-resident-check"><span>常驻</span>
+            </label>
+            <input id="ns-resident-name" class="ns-name-input hidden" spellcheck="false" placeholder="地址名（可选）" title="常驻地址名；留空则取会话名">
+          </div>
           <div class="ns-toolbar">
             <div class="ns-toolbar-left">
               <button id="ns-attach" class="round-icon-btn" title="添加图片或文件"><i data-lucide="paperclip"></i></button>
@@ -487,6 +494,11 @@
   <div class="modal-card">
     <h3>新建会话</h3>
     <label>名称 <input id="new-name" placeholder="可选"></label>
+    <label id="new-resident-wrap" class="modal-check hidden" title="常驻：保持进程在线，可被其他会话通过地址名发消息">
+      <span>常驻进程</span>
+      <input type="checkbox" id="new-resident">
+    </label>
+    <label id="new-peer-wrap" class="hidden">地址名 <input id="new-peer-name" spellcheck="false" placeholder="默认取会话名"></label>
     <label>CLI <select id="new-cli"></select></label>
     <label>Provider <select id="new-provider"></select></label>
     <label>Model <select id="new-model"></select></label>
