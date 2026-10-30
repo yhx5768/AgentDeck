@@ -331,6 +331,17 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
 - **前端测试**：`scripts/frontend-tests/`（jsdom，唯一依赖是那边的 package.json）。跑法 `./scripts/frontend-tests/run.sh`。覆盖 HTML 沙箱渲染 + 全屏（节点搬运、Esc/关闭委托、卸载顺序、滚动容器的 CSS 契约与 DOM 嵌套必须对得上）、图标白名单（**含 `workspace.js`**，模板表达式里的图标字面量按 lucide 打包里的真实图标名过滤）、错误横幅折叠（长错误默认收起、摘要取关键行、展开区限高的 CSS 契约）、本地图片路径改写（哪些 src 该改、哪些该原样保留）、工作区面板的 DOM 契约（树行 data-path、点目录会展开、筛选、只看改动、diff 行分类）、新建会话弹窗的 effort(variants) 下拉显隐（**有没有 variants 就显不显**、config 的裸模型名与 `provider/model` 全路径两种键都能命中、接口要带 `fresh=1`、拉取失败只隐藏不写死缓存、claude 分支不被带跑）、新建对话常驻开关的 claude-only 显隐（两个入口都只在 claude 显示，切走清掉勾选/地址名）。**jsdom 不做布局**——max-height 裁不裁、overflow 生不生效、手感如何，一律验不了，仍需人工过一眼；能钉的只有 DOM 契约和「样式写在了正确的元素上」。**布局类的改动想亲眼看效果，就起个测试实例用 headless 浏览器截图**：`CC_WEBUI_DATA_DIR=./data-test CC_WEBUI_LISTEN=127.0.0.1:8322 ./cc-webui`（别动 8321 的活实例），配 `/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge --headless --screenshot=... --window-size=1440,900 file://...` 渲染一个复刻真实 DOM 结构的 harness 页——这是唯一能证明「没盖住主对话」的办法。鉴权支持 `?token=` query，所以 harness 里的 `<img src="…/api/image?token=…">` 能直接取到图。
 - **测试**：有单测的包 `claudehist`（含 stats）、`opencodehist`（含 stats）、`server`、`runner`、`config`；`statsagg`、`store` 无测试。改 rewind 相关的 `LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt` 务必跑 `go test ./internal/claudehist/`；改统计口径（section 9）务必跑 `go test ./internal/claudehist/ ./internal/opencodehist/`——两侧计数规则要一致。pre-commit 守卫（`scripts/hooks/pre-commit`，**一次性激活** `git config core.hooksPath "$(pwd)/scripts/hooks"`——**注意当前 clone 还没激活过**，所以本文件里记的自动跑目前并不会发生）：staged 含 `web/` 时跑 `scripts/frontend-tests/run.sh`，含 `.go` 自动跑 `go vet ./...`，含 `internal/claudehist/` 时加跑其测试——commit 被挡多半是这俩没过。
 
+## AgentDeck skill（`skills/agentdeck`）
+
+给**本机其他 Agent**（Claude Code / opencode / mcode / codex…）用的一份 skill：让它们能直接驱动 AgentDeck 的 HTTP API——建会话（命名、选 cli/provider/model/effort/常驻）、发消息、等结果、改档、停止、归档、删除、分叉、回滚、群聊编排。建出来的会话走的是正常的 `store.Upsert` 路径，前端 5s 轮询 `/api/sessions` 就看见了，不需要任何额外通知机制。
+
+- **组成**：`SKILL.md`（何时用 + 命令全集 + 引擎差异）+ `scripts/agentdeck.py`（纯 Python 3 标准库，`urllib` 直连，无第三方依赖）。
+- **安装**：`./scripts/install-skill.sh [--opencode] [--copy] [--target DIR] [--uninstall] [--force]`，默认软链到 `~/.claude/skills/agentdeck`（opencode 也兼容读这个目录），`--opencode` 追加 `~/.config/opencode/skills/`。幂等。
+- **连接发现**：`--url/--token` → `AGENTDECK_URL/AGENTDECK_TOKEN` → `config.yaml`（`listen` + `gateway_token`，按 `$AGENTDECK_CONFIG`、cwd、`~/Projects/cc-webui`、`~/.config/cc-webui` 顺序找）→ 兜底 `http://127.0.0.1:8321`；token 也可放 `~/.config/cc-webui/agentdeck.token`。`agentdeck.py doctor` 打印实际解析结果。
+- **模型清单必须现问**：脚本按 cli 的 `kind` 分派到 `/api/opencode-models`、`/api/mcode-models`、`/api/qoder-models`、`/api/codex-models`、`/api/cli-models`，claude 才回落到 config 的静态列表；`efforts` 同理按引擎查（claude 固定集、qoder 固定集、opencode 查 variants、mcode/codex 逐模型）。**别在 skill 文档或脚本里写死模型名**——那正是 §8 里各引擎动态目录要避免的事。
+- **两个实现坑（改脚本时别踩回去）**：① 全局开关 `--url/--token/--json` 用 `default=argparse.SUPPRESS`——主解析器与子解析器共用 namespace，子解析器带默认值会把「写在子命令之前」的值覆盖掉；② SSE 用后台线程读 + 主循环按 deadline 从队列取，退出时先 `sock.shutdown()` 再 `close()`——`http.client` 一旦 socket 超时就把连接标成不可再读，而群事件流**没有保活 ping**，读线程会一直持有 `BufferedReader` 的锁，直接 `close()` 会永久阻塞。
+- 它调的是既有接口，**不为它新增服务端路由**；唯一的服务端依赖是 `/api/sessions` 的 `resident`/`peer_name` 建会话参数（见 §6）与各引擎的模型目录接口（见 §8）。
+
 ## 安全边界（务必遵守）
 
 - `gateway_token` 鉴权覆盖所有 `/api/*` 与 SSE；`subtle.ConstantTimeCompare`。
