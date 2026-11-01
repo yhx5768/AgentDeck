@@ -112,13 +112,77 @@ type histLine struct {
 	AttributionAgent string `json:"attributionAgent"`
 	// Origin carries the CLI's attribution for injected turns. Peer messages
 	// arrive as isMeta user lines with origin.kind=="peer" (name= sender's
-	// display name, body= decoded message text).
-	Origin *struct {
-		Kind string `json:"kind"`
-		Name string `json:"name"`
-		From string `json:"from"`
-		Body string `json:"body"`
-	} `json:"origin"`
+	// display name, body= decoded message text) when the session was idle, and
+	// as attachment lines of type queued_command with the same origin when the
+	// message was folded into a turn that was already running.
+	Origin *histOrigin `json:"origin"`
+	// Attachment is the CLI's wrapper for non-message transcript entries. Only
+	// queued_command carries user-visible content (a command folded into the
+	// running turn).
+	Attachment *histAttachment `json:"attachment"`
+}
+
+// histOrigin mirrors the CLI's origin attribution on user and attachment
+// lines. Only the fields the web UI renders are decoded.
+type histOrigin struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	From string `json:"from"`
+	Body string `json:"body"`
+}
+
+type histAttachment struct {
+	Type   string          `json:"type"`
+	Prompt json.RawMessage `json:"prompt"`
+	Origin *histOrigin     `json:"origin"`
+}
+
+// isPeerAttachment reports whether the line is a peer message the CLI folded
+// into a running turn: mid-turn inbox messages are written as
+// type=attachment / attachment.type=queued_command instead of user lines.
+// origin.kind gates it the same way as the idle-turn peer path, so background
+// task notifications (queued_command without a peer origin) stay hidden.
+func isPeerAttachment(l histLine) bool {
+	a := l.Attachment
+	return l.Type == "attachment" && a != nil && a.Type == "queued_command" &&
+		a.Origin != nil && a.Origin.Kind == "peer"
+}
+
+// PeerAttachmentEvent parses one raw transcript line and returns the stream
+// event for a mid-turn peer message, or ok=false for every other line. The
+// resident host tails the transcript with it because the CLI's stream-json
+// output carries no frame for folded queued commands (the transcript is their
+// only live source).
+func PeerAttachmentEvent(line []byte) (*store.Event, bool) {
+	var l histLine
+	if json.Unmarshal(line, &l) != nil || !isPeerAttachment(l) {
+		return nil, false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, l.Timestamp)
+	if err != nil {
+		ts = time.Now()
+	}
+	return &store.Event{
+		Ts:   ts,
+		Kind: "stream",
+		Data: peerStreamEvent(l.UUID, l.Attachment.Origin, l.Attachment.Prompt),
+	}, true
+}
+
+// peerStreamEvent builds the stream-event payload the frontend renders as a
+// 「⇢ 来自 xxx」 bubble: the idle path and the mid-turn attachment path share
+// one shape so the UI needs a single branch.
+func peerStreamEvent(uuid string, origin *histOrigin, content any) json.RawMessage {
+	data, _ := json.Marshal(map[string]any{
+		"type":   "user",
+		"uuid":   uuid,
+		"origin": origin,
+		"message": map[string]any{
+			"role":    "user",
+			"content": content,
+		},
+	})
+	return data
 }
 
 // isRealUserPrompt reports whether a jsonl line is a genuine user-typed prompt
@@ -354,9 +418,11 @@ func ConvertIn(p Profile, cwd, sessionID string) ([]*store.Event, error) {
 		if l.IsSidechain {
 			continue
 		}
-		if l.IsMeta && !(l.Type == "user" && l.Origin != nil && l.Origin.Kind == "peer") {
+		if l.IsMeta && !isPeerAttachment(l) &&
+			!(l.Type == "user" && l.Origin != nil && l.Origin.Kind == "peer") {
 			// 跳过元数据行，但放行入站 peer 消息——否则别的会话发来的消息
-			// 在回放里完全消失（transcript 是其唯一持久层）。
+			// 在回放里完全消失（transcript 是其唯一持久层）。忙时并入的
+			// 消息落成 attachment 行（类型 queued_command），同样放行。
 			continue
 		}
 		ts, _ := time.Parse(time.RFC3339Nano, l.Timestamp)
@@ -365,16 +431,11 @@ func ConvertIn(p Profile, cwd, sessionID string) ([]*store.Event, error) {
 			if l.Origin != nil && l.Origin.Kind == "peer" {
 				// 入站 peer 消息：作为 stream 事件透传 origin，前端用
 				// origin.body 渲染专用气泡（不落盘成 cc-webui 的 user 事件）。
-				data, _ := json.Marshal(map[string]any{
-					"type":   "user",
-					"uuid":   l.UUID,
-					"origin": l.Origin,
-					"message": map[string]any{
-						"role":    "user",
-						"content": l.Message.Content,
-					},
+				events = append(events, &store.Event{
+					Ts:   ts,
+					Kind: "stream",
+					Data: peerStreamEvent(l.UUID, l.Origin, l.Message.Content),
 				})
-				events = append(events, &store.Event{Ts: ts, Kind: "stream", Data: data})
 				continue
 			}
 			if t := strings.TrimSpace(textOf(l.Message.Content)); t != "" {
@@ -392,6 +453,17 @@ func ConvertIn(p Profile, cwd, sessionID string) ([]*store.Event, error) {
 					"message": map[string]any{"role": "user", "content": l.Message.Content},
 				})
 				events = append(events, &store.Event{Ts: ts, Kind: "stream", Data: data})
+			}
+		case "attachment":
+			// 忙时并入的 peer 消息：CLI 在正在跑的这一轮里把它折进来，写的是
+			// attachment 行而不是 user 行。转成与空闲时同形的 stream 事件，
+			// 回放里也画成「⇢ 来自 xxx」气泡。
+			if isPeerAttachment(l) {
+				events = append(events, &store.Event{
+					Ts:   ts,
+					Kind: "stream",
+					Data: peerStreamEvent(l.UUID, l.Attachment.Origin, l.Attachment.Prompt),
+				})
 			}
 		case "assistant":
 			// Forward id/model/usage so history replay carries per-step token

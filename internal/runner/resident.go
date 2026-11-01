@@ -13,10 +13,14 @@ package runner
 // Turn boundaries come from the output stream: a user event with
 // origin.kind=="peer" starts an injected turn while idle, and "result" ends
 // whichever turn is in flight (the CLI may also inject peer messages mid-turn;
-// those just render, the single result still belongs to our turn).
+// those only render, the single result still belongs to our turn). Mid-turn
+// injections do NOT appear on stdout — the narrator records them in the
+// transcript as queued_command attachments — so a transcript tailer
+// (procTailPeerAttachments) supplies them to the UI.
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -24,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -398,6 +403,18 @@ func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residen
 
 	go m.procReadLoop(sessionID, proc, stdout, &stderrBuf, cancel)
 	go m.procBootstrap(sessionID, proc)
+	// Mid-turn peer messages never reach stdout (see procTailPeerAttachments);
+	// capture the pre-spawn transcript end now so nothing appended during
+	// startup is missed. For a fresh session the id is unknown until init, and
+	// the tail starts at the then-current end.
+	initialOffset := int64(-1)
+	if sess.ClaudeSessionID != "" {
+		p := claudehist.HistoryPathIn(claudehist.ClaudeProfile, resolvedCwd, sess.ClaudeSessionID)
+		if fi, err := os.Stat(p); err == nil {
+			initialOffset = fi.Size()
+		}
+	}
+	go m.procTailPeerAttachments(sessionID, proc, resolvedCwd, sess.ClaudeSessionID, initialOffset)
 	return proc, nil
 }
 
@@ -546,6 +563,111 @@ func (m *Manager) procReadLoop(sessionID string, proc *residentProc, stdout io.R
 	if !stopping {
 		log.Printf("resident %s (pid %d) died: %s", sessionID, proc.pid, deadErr)
 		m.emit(sessionID, "status", map[string]string{"state": "resident_down", "error": deadErr})
+	}
+}
+
+// procTailPeerAttachments watches the CLI's transcript for peer messages that
+// were folded into a running turn. The CLI records those as attachment lines of
+// type queued_command, but its stream-json output carries no frame for them
+// (only assistant/user/system/result/stream_event reach stdout), so the
+// transcript is the only live source. Idle peer turns need no tail: they
+// already arrive as regular user events with origin.kind=peer.
+func (m *Manager) procTailPeerAttachments(sessionID string, proc *residentProc, cwd, initialSID string, initialOffset int64) {
+	m.tailPeerAttachments(sessionID, proc.dead, func() string {
+		proc.mu.Lock()
+		defer proc.mu.Unlock()
+		return proc.sessionID
+	}, cwd, initialSID, initialOffset, 250*time.Millisecond)
+}
+
+// tailPeerAttachments is the testable poll loop: every interval it reads the
+// transcript of getSID() past the last consumed offset and broadcasts newly
+// appended peer queued-command attachments as user+origin stream events (the
+// shape the web UI already renders for idle peer turns).
+//
+// initialOffset is the transcript size captured before the process spawned, so
+// lines appended between spawn and the first poll are not lost. A negative
+// value means "start at the then-current end" (used for fresh sessions, whose
+// session id only appears on the init event).
+func (m *Manager) tailPeerAttachments(sessionID string, dead <-chan struct{}, getSID func() string, cwd, initialSID string, initialOffset int64, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	var (
+		sid     string
+		path    string
+		offset  int64
+		pending []byte // bytes of a line still being written
+	)
+	for {
+		select {
+		case <-dead:
+			return
+		case <-ticker.C:
+		}
+
+		if s := getSID(); s != "" && s != sid {
+			sid = s
+			path = claudehist.HistoryPathIn(claudehist.ClaudeProfile, cwd, sid)
+			pending = nil
+			switch {
+			case sid == initialSID && initialOffset >= 0:
+				offset = initialOffset
+			default:
+				// Everything up to now is already covered by the SSE history
+				// replay; re-reading it would duplicate bubbles.
+				if fi, err := os.Stat(path); err == nil {
+					offset = fi.Size()
+				} else {
+					offset = 0 // fresh session: file appears on the first write
+				}
+			}
+		}
+		if path == "" {
+			continue
+		}
+
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue // not created yet
+		}
+		if fi.Size() < offset {
+			// Rewind truncated the transcript; skip the surviving prefix
+			// instead of replaying old attachments.
+			offset = fi.Size()
+			pending = nil
+			continue
+		}
+		if fi.Size() == offset {
+			continue
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		buf := make([]byte, fi.Size()-offset)
+		n, _ := f.ReadAt(buf, offset)
+		f.Close()
+		if n == 0 {
+			continue
+		}
+		offset += int64(n)
+		pending = append(pending, buf[:n]...)
+		for {
+			i := bytes.IndexByte(pending, '\n')
+			if i < 0 {
+				break
+			}
+			line := bytes.TrimSpace(pending[:i])
+			pending = pending[i+1:]
+			if len(line) == 0 {
+				continue
+			}
+			if ev, ok := claudehist.PeerAttachmentEvent(line); ok {
+				m.emit(sessionID, "stream", json.RawMessage(ev.Data))
+			}
+		}
 	}
 }
 

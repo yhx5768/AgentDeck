@@ -191,6 +191,125 @@ func TestPeerMessageIsNotARealUserPrompt(t *testing.T) {
 	}
 }
 
+// queuedAttachmentLine mimics a peer message absorbed mid-turn: the CLI folds
+// it into the running turn and writes an attachment line (type=attachment,
+// attachment.type=queued_command) carrying the same peer origin instead of a
+// user line. Prompt is the wrapped cross-session text; origin.body is decoded.
+func queuedAttachmentLine(uuid, name, body string) string {
+	return `{"type":"attachment","uuid":"` + uuid + `","timestamp":"2026-10-31T17:49:56.324Z",` +
+		`"attachment":{"type":"queued_command","commandMode":"prompt","isMeta":true,` +
+		`"prompt":"<cross-session-message from=\"uds:/run/user/1000/cc-socks/1.sock\" from-name=\"` + name + `\">\n` + body + `\n</cross-session-message>",` +
+		`"origin":{"kind":"peer","name":"` + name + `","body":"` + body + `","from":"uds:/run/user/1000/cc-socks/1.sock"}}}`
+}
+
+func TestConvertQueuedPeerAttachment(t *testing.T) {
+	cwd, sid := writeHist(t, []string{
+		realUserLine("u1", "hello"),
+		`{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":"r1"}}`,
+		// 忙时并入的 peer 消息（attachment 行）
+		queuedAttachmentLine("q1", "worker-1", "【补充】再查一下构建"),
+		// 非 peer 的 queued_command（后台任务通知）必须继续跳过
+		`{"type":"attachment","uuid":"q2","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>x</task-notification>"}}`,
+	})
+	events, err := Convert(cwd, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, ev := range events {
+		if ev.Kind != "stream" {
+			continue
+		}
+		var d struct {
+			Type   string `json:"type"`
+			UUID   string `json:"uuid"`
+			Origin *struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+				Body string `json:"body"`
+			} `json:"origin"`
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(ev.Data, &d) != nil || d.Origin == nil {
+			continue
+		}
+		if d.Type != "user" || d.Origin.Kind != "peer" {
+			t.Fatalf("unexpected peer-ish event: %s", ev.Data)
+		}
+		found = true
+		if d.UUID != "q1" || d.Origin.Name != "worker-1" || d.Origin.Body != "【补充】再查一下构建" {
+			t.Fatalf("queued peer event = %s", ev.Data)
+		}
+		if !strings.Contains(d.Message.Content, "<cross-session-message") {
+			t.Fatalf("queued peer message content lost the prompt wrapper: %q", d.Message.Content)
+		}
+	}
+	if !found {
+		t.Fatal("mid-turn peer attachment missing from Convert output")
+	}
+	for _, ev := range events {
+		if ev.Kind == "stream" && strings.Contains(string(ev.Data), "task-notification") {
+			t.Fatal("non-peer queued_command leaked into Convert output")
+		}
+	}
+}
+
+func TestQueuedPeerAttachmentIsNotARealUserPrompt(t *testing.T) {
+	cwd, sid := writeHist(t, []string{queuedAttachmentLine("q1", "worker-1", "hi")})
+	if HasUserPrompt(cwd, sid) {
+		t.Fatal("queued peer attachment counted as a user prompt (would break rewind sid clearing)")
+	}
+	if u := LastUserUUID(cwd, sid, "hi"); u != "" {
+		t.Fatalf("queued peer attachment matched LastUserUUID: %q", u)
+	}
+}
+
+// PeerAttachmentEvent is the live-tail entry point: it parses one raw
+// transcript line (the resident host feeds it newly appended lines).
+func TestPeerAttachmentEvent(t *testing.T) {
+	ev, ok := PeerAttachmentEvent([]byte(queuedAttachmentLine("q1", "worker-1", "补充")))
+	if !ok {
+		t.Fatal("peer attachment line not recognized")
+	}
+	if ev.Kind != "stream" {
+		t.Fatalf("kind = %q", ev.Kind)
+	}
+	var d struct {
+		Type   string `json:"type"`
+		UUID   string `json:"uuid"`
+		Origin *struct {
+			Kind string `json:"kind"`
+			Name string `json:"name"`
+			Body string `json:"body"`
+		} `json:"origin"`
+	}
+	if err := json.Unmarshal(ev.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Type != "user" || d.UUID != "q1" || d.Origin == nil ||
+		d.Origin.Kind != "peer" || d.Origin.Name != "worker-1" || d.Origin.Body != "补充" {
+		t.Fatalf("event = %s", ev.Data)
+	}
+}
+
+func TestPeerAttachmentEventIgnoresOtherLines(t *testing.T) {
+	lines := [][]byte{
+		[]byte(`{"type":"user","origin":{"kind":"peer","name":"p","body":"idle turn"}}`),
+		[]byte(`{"type":"attachment","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"x"}}`),
+		[]byte(`{"type":"attachment","attachment":{"type":"queued_command","origin":{"kind":"human"},"prompt":"x"}}`),
+		[]byte(`{"type":"assistant","message":{"role":"assistant","content":"x"}}`),
+		[]byte(`not json`),
+	}
+	for _, line := range lines {
+		if ev, ok := PeerAttachmentEvent(line); ok {
+			t.Fatalf("line %q unexpectedly converted to %s", line, ev.Data)
+		}
+	}
+}
+
 func TestRenameSessionAppendsCustomTitle(t *testing.T) {
 	cwd, sid := writeHist(t, []string{realUserLine("u1", "hello")})
 	if err := RenameSession(cwd, sid, "  worker-1  "); err != nil {
