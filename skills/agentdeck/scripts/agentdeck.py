@@ -650,6 +650,8 @@ def _create_payload(a) -> dict:
     rp = _role_prompt_from_args(a)
     if rp is not None:
         body["role_prompt"] = rp
+    if getattr(a, "main_agent", False):
+        body["main_agent"] = True
     return body
 
 
@@ -687,7 +689,7 @@ def cmd_get(ctx: Ctx, a) -> int:
         return 0
     for k in ("id", "name", "engine", "cli", "provider", "model_override", "effort_override",
               "permission_mode", "cwd", "claude_session_id", "resident", "peer_name",
-              "archived", "unread", "todo"):
+              "main_agent", "archived", "unread", "todo"):
         if s.get(k) not in (None, "", False):
             print(f"{k:18}: {s[k]}")
     print(f"{'status':18}: {_status_str(s.get('status'))}")
@@ -718,7 +720,7 @@ def cmd_set(ctx: Ctx, a) -> int:
         body["permission_mode"] = a.permission_mode
     if a.cwd is not None:
         body["cwd"] = a.cwd
-    for key in ("archived", "resident", "unread", "todo"):
+    for key in ("archived", "resident", "unread", "todo", "main_agent"):
         v = getattr(a, key, None)
         if v is not None:
             body[key] = parse_bool(v)
@@ -1421,6 +1423,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--peer-name", help="claude 专属：常驻地址名")
     sp.add_argument("--role-prompt", help="追加到 system prompt 的角色提示（32 KiB 上限）")
     sp.add_argument("--role-prompt-file", help="从文件读角色提示（与 --role-prompt 二选一）")
+    sp.add_argument("--main-agent", action="store_true", help="标记为主 Agent（置顶；不自动填角色提示）")
 
     sp = add("get", "看单个会话详情", cmd_get)
     sp.add_argument("id")
@@ -1437,6 +1440,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--peer-name")
     sp.add_argument("--role-prompt", help="角色提示；空串清空")
     sp.add_argument("--role-prompt-file", help="从文件读角色提示（与 --role-prompt 二选一）")
+    sp.add_argument("--main-agent", help="true/false")
     sp.add_argument("--archived", help="true/false")
     sp.add_argument("--resident", help="true/false")
     sp.add_argument("--unread", help="true/false")
@@ -1492,6 +1496,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--peer-name")
     sp.add_argument("--role-prompt", help="追加到 system prompt 的角色提示（32 KiB 上限）")
     sp.add_argument("--role-prompt-file", help="从文件读角色提示（与 --role-prompt 二选一）")
+    sp.add_argument("--main-agent", action="store_true", help="标记为主 Agent（置顶；不自动填角色提示）")
     sp.add_argument("--file", action="append")
     sp.add_argument("--image", action="append")
     sp.add_argument("--timeout", type=float, default=DEFAULT_TURN_TIMEOUT)

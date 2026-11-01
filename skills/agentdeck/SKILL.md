@@ -77,9 +77,9 @@ opencode / mcode / qoder / codex 由各自 CLI 在运行时给出，`--fresh` �
 | 命令 | 说明 |
 |---|---|
 | `ls [--archived]` | 列出会话（含状态：running / queued / resident / error） |
-| `new --cwd P [--name N] [--cli C] [--provider P] [--model M] [--effort E] [--permission-mode PM] [--resident] [--peer-name NAME] [--role-prompt TEXT\|--role-prompt-file F]` | 建会话，stdout 打印 session id |
-| `get ID` | 会话详情（含 `resume_command`、goal、resident 状态、role_prompt） |
-| `set ID [--name/--cli/--provider/--model/--effort/--permission-mode/--cwd/--peer-name/--role-prompt/--role-prompt-file/--archived/--resident/--unread/--todo/--sort-order]` | 只改显式给出的字段 |
+| `new --cwd P [--name N] [--cli C] [--provider P] [--model M] [--effort E] [--permission-mode PM] [--resident] [--peer-name NAME] [--role-prompt TEXT\|--role-prompt-file F] [--main-agent]` | 建会话，stdout 打印 session id |
+| `get ID` | 会话详情（含 `resume_command`、goal、resident 状态、role_prompt、main_agent） |
+| `set ID [--name/--cli/--provider/--model/--effort/--permission-mode/--cwd/--peer-name/--role-prompt/--role-prompt-file/--main-agent/--archived/--resident/--unread/--todo/--sort-order]` | 只改显式给出的字段 |
 | `send ID TEXT` | 发消息（不等结果） |
 | `reply ID TEXT [--timeout S]` | 发消息并等本轮结束，stdout 输出回复 |
 | `run ... TEXT` | 建会话 + 发首条消息 + 等结果 |
@@ -121,6 +121,10 @@ $AD new --name "评审员" --cli claude --cwd ~/Projects/app \
   AgentDeck 会整体跳过注入（角色提示也一并不注入）。
 - 用法约定：角色提示由派工方（主 Agent）在建会话时设置；**worker 不要改自己的
   角色提示**。
+- **`--main-agent` 只是标记**（`main_agent` 字段）：Web 侧栏会把这类会话置顶成头像条，
+  并提示用默认路由规则；它**不会**自动填角色提示，也不是权限机制。要注入默认路由规则，
+  用 `--role-prompt-file` 传入规则文件内容，或在 Web UI 的机器人面板打开「作为主 Agent」
+  （UI 会写入默认提示）。默认提示原文由服务端 `GET /api/main-agent-prompt` 下发。
 
 ### 导入历史会话
 

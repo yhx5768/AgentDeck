@@ -190,6 +190,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/clis", s.auth(s.handleCLIs))
 	s.mux.Handle("GET /api/providers", s.auth(s.handleProviders))
 	s.mux.Handle("GET /api/config", s.auth(s.handleConfig))
+	s.mux.Handle("GET /api/main-agent-prompt", s.auth(s.handleMainAgentPrompt))
 	s.mux.Handle("GET /api/sessions", s.auth(s.handleListSessions))
 	s.mux.Handle("POST /api/sessions", s.auth(s.handleCreateSession))
 	s.mux.Handle("GET /api/sessions/{id}", s.auth(s.handleGetSession))
@@ -752,6 +753,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// (claude/qoder/mcode via --append-system-prompt, codex via
 		// `-c instructions=`). Plain text, not a permission boundary.
 		RolePrompt string `json:"role_prompt"`
+		// MainAgent marks the workspace's router agent (sidebar pin + the UI's
+		// cue to install the default routing rules). Not a permission boundary.
+		MainAgent bool `json:"main_agent"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
@@ -831,6 +835,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Resident:       body.Resident,
 		PeerName:       peerName,
 		RolePrompt:     body.RolePrompt,
+		MainAgent:      body.MainAgent,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -881,6 +886,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		Resident       *bool   `json:"resident"`
 		PeerName       *string `json:"peer_name"`
 		RolePrompt     *string `json:"role_prompt"`
+		MainAgent      *bool   `json:"main_agent"`
 		Cwd            *string `json:"cwd"`
 		Unread         *bool   `json:"unread"`
 		Todo           *bool   `json:"todo"`
@@ -905,7 +911,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		body.Name == nil && body.CLI == nil && body.Provider == nil &&
 		body.Model == nil && body.Effort == nil && body.PermissionMode == nil &&
 		body.Archived == nil && body.SortOrder == nil && body.Resident == nil &&
-		body.PeerName == nil && body.RolePrompt == nil && body.Cwd == nil {
+		body.PeerName == nil && body.RolePrompt == nil && body.MainAgent == nil && body.Cwd == nil {
 		if err := s.st.SetFlags(sess.ID, body.Unread, body.Todo); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1091,6 +1097,11 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			// text applies on the next spawn (toggle resident, restart, or the
 			// next one-shot turn for non-resident sessions).
 			cur.RolePrompt = *body.RolePrompt
+		}
+		if body.MainAgent != nil {
+			// Display/ordering marker only; the caller decides whether the role
+			// prompt changes along with it (the UI sets both explicitly).
+			cur.MainAgent = *body.MainAgent
 		}
 		if body.Archived != nil {
 			cur.Archived = *body.Archived
@@ -2405,6 +2416,7 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 		EffortOverride:  src.EffortOverride,
 		PermissionMode:  src.PermissionMode,
 		RolePrompt:      src.RolePrompt,
+		MainAgent:       src.MainAgent,
 		Cwd:             src.Cwd,
 		ClaudeSessionID: forkedID,
 		CreatedAt:       now,

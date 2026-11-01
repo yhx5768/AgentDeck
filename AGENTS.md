@@ -83,7 +83,7 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **重启恢复**：`main.go` 启动后 `go mgr.RestoreResidents()`（300ms 错峰）；每个 resident session 用 `--resume <ClaudeSessionID>` + 已写入的 custom-title 重新 spawn。进程死的 session 由下一次 `Enqueue` 触发 `EnsureResident` 懒启动。
 - **settings 注入**：物化的 `--settings` 文件**无条件**写 `crossSessionInbound:"accept"`——单用户控制台，bypass-permission session 默认 `hold`，headless 下无人能答，消息会积压卡死。repo/managed settings 可收紧但本进程不接受 `hold`。**env 为空的 provider 不物化文件**（见 §3），那些会话没有这个钉死项，入站 peer 消息退回 CLI 默认策略。
 - **入站气泡**：`renderEvent` 在 tool_result 分支前判 `d.type === 'user' && d.origin?.kind === 'peer'` → `msg-peer` 气泡（紫色描边，左对齐），用 `origin.body`（已解码）走 `md()` 渲染，`origin.name` 经 `escapeHtml` 注入 role-tag。replay（`claudehist.Convert` 转换 user 行和 `queued_command` attachment 行）与实况（idle 走 CLI user 事件、忙时走 tailer 补发）共用同一渲染路径。
-- **前端**：header-actions 加 `📡` 按钮 + popover（toggle 开关 + 地址名输入 + 状态行 + hint）；侧栏 `.resident-tag`；toggle/name 改完走 `PATCH /api/sessions/{id}` 同步到后端，server 顺序：peer_name 先 `claudehist.RenameSession` 写 transcript，再 Upsert store，最后 `EnsureResident`/`ApplyPeerName`。删除会话先 `TeardownResident` 再 `store.Delete`。
+- **前端**：header-actions 加 `📡` 按钮 + popover（toggle 开关 + 地址名输入 + 状态行 + hint + 「作为主 Agent」开关，后者见 §14）；侧栏 `.resident-tag`；toggle/name 改完走 `PATCH /api/sessions/{id}` 同步到后端，server 顺序：peer_name 先 `claudehist.RenameSession` 写 transcript，再 Upsert store，最后 `EnsureResident`/`ApplyPeerName`。删除会话先 `TeardownResident` 再 `store.Delete`。
 - **建会话时就能开常驻**（省掉「先建再点 📡」）：`POST /api/sessions` body 多收 `resident` / `peer_name`（同样只放行 claude，非 claude kind 直接 400，与 PATCH guard 同口径）；`peer_name` 走 `CleanPeerName` 校验（`/` 开头 400）。建完 Upsert 就调 `EnsureResident`，但**失败只 `log.Printf` 不 502**——会话已经落盘（含 resident 标记），返回 502 会让前端以为没建成而重试出重复会话；下一轮 `Enqueue` 或启动的 `RestoreResidents` 会重试。两个新建入口都挂了开关：主 composer 视图 `#new-session-view` 的 `.ns-meta` 行（`#ns-name` 会话名 / `#ns-resident-check` / `#ns-resident-name` 地址名）和 quick-create 弹窗 `#modal-new`（`#new-resident` / `#new-peer-name`）；地址名留空则后端 `effectivePeerName` 回退到会话名。`applyNsEngineUI` / `applyNewEngineUI` 按 cli kind 显隐（非 claude 连勾选/地址名一起清掉），`scripts/frontend-tests/create_resident.test.js` 钉住这条。
 
 ### 7. 并发模型
@@ -253,7 +253,10 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **覆盖全部 spawn 路径**：`buildStreamJSONArgs`（claude/qoder 一次性）、`buildResidentArgs`（常驻）、`buildMcodeArgs`、`buildCodexArgs`。opencode 没有 append 语义（v1 prompt 的 `system` 是覆盖），**暂不支持**：值照存，但不注入。
 - **生效时机**：非常驻会话下一轮生效；常驻进程的 argv 在 spawn 时固定，PATCH 只落库、**不自动重启**（重启会打断正在跑的一轮），需重启常驻或服务恢复后才生效。新建常驻会话首次 spawn 即带上。fork 复制 role prompt（身份/规则随分支走）；群成员影子会话不涉及。
 - `resumeCommand`（复制到终端的命令）**不带**角色提示——终端里 resume 要自己补 `--append-system-prompt`（codex 则是 `-c instructions=`）；它与 HTML 提示同属 cc-webui 注入的上下文，不写进命令是为了让命令可搬运。
-- AgentDeck skill：`new`/`set`/`run` 的 `--role-prompt` / `--role-prompt-file`，`get` 回显。用法约定：主 Agent 建 worker 时设置，worker 不改自己的角色提示。
+- **主 Agent 标记**：`store.Session.MainAgent`（json `main_agent`）只是展示/排序标记，**不是权限**（任何本地会话都能调 API，服务端不以它拦截任何操作）。create/patch 收 `main_agent`，fork 复制。
+- **默认提示单一来源**：`internal/server/mainagent.go` 的 `mainAgentPrompt`（抄自 reading 工作区 router-guard 的 9 条规则，运行时不读该工作区），经 `GET /api/main-agent-prompt` 下发 `{prompt, max_bytes}`。前端只缓存、不另写一份；UI 判断「role_prompt 是否仍是默认值」必须和这个字符串逐字比较。
+- **UI**：机器人面板（`#btn-resident` / `#resident-pop`）里加「作为主 Agent」开关——打开写 `main_agent:true` + 默认提示（已有自定义内容时先 `confirm` 覆盖），关闭只清 `main_agent`，仅当 role_prompt 仍等于默认提示时才清空；地址名不是 `mainAgent` 时只提示并给一个**用户显式点击**的改名按钮（改名会重启常驻，不能静默做），已有其他 main_agent 时也提示（允许多个）。侧栏 `#main-agents` 头像条（`renderMainAgents`，由 `renderSessionList` 驱动）：无 main_agent 时整条隐藏，多个全显示（常驻优先），头像含首字/未读角标/常驻绿圈/运行光晕，点击 `openSession`。composer 左侧 `#btn-role-prompt` 打开 `#modal-role-prompt`：文字字节计数（32768 上限）、保存/清空/「填入主 Agent 默认」（只填 textarea，不自动写库）；role prompt 编辑器对所有引擎开放，opencode 在弹窗里注明不注入。
+- AgentDeck skill：`new`/`set`/`run` 的 `--role-prompt` / `--role-prompt-file` 与 `--main-agent`（只打标记，不自动填提示），`get` 回显。用法约定：主 Agent 建 worker 时设置，worker 不改自己的角色提示。
 
 ## 后端包职责（`internal/`）
 

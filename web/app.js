@@ -573,6 +573,10 @@ const state = {
   cliModels: {},      // "cli/provider" -> {ts, data:{models:[…]}|null}（models_command 驱动的 CLI，带 TTL）
   nearBottom: true,
   home: '',           // server home dir, for ~ path shortening
+  // 主 Agent 默认角色提示由 GET /api/main-agent-prompt 下发（唯一来源），
+  // 前端只缓存；mainAgentMaxBytes 是同一接口给出的 role_prompt 字节上限。
+  mainAgentPrompt: null,
+  mainAgentMaxBytes: 32768,
   drafts: {},         // sessionId -> {text, attachments}
   attached: [],       // 待发送附件：[{kind:'image',media_type,data} | {kind:'file',name,size,path}]
   nsAttached: [],     // images staged in the new-session composer
@@ -657,6 +661,7 @@ function renderIcons(root) {
     'target', // Session Goals 的目标条靶心（§12）
     'message-circle-question', // 待回答 toast 的问号图标（§11，一直漏了，白名单外的 data-lucide 会渲染成空壳）
     'sliders-horizontal',
+    'scroll-text', // 角色提示编辑器入口（composer 左下）
   ];
   // lucide 自动 kebab→Pascal，所以 icons map 的 key 也用 PascalCase
   const toPascal = (s) =>
@@ -1370,7 +1375,61 @@ document.addEventListener('pointerdown', (e) => {
   closeWsPop();
 });
 
+// ---------- 主 Agent 置顶头像条 ----------
+// main_agent 只是会话上的标记（不是权限）：它让会话钉在侧栏最上方，并作为
+// 「一键填入路由规则」的提示。可以同时标记多个——都显示出来，常驻的排前面。
+function mainAgentSessions() {
+  return (state.sessions || [])
+    .filter((s) => s.main_agent)
+    .sort((a, b) => {
+      const ar = a.resident ? 1 : 0, br = b.resident ? 1 : 0;
+      if (ar !== br) return br - ar;
+      return new Date(b.updated_at) - new Date(a.updated_at);
+    });
+}
+
+function renderMainAgents() {
+  const el = $('#main-agents');
+  if (!el) return;
+  const list = mainAgentSessions();
+  el.innerHTML = '';
+  el.classList.toggle('hidden', !list.length);
+  if (!list.length) return;
+  for (const s of list) {
+    const st = s.status || {};
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ma-item' + (state.current && state.current.id === s.id ? ' active' : '');
+    item.title = `主 Agent：${s.name || '未命名'}\n${s.cwd || ''}`;
+    const av = document.createElement('span');
+    av.className = 'ma-avatar';
+    if (s.resident) av.classList.add('resident');
+    if (st.running) av.classList.add('running');
+    av.textContent = nameInitial(s.name);
+    if (s.unread) {
+      const badge = document.createElement('span');
+      badge.className = 'ma-badge';
+      badge.title = '有未读结果';
+      av.appendChild(badge);
+    }
+    const label = document.createElement('span');
+    label.className = 'ma-name';
+    label.textContent = s.name || '未命名';
+    item.append(av, label);
+    item.onclick = () => openSession(s.id);
+    el.appendChild(item);
+  }
+}
+
+// 头像里放名字首字（中文按码点取，避免代理对切半）。
+function nameInitial(name) {
+  const n = (name || '').trim();
+  if (!n) return 'A';
+  return [...n][0].toUpperCase();
+}
+
 function renderSessionList() {
+  renderMainAgents();
   const el = $('#session-list');
   el.innerHTML = '';
 
@@ -1862,13 +1921,71 @@ $('#view-menu').addEventListener('click', (e) => {
 });
 
 // ---------- 常驻（peer messaging）面板 ----------
-// 右上角 radio 按钮弹出的面板：常驻开关 + 地址名。常驻 = 长驻 streaming-input
-// 进程，注册地址名后可被其他 Claude 会话 SendMessage。status.resident /
-// status.registered_name 反映进程真实在线情况，打开面板时拉最新值。
+// 右上角 radio 按钮弹出的面板：常驻开关 + 地址名 + 作为主 Agent。常驻 = 长驻
+// streaming-input 进程，注册地址名后可被其他 Claude 会话 SendMessage。
+// status.resident / status.registered_name 反映进程真实在线情况，打开面板时拉最新值。
+//
+// 「作为主 Agent」只是标记（main_agent）+ 默认角色提示的快捷安装，不是权限：
+// 服务端不做任何基于它的拦截。
+function updateMainAgentUI() {
+  const s = state.current;
+  const toggle = $('#main-agent-toggle');
+  if (toggle) toggle.checked = !!(s && s.main_agent);
+  const box = $('#main-agent-hint');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!s || !s.main_agent) return;
+  const addLine = (text, cls) => {
+    const d = document.createElement('div');
+    d.className = 'rp-note' + (cls ? ' ' + cls : '');
+    d.textContent = text;
+    box.appendChild(d);
+    return d;
+  };
+  // 认主 Agent 靠地址名 mainAgent；不是它就提醒，并给一个显式改名动作
+  //（改名会重启常驻，必须用户自己点，不能静默改）。
+  const eff = (s.peer_name || s.name || '').trim();
+  if (eff !== 'mainAgent') {
+    const row = document.createElement('div');
+    row.className = 'rp-note rp-warn';
+    const text = document.createElement('span');
+    text.textContent = `地址名不是 mainAgent（当前为「${eff || '空'}」），其他 Agent 无法用 SendMessage 找到主 Agent。`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ghost-btn rp-mini-btn';
+    btn.textContent = '把地址名改为 mainAgent';
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        applySession(await api(`/api/sessions/${s.id}`, {
+          method: 'PATCH', body: JSON.stringify({ peer_name: 'mainAgent' }),
+        }));
+        $('#resident-name').value = (state.current && state.current.peer_name) || '';
+        updateResidentUI();
+        renderSessionList();
+      } catch (err) {
+        btn.disabled = false;
+        alert('修改地址名失败：' + err.message);
+      }
+    };
+    row.append(text, btn);
+    box.appendChild(row);
+  }
+  if (!s.resident) {
+    addLine('当前未开启常驻：打开上面的常驻开关后，其他会话才能发消息过来。', 'rp-warn');
+  }
+  const others = (state.sessions || []).filter((x) => x.main_agent && x.id !== s.id);
+  if (others.length) {
+    addLine('另有主 Agent：' + others.map((x) => x.name || x.id).join('、') + '（允许同时标记多个，请确认这是你要的）。');
+  }
+  addLine('角色提示对已运行的常驻进程在下次重启后生效。');
+}
+
 function updateResidentUI() {
   const s = state.current;
   const on = !!(s && s.resident);
   $('#btn-resident').classList.toggle('active', on);
+  updateMainAgentUI();
   const pop = $('#resident-pop');
   if (pop.classList.contains('hidden')) return;
   $('#resident-toggle').checked = on;
@@ -1913,8 +2030,10 @@ $('#btn-resident').onclick = async (e) => {
   const s = state.current;
   $('#resident-name').value = s.peer_name || '';
   $('#resident-name').placeholder = s.name || '默认取会话名';
-  updateResidentUI();
+  // 先显示再刷内容：updateResidentUI 在面板 hidden 时会提前返回，放前面会让
+  // 开关/状态停留在 DOM 初始值，直到第一次轮询（1s 后）才纠正。
   pop.classList.remove('hidden');
+  updateResidentUI();
   if (residentPopPoll) clearInterval(residentPopPoll);
   residentPopPoll = setInterval(async () => {
     if (!state.current || pop.classList.contains('hidden')) return;
@@ -1924,7 +2043,7 @@ $('#btn-resident').onclick = async (e) => {
     } catch (_) {}
   }, 1000);
   const rect = $('#btn-resident').getBoundingClientRect();
-  const pw = 320, ph = 200;
+  const pw = 320, ph = pop.offsetHeight || 260;
   let x = rect.right - pw;
   let y = rect.bottom + 6;
   x = Math.max(8, Math.min(x, window.innerWidth - pw - 8));
@@ -1982,6 +2101,185 @@ $('#resident-name').onchange = async (e) => {
   e.target.disabled = false;
   updateResidentUI();
 };
+
+// 「作为主 Agent」开关要写哪些字段（纯函数，便于前端测试）：
+//   打开：标记 + 写入默认路由规则（调用方已确认覆盖自定义内容）；
+//   关闭：只取消标记；仅当角色提示仍等于默认值时才清空，自定义内容保留。
+function mainAgentToggleBody(sess, on, defaultPrompt) {
+  if (on) return { main_agent: true, role_prompt: defaultPrompt };
+  const body = { main_agent: false };
+  if (sess && (sess.role_prompt || '') === defaultPrompt) body.role_prompt = '';
+  return body;
+}
+
+// 打开主 Agent 时是否需要确认覆盖：只有「已有自定义内容且不等于默认提示」
+// 才需要，空值或已经是默认值直接写。
+function mainAgentNeedsOverwriteConfirm(sess, defaultPrompt) {
+  const cur = (sess && sess.role_prompt) || '';
+  return !!cur && cur !== defaultPrompt;
+}
+
+$('#main-agent-toggle').onchange = async (e) => {
+  const s = state.current;
+  if (!s) return;
+  const on = e.target.checked;
+  e.target.disabled = true;
+  try {
+    const def = await ensureMainAgentPrompt();
+    if (on && mainAgentNeedsOverwriteConfirm(s, def) &&
+        !confirm('开启主 Agent 会用默认路由规则覆盖当前角色提示，确定继续？')) {
+      e.target.checked = false;
+      return;
+    }
+    applySession(await api(`/api/sessions/${s.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(mainAgentToggleBody(s, on, def)),
+    }));
+    updateResidentUI();
+    updateRolePromptButton();
+    renderSessionList();
+  } catch (err) {
+    e.target.checked = !on;
+    alert((on ? '开启主 Agent 失败：' : '关闭主 Agent 失败：') + err.message);
+  } finally {
+    e.target.disabled = false;
+  }
+};
+
+// ---------- 角色提示（role prompt）编辑器 ----------
+// 默认提示的唯一来源是服务端 GET /api/main-agent-prompt；前端只缓存，不在
+// 页面里另写一份，避免两边文本漂移。保存走既有 PATCH role_prompt。
+const ROLE_PROMPT_MAX_FALLBACK = 32768;
+let rolePromptTarget = null; // 打开弹窗时的会话 id，防止保存时写错会话
+
+function rolePromptMaxBytes() {
+  return state.mainAgentMaxBytes || ROLE_PROMPT_MAX_FALLBACK;
+}
+
+// UTF-8 字节数（服务端按字节校验；不依赖 TextEncoder，老浏览器/测试环境一致）。
+function rolePromptBytes(text) {
+  const s = text || '';
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
+}
+
+async function ensureMainAgentPrompt() {
+  if (state.mainAgentPrompt != null) return state.mainAgentPrompt;
+  const d = await api('/api/main-agent-prompt');
+  state.mainAgentPrompt = d.prompt || '';
+  if (d.max_bytes) state.mainAgentMaxBytes = d.max_bytes;
+  return state.mainAgentPrompt;
+}
+
+function updateRolePromptButton() {
+  const btn = $('#btn-role-prompt');
+  if (!btn) return;
+  const on = !!(state.current && (state.current.role_prompt || '').trim());
+  btn.classList.toggle('active', on);
+  btn.title = on ? '角色提示（已设置）' : '角色提示（追加到 system prompt）';
+}
+
+function updateRolePromptCounter() {
+  const ta = $('#role-prompt-text');
+  if (!ta) return;
+  const n = rolePromptBytes(ta.value);
+  const max = rolePromptMaxBytes();
+  const counter = $('#role-prompt-counter');
+  counter.textContent = `${n} / ${max} 字节`;
+  counter.classList.toggle('over', n > max);
+  $('#role-prompt-save').disabled = n > max;
+}
+
+function rolePromptError(msg) {
+  const el = $('#role-prompt-error');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+}
+
+async function openRolePromptDialog() {
+  const s = state.current;
+  if (!s) return;
+  rolePromptTarget = s.id;
+  $('#role-prompt-text').value = s.role_prompt || '';
+  rolePromptError('');
+  const engine = s.engine || 'claude';
+  $('#role-prompt-note').textContent = engine === 'opencode'
+    ? 'opencode 暂不支持追加 system prompt：这里保存的文本不会注入。'
+    : '对已运行的常驻会话，改动在下次重启常驻后生效。';
+  updateRolePromptCounter();
+  openModal('#modal-role-prompt');
+  // 长文本聚焦后光标默认落在末尾（Chrome 会滚到底），这里回到开头。
+  setTimeout(() => {
+    const ta = $('#role-prompt-text');
+    ta.focus();
+    ta.setSelectionRange(0, 0);
+    ta.scrollTop = 0;
+  }, 0);
+  // 预取默认提示，让「填入主 Agent 默认」即点即用；失败不阻塞编辑。
+  ensureMainAgentPrompt().catch(() => {});
+}
+
+// 保存/清空共用：只写 role_prompt，不动 main_agent 标记。
+async function saveRolePrompt(value) {
+  const s = state.current;
+  if (!s || (rolePromptTarget && rolePromptTarget !== s.id)) return;
+  const n = rolePromptBytes(value);
+  if (n > rolePromptMaxBytes()) {
+    rolePromptError(`超出上限：${n} / ${rolePromptMaxBytes()} 字节`);
+    return;
+  }
+  const btn = $('#role-prompt-save');
+  btn.disabled = true;
+  rolePromptError('');
+  try {
+    applySession(await api(`/api/sessions/${s.id}`, {
+      method: 'PATCH', body: JSON.stringify({ role_prompt: value }),
+    }));
+    closeModal(btn);
+    updateRolePromptButton();
+    updateMainAgentUI();
+    renderSessionList();
+  } catch (err) {
+    rolePromptError('保存失败：' + err.message);
+  } finally {
+    btn.disabled = rolePromptBytes($('#role-prompt-text').value) > rolePromptMaxBytes();
+  }
+}
+
+async function fillRolePromptDefault() {
+  try {
+    const p = await ensureMainAgentPrompt();
+    $('#role-prompt-text').value = p;
+    updateRolePromptCounter();
+    rolePromptError('');
+  } catch (err) {
+    rolePromptError('读取默认提示失败：' + err.message);
+  }
+}
+
+async function clearRolePromptDialog() {
+  if ($('#role-prompt-text').value && !confirm('清空当前角色提示？')) return;
+  $('#role-prompt-text').value = '';
+  updateRolePromptCounter();
+  await saveRolePrompt('');
+}
+
+$('#btn-role-prompt').onclick = openRolePromptDialog;
+$('#role-prompt-text').addEventListener('input', updateRolePromptCounter);
+$('#role-prompt-save').onclick = () => saveRolePrompt($('#role-prompt-text').value);
+$('#role-prompt-clear').onclick = clearRolePromptDialog;
+$('#role-prompt-fill').onclick = fillRolePromptDefault;
+$('#modal-role-prompt').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveRolePrompt($('#role-prompt-text').value);
+});
 
 // ---------- current session ----------
 async function openSession(id) {
@@ -2041,6 +2339,7 @@ async function openSession(id) {
   renderInputMirror(); // 高度定案后再镜像，镜像高度与 scrollTop 同步才有意义
   updateStatusUI(s.status);
   updateResidentUI();
+  updateRolePromptButton();
   applyWorkspaceGate(s.cwd);
   applyAttachGate();
   renderAttachedThumbs();

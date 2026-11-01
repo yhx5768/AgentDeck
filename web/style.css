@@ -356,6 +356,68 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 }
 .ws-spacer { flex: 1; }
 
+/* ---------- 主 Agent 置顶头像条（侧栏 #session-list 上方） ---------- */
+/* 有 main_agent 会话时才渲染；横向滚动，不抢工作区栏的宽度。 */
+.main-agents {
+  display: flex; align-items: flex-start; gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  overflow-x: auto; overflow-y: hidden;
+  flex: none;
+  scrollbar-width: thin;
+}
+.ma-item {
+  flex: none;
+  width: 56px;
+  display: flex; flex-direction: column; align-items: center; gap: var(--sp-1);
+  background: none; border: none; padding: 0;
+  color: var(--dim);
+  cursor: pointer;
+}
+.ma-avatar {
+  position: relative;
+  width: 40px; height: 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-full);
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 2px solid transparent;
+  font-size: var(--fs-md); font-weight: 600;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.ma-item:hover .ma-avatar { box-shadow: 0 0 0 2px var(--accent-dim); }
+.ma-item.active .ma-avatar { border-color: var(--accent); }
+/* 常驻用小绿点（右下）；运行中加呼吸光晕（与侧栏 resident-mark 同语义）。
+   不用边框表示常驻——那会和 active 的高亮边框互相覆盖。 */
+.ma-avatar.resident::after {
+  content: '';
+  position: absolute; right: -1px; bottom: -1px;
+  width: 9px; height: 9px;
+  border-radius: var(--r-full);
+  background: var(--green);
+  border: 2px solid var(--bg2);
+}
+.ma-avatar.running { animation: ma-pulse 1.6s ease-in-out infinite; }
+@keyframes ma-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, .45); }
+  50% { box-shadow: 0 0 0 4px rgba(63, 185, 80, 0); }
+}
+.ma-badge {
+  position: absolute; top: -1px; right: -1px;
+  width: 10px; height: 10px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  border: 2px solid var(--bg2);
+}
+.ma-name {
+  max-width: 56px;
+  font-size: var(--fs-xs);
+  line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ma-item.active .ma-name { color: var(--fg); font-weight: 600; }
+
 /* 工作区栏活动指示：运行中 / 未读完成 计数徽章（配色复用 .dot） */
 .ws-activity { display: flex; align-items: center; gap: var(--sp-1); margin-left: var(--sp-2); }
 .ws-badge {
@@ -604,6 +666,26 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   border-top: 1px solid var(--border);
   padding-top: var(--sp-3);
 }
+/* 主 Agent 提示区：警告行 + 换行文字 + 行内动作按钮 */
+.rp-hint-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+.rp-hint-list:empty { display: none; }
+.rp-note {
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  line-height: var(--lh-normal);
+}
+.rp-note.rp-warn { color: var(--warning-fg); }
+.rp-note.rp-warn .rp-mini-btn {
+  display: block;
+  margin-top: var(--sp-1);
+  padding: 2px 10px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--r-full);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: var(--fs-xs);
+}
+.rp-note.rp-warn .rp-mini-btn:hover { filter: brightness(.96); }
 
 /* 工作区整组迁移面板：与 popover-panel 同壳，标题 + 路径输入 + 状态 + 按钮 */
 #ws-migrate-pop { width: 320px; }
@@ -1794,6 +1876,8 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   transition: background var(--t-fast), color var(--t-fast);
 }
 .round-icon-btn:hover { background: var(--bg3); color: var(--fg); }
+.round-icon-btn.active { color: var(--accent); background: var(--accent-dim); }
+.round-icon-btn.active:hover { color: var(--accent); background: var(--accent-dim); }
 .round-icon-btn:disabled { color: var(--dot-off); cursor: not-allowed; }
 .round-icon-btn:disabled:hover { background: transparent; }
 .round-icon-btn svg { width: 18px; height: 18px; }
@@ -2108,6 +2192,43 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   gap: var(--sp-3);
   margin-top: var(--sp-2);
 }
+
+/* 角色提示编辑器：大号 textarea + 字节计数 + 错误行 + 左对齐的「填入默认」 */
+.role-prompt-card { width: 640px; }
+.role-prompt-desc {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--dim);
+  line-height: var(--lh-normal);
+}
+.role-prompt-card textarea {
+  width: 100%;
+  min-height: 220px;
+  max-height: 45vh;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+.role-prompt-meta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--dim);
+}
+.role-prompt-counter.over { color: var(--red); font-weight: 600; }
+.role-prompt-note { text-align: right; }
+.role-prompt-error {
+  font-size: var(--fs-sm);
+  color: var(--red);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  white-space: pre-wrap;
+}
+.role-prompt-actions { flex-wrap: wrap; }
+.role-prompt-spacer { flex: 1; }
 .import-filter { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 .import-filter input { flex: 1; min-width: 0; }
 .import-tabs { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-3); }

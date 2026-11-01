@@ -59,6 +59,9 @@
       <button id="btn-search-close" class="icon-btn" title="关闭"><i data-lucide="x"></i></button>
     </div>
 
+    <!-- 主 Agent 置顶头像条：有 main_agent 会话时才显示 -->
+    <div id="main-agents" class="main-agents hidden" aria-label="主 Agent"></div>
+
     <!-- session list (filterable, sortable, groupable) -->
     <div id="session-list"></div>
 
@@ -171,6 +174,7 @@
           <div class="composer-toolbar">
             <div class="ct-side">
               <button id="btn-attach" class="round-icon-btn" title="添加图片或文件（可粘贴/拖拽）"><i data-lucide="plus"></i></button>
+              <button id="btn-role-prompt" class="round-icon-btn" title="角色提示（追加到 system prompt）"><i data-lucide="scroll-text"></i></button>
               <select id="session-perm" class="pill-select" title="权限模式：default/plan/acceptEdits 会弹审批卡（仅 claude/qoder）；opencode 自动放行、mcode 走 smart 策略，均无审批卡">
                 <option value="">默认权限</option>
                 <option value="bypassPermissions">bypass</option>
@@ -415,6 +419,11 @@
     <span class="rp-label">地址名</span>
     <input id="resident-name" spellcheck="false" placeholder="默认取会话名">
   </label>
+  <label class="rp-row rp-toggle">
+    <span>作为主 Agent（注入路由规则并置顶）</span>
+    <label class="rp-switch" title="切换主 Agent"><input type="checkbox" id="main-agent-toggle"><span class="rp-switch-slider"></span></label>
+  </label>
+  <div id="main-agent-hint" class="rp-hint-list"></div>
   <div class="rp-status" id="resident-status"></div>
   <div class="rp-hint">开启后进程保持在线并注册地址名，其他 Claude 会话可用 SendMessage 发消息过来；修改地址名会自动重启常驻进程。</div>
 </div>
@@ -453,6 +462,27 @@
     <div class="modal-actions">
       <button class="ghost-btn" data-close>取消</button>
       <button class="primary-btn" id="rename-submit">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- role prompt editor -->
+<div id="modal-role-prompt" class="modal hidden">
+  <div class="modal-card role-prompt-card">
+    <h3>角色提示</h3>
+    <p class="role-prompt-desc">这段文本每轮追加到该会话的 system prompt，用来给 worker 定义身份或给主 Agent 注入规则。它只是提示词，不改变权限。</p>
+    <textarea id="role-prompt-text" rows="10" spellcheck="false" placeholder="例如：你是评审员，只读代码、给意见，不要改文件。"></textarea>
+    <div class="role-prompt-meta">
+      <span id="role-prompt-counter" class="role-prompt-counter"></span>
+      <span id="role-prompt-note" class="role-prompt-note"></span>
+    </div>
+    <div id="role-prompt-error" class="role-prompt-error hidden"></div>
+    <div class="modal-actions role-prompt-actions">
+      <button class="ghost-btn" id="role-prompt-fill" type="button">填入主 Agent 默认</button>
+      <span class="role-prompt-spacer"></span>
+      <button class="ghost-btn" id="role-prompt-clear" type="button">清空</button>
+      <button class="ghost-btn" data-close type="button">取消</button>
+      <button class="primary-btn" id="role-prompt-save" type="button">保存</button>
     </div>
   </div>
 </div>

@@ -21,13 +21,14 @@ func TestRolePromptRoundTrip(t *testing.T) {
 		Provider:   "gw",
 		Cwd:        "/tmp",
 		RolePrompt: "你是 reviewer，只评审不改代码。",
+		MainAgent:  true,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
 	if err := st.Upsert(sess, nil); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if got := st.Get("s1"); got == nil || got.RolePrompt != sess.RolePrompt {
+	if got := st.Get("s1"); got == nil || got.RolePrompt != sess.RolePrompt || !got.MainAgent {
 		t.Fatalf("Get after Upsert = %+v", got)
 	}
 
@@ -46,5 +47,8 @@ func TestRolePromptRoundTrip(t *testing.T) {
 	}
 	if got.RolePrompt != "第二轮规则" {
 		t.Fatalf("role prompt after reopen = %q", got.RolePrompt)
+	}
+	if !got.MainAgent {
+		t.Fatal("main_agent lost across reopen")
 	}
 }

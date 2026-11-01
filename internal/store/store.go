@@ -47,6 +47,12 @@ type Session struct {
 	// resident keeps the value it was spawned with; a change applies on the
 	// next spawn (see AGENTS.md §14).
 	RolePrompt string `json:"role_prompt,omitempty"`
+	// MainAgent marks the session as the workspace's router/main agent. It is a
+	// display/ordering marker plus the UI's cue to install the default routing
+	// rules as the role prompt — the server enforces nothing with it (any local
+	// session can call the API; this is not a permission boundary). The UI pins
+	// these sessions in the sidebar avatar strip. See AGENTS.md §14.
+	MainAgent bool `json:"main_agent,omitempty"`
 	// GroupID marks a shadow member session owned by a group chat: it runs
 	// the group's turns for one participant and is hidden from the sidebar
 	// (openable directly by id from the group view). Empty = ordinary session.
