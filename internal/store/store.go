@@ -39,6 +39,14 @@ type Session struct {
 	// transcript as a custom-title; empty means "derive from Name".
 	Resident bool   `json:"resident,omitempty"`
 	PeerName string `json:"peer_name,omitempty"`
+	// RolePrompt is a per-session text appended to the engine's system prompt
+	// every turn (claude/qoder/mcode via --append-system-prompt, codex via
+	// `-c instructions=`). It gives a spawned worker its identity or injects
+	// standing rules into a main agent. Plain text only — it is not a
+	// permission boundary. The server caps it at maxRolePromptBytes. A running
+	// resident keeps the value it was spawned with; a change applies on the
+	// next spawn (see AGENTS.md §14).
+	RolePrompt string `json:"role_prompt,omitempty"`
 	// GroupID marks a shadow member session owned by a group chat: it runs
 	// the group's turns for one participant and is hidden from the sidebar
 	// (openable directly by id from the group view). Empty = ordinary session.

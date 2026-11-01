@@ -48,6 +48,8 @@ IMAGE_MIME = {
 
 DEFAULT_TURN_TIMEOUT = 1800.0  # 一轮最多等 30 分钟
 
+MAX_ROLE_PROMPT_BYTES = 32 * 1024  # 与服务端 maxRolePromptBytes 一致
+
 
 # --------------------------------------------------------------------------
 # 输出小工具
@@ -604,6 +606,29 @@ def cmd_ls(ctx: Ctx, a) -> int:
     return 0
 
 
+def _role_prompt_from_args(a) -> "str | None":
+    """读取 --role-prompt / --role-prompt-file（二选一）。
+
+    返回 None 表示两个参数都没给；空串是合法值（用于清空角色提示）。
+    """
+    text = getattr(a, "role_prompt", None)
+    path = getattr(a, "role_prompt_file", None)
+    if text is not None and path is not None:
+        die("--role-prompt 与 --role-prompt-file 只能给一个")
+    if path is not None:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except OSError as e:
+            die(f"读取 --role-prompt-file 失败: {e}")
+    if text is None:
+        return None
+    n = len(text.encode("utf-8"))
+    if n > MAX_ROLE_PROMPT_BYTES:
+        die(f"角色提示过长：上限 {MAX_ROLE_PROMPT_BYTES} 字节（当前 {n} 字节）")
+    return text
+
+
 def _create_payload(a) -> dict:
     body: dict = {}
     if a.name:
@@ -622,6 +647,9 @@ def _create_payload(a) -> dict:
         body["resident"] = True
     if getattr(a, "peer_name", None):
         body["peer_name"] = a.peer_name
+    rp = _role_prompt_from_args(a)
+    if rp is not None:
+        body["role_prompt"] = rp
     return body
 
 
@@ -644,6 +672,8 @@ def cmd_new(ctx: Ctx, a) -> int:
     log(f"  cli/provider: {sess.get('cli')}/{sess.get('provider')}  引擎: {sess.get('engine')}")
     if sess.get("model_override") or sess.get("effort_override"):
         log(f"  model/effort: {sess.get('model_override') or '-'} / {sess.get('effort_override') or '-'}")
+    if sess.get("role_prompt"):
+        log(f"  role_prompt: {trunc(sess['role_prompt'], 80)}")
     log(f"  cwd: {sess.get('cwd')}")
     log("前端侧栏 5s 内会出现该会话。发送消息：agentdeck.py send " + sess["id"] + " '…'")
     print(sess["id"])
@@ -661,6 +691,9 @@ def cmd_get(ctx: Ctx, a) -> int:
         if s.get(k) not in (None, "", False):
             print(f"{k:18}: {s[k]}")
     print(f"{'status':18}: {_status_str(s.get('status'))}")
+    if s.get("role_prompt"):
+        rp = s["role_prompt"]
+        print(f"{'role_prompt':18}: {trunc(rp, 160)}  ({len(rp.encode('utf-8'))} 字节)")
     if s.get("resume_command"):
         print(f"{'resume_command':18}: {s['resume_command']}")
     if s.get("goal"):
@@ -691,6 +724,9 @@ def cmd_set(ctx: Ctx, a) -> int:
             body[key] = parse_bool(v)
     if a.peer_name is not None:
         body["peer_name"] = a.peer_name
+    rp = _role_prompt_from_args(a)
+    if rp is not None:
+        body["role_prompt"] = rp
     if a.sort_order is not None:
         body["sort_order"] = a.sort_order
     if not body:
@@ -1383,6 +1419,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cwd", help="工作区（省略则用 config 的 default_cwd，再退回当前目录）")
     sp.add_argument("--resident", action="store_true", help="claude 专属：建会话即开常驻")
     sp.add_argument("--peer-name", help="claude 专属：常驻地址名")
+    sp.add_argument("--role-prompt", help="追加到 system prompt 的角色提示（32 KiB 上限）")
+    sp.add_argument("--role-prompt-file", help="从文件读角色提示（与 --role-prompt 二选一）")
 
     sp = add("get", "看单个会话详情", cmd_get)
     sp.add_argument("id")
@@ -1397,6 +1435,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--permission-mode")
     sp.add_argument("--cwd")
     sp.add_argument("--peer-name")
+    sp.add_argument("--role-prompt", help="角色提示；空串清空")
+    sp.add_argument("--role-prompt-file", help="从文件读角色提示（与 --role-prompt 二选一）")
     sp.add_argument("--archived", help="true/false")
     sp.add_argument("--resident", help="true/false")
     sp.add_argument("--unread", help="true/false")
@@ -1450,6 +1490,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cwd")
     sp.add_argument("--resident", action="store_true")
     sp.add_argument("--peer-name")
+    sp.add_argument("--role-prompt", help="追加到 system prompt 的角色提示（32 KiB 上限）")
+    sp.add_argument("--role-prompt-file", help="从文件读角色提示（与 --role-prompt 二选一）")
     sp.add_argument("--file", action="append")
     sp.add_argument("--image", action="append")
     sp.add_argument("--timeout", type=float, default=DEFAULT_TURN_TIMEOUT)

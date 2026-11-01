@@ -99,7 +99,7 @@ func TestBuildCodexArgsHTMLHint(t *testing.T) {
 		cli, prov := codexTestProfile(t)
 		args := (&Manager{}).buildCodexArgs(Message{Text: "hi"}, sess, cli, prov)
 		got := joined(args)
-		if !strings.Contains(got, "-c "+codexInstructionsArg()) {
+		if !strings.Contains(got, "-c "+codexInstructions(true, "")) {
 			t.Errorf("resume=%v: missing instructions override: %s", sess.ClaudeSessionID != "", got)
 		}
 		// Our -c makes ducx stop injecting its own provider, so the configured

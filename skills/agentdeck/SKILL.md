@@ -77,9 +77,9 @@ opencode / mcode / qoder / codex 由各自 CLI 在运行时给出，`--fresh` �
 | 命令 | 说明 |
 |---|---|
 | `ls [--archived]` | 列出会话（含状态：running / queued / resident / error） |
-| `new --cwd P [--name N] [--cli C] [--provider P] [--model M] [--effort E] [--permission-mode PM] [--resident] [--peer-name NAME]` | 建会话，stdout 打印 session id |
-| `get ID` | 会话详情（含 `resume_command`、goal、resident 状态） |
-| `set ID [--name/--cli/--provider/--model/--effort/--permission-mode/--cwd/--peer-name/--archived/--resident/--unread/--todo/--sort-order]` | 只改显式给出的字段 |
+| `new --cwd P [--name N] [--cli C] [--provider P] [--model M] [--effort E] [--permission-mode PM] [--resident] [--peer-name NAME] [--role-prompt TEXT\|--role-prompt-file F]` | 建会话，stdout 打印 session id |
+| `get ID` | 会话详情（含 `resume_command`、goal、resident 状态、role_prompt） |
+| `set ID [--name/--cli/--provider/--model/--effort/--permission-mode/--cwd/--peer-name/--role-prompt/--role-prompt-file/--archived/--resident/--unread/--todo/--sort-order]` | 只改显式给出的字段 |
 | `send ID TEXT` | 发消息（不等结果） |
 | `reply ID TEXT [--timeout S]` | 发消息并等本轮结束，stdout 输出回复 |
 | `run ... TEXT` | 建会话 + 发首条消息 + 等结果 |
@@ -96,6 +96,31 @@ opencode / mcode / qoder / codex 由各自 CLI 在运行时给出，`--fresh` �
 `send` / `reply` / `run` 还可以带 `--file PATH`（作为附件上传）和 `--image PATH`
 （内嵌图片，**mcode / codex 不支持**，会被服务端 400）。文本可以用位置参数、
 `--text`，或 `-` 从 stdin 读。
+
+### 会话角色提示（role prompt）
+
+建会话（`new` / `run`）或改会话（`set`）时加 `--role-prompt "你是…"`，长文本用
+`--role-prompt-file PATH`（两者二选一，`set --role-prompt ""` 清空）。这段文本每轮
+都会被追加到该会话的 system prompt，用来给 worker 定义身份，或给常驻的主 Agent
+注入每轮都要遵守的规则。**上限 32 KiB**。
+
+```bash
+$AD new --name "评审员" --cli claude --cwd ~/Projects/app \
+        --role-prompt "你是代码评审员：只读代码、给评审意见，不要改文件。"
+```
+
+- **引擎差异**：claude / qoder / mcode 走 `--append-system-prompt`，与界面自带的
+  HTML 渲染提示合并成**一个**参数；codex / ducx 走 `-c instructions=`，同样合并。
+  **opencode 暂不支持**（没有 append 语义，v1 prompt 的 `system` 是覆盖而非追加）：
+  值会存下来，但不会注入。
+- **生效时机**：新建会话立即生效；非常驻会话下一轮生效；**运行中的常驻会话改完
+  不会自动重启**，要重启常驻（`set ID --resident false` 再 `--resident true`）或等
+  服务重启后才生效——自动重启会打断正在跑的一轮，所以刻意不做。
+- **只是提示词**，追加到 system prompt，不改变权限、不是安全边界，别拿它当隔离手段。
+- 如果你在 cli 的 `args` 里自己配了 `--append-system-prompt` / `instructions`，
+  AgentDeck 会整体跳过注入（角色提示也一并不注入）。
+- 用法约定：角色提示由派工方（主 Agent）在建会话时设置；**worker 不要改自己的
+  角色提示**。
 
 ### 导入历史会话
 

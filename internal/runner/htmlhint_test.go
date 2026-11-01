@@ -32,7 +32,7 @@ func valueAfter(args []string, flag string) (string, bool) {
 // silently disable the feature on every existing config.yaml.
 func TestAppendHTMLRenderHintDefaultOn(t *testing.T) {
 	m := hintManager(t, nil)
-	got := m.appendHTMLRenderHint([]string{"-p"}, &config.CLI{})
+	got := m.appendSystemPrompt([]string{"-p"}, &config.CLI{}, "")
 	v, ok := valueAfter(got, "--append-system-prompt")
 	if !ok {
 		t.Fatalf("no --append-system-prompt in %q", got)
@@ -48,7 +48,7 @@ func TestAppendHTMLRenderHintDefaultOn(t *testing.T) {
 // TestAppendHTMLRenderHintRespectsExplicitTrue covers the opt-in spelling.
 func TestAppendHTMLRenderHintRespectsExplicitTrue(t *testing.T) {
 	yes := true
-	got := hintManager(t, &yes).appendHTMLRenderHint([]string{"-p"}, &config.CLI{})
+	got := hintManager(t, &yes).appendSystemPrompt([]string{"-p"}, &config.CLI{}, "")
 	if _, ok := valueAfter(got, "--append-system-prompt"); !ok {
 		t.Fatalf("explicit true did not inject: %q", got)
 	}
@@ -59,7 +59,7 @@ func TestAppendHTMLRenderHintRespectsExplicitTrue(t *testing.T) {
 func TestAppendHTMLRenderHintOptOut(t *testing.T) {
 	no := false
 	in := []string{"-p", "--output-format", "stream-json"}
-	got := hintManager(t, &no).appendHTMLRenderHint(in, &config.CLI{})
+	got := hintManager(t, &no).appendSystemPrompt(in, &config.CLI{}, "")
 	if len(got) != len(in) {
 		t.Fatalf("opt-out still injected: %q", got)
 	}
@@ -79,7 +79,7 @@ func TestAppendHTMLRenderHintUserFlagWins(t *testing.T) {
 	m := hintManager(t, nil)
 	for _, userFlag := range []string{"--append-system-prompt", "--append-system-prompt=mine"} {
 		in := []string{"-p", userFlag, "my own prompt"}
-		got := m.appendHTMLRenderHint(in, &config.CLI{})
+		got := m.appendSystemPrompt(in, &config.CLI{}, "")
 		if len(got) != len(in) {
 			t.Fatalf("%s: injected anyway: %q", userFlag, got)
 		}
@@ -88,7 +88,7 @@ func TestAppendHTMLRenderHintUserFlagWins(t *testing.T) {
 			t.Fatalf("%s: our hint was appended after the user's", userFlag)
 		}
 		// Same flag, but only in cli.Args and not yet merged into args.
-		got2 := m.appendHTMLRenderHint([]string{"-p"}, &config.CLI{Args: []string{userFlag}})
+		got2 := m.appendSystemPrompt([]string{"-p"}, &config.CLI{Args: []string{userFlag}}, "")
 		if len(got2) != 1 {
 			t.Fatalf("%s via cli.Args: injected anyway: %q", userFlag, got2)
 		}
@@ -99,7 +99,7 @@ func TestAppendHTMLRenderHintUserFlagWins(t *testing.T) {
 // appears throughout the runner tests, and a nil cm here would panic.
 func TestAppendHTMLRenderHintNilManager(t *testing.T) {
 	m := &Manager{}
-	if _, ok := valueAfter(m.appendHTMLRenderHint([]string{"-p"}, nil), "--append-system-prompt"); !ok {
+	if _, ok := valueAfter(m.appendSystemPrompt([]string{"-p"}, nil, ""), "--append-system-prompt"); !ok {
 		t.Fatal("nil cm did not inject")
 	}
 }
@@ -107,7 +107,7 @@ func TestAppendHTMLRenderHintNilManager(t *testing.T) {
 // TestMcodeArgsOrdering pins runMcodeTurn's argv order. The positional prompt
 // must precede `--file` (an array flag — it would eat a trailing positional and
 // silently drop the user's message). The hint's position relative to cli.Args
-// is deliberately NOT load-bearing: appendHTMLRenderHint inspects cli.Args
+// is deliberately NOT load-bearing: appendSystemPrompt inspects cli.Args
 // itself precisely so the merge order can't break dedup, and flipping the two
 // lines here still passes. What's left is that the hint lands before the
 // positional, so it can't be mistaken for message text.

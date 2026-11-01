@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"cc-webui/internal/claudehist"
+	"cc-webui/internal/config"
 	"cc-webui/internal/store"
 )
 
@@ -263,6 +264,32 @@ func (m *Manager) ensureProc(sessionID string, sess *store.Session) (*residentPr
 	return m.spawnResident(sessionID, sess)
 }
 
+// buildResidentArgs assembles the streaming-input argv up to and including the
+// system-prompt append. Split out of spawnResident so the role-prompt merge is
+// testable without spawning a process; model is resolved by the caller.
+func (m *Manager) buildResidentArgs(sess *store.Session, cli *config.CLI, model string) []string {
+	args := []string{"-p", "--output-format", "stream-json", "--verbose",
+		"--input-format", "stream-json"}
+	if cli.PartialMessages && !hasArg(cli.Args, "--include-partial-messages") {
+		args = append(args, "--include-partial-messages")
+	}
+	permMode := sess.PermissionMode
+	if permMode == "" {
+		permMode = cli.PermissionMode
+	}
+	if permMode != "" {
+		args = append(args, "--permission-mode", permMode)
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if sess.EffortOverride != "" {
+		args = append(args, "--effort", sess.EffortOverride)
+	}
+	args = append(args, cli.Args...)
+	return m.appendSystemPrompt(args, cli, sess.RolePrompt)
+}
+
 // spawnResident starts the streaming-input process and its read loop.
 func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residentProc, error) {
 	cli := m.cfg().CLIByName(sess.CLI)
@@ -284,25 +311,8 @@ func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residen
 		}
 	}
 
-	args := []string{"-p", "--output-format", "stream-json", "--verbose",
-		"--input-format", "stream-json"}
-	if cli.PartialMessages && !hasArg(cli.Args, "--include-partial-messages") {
-		args = append(args, "--include-partial-messages")
-	}
-	permMode := sess.PermissionMode
-	if permMode == "" {
-		permMode = cli.PermissionMode
-	}
-	if permMode != "" {
-		args = append(args, "--permission-mode", permMode)
-	}
 	model := prov.EffectiveModel(sess.ModelOverride)
-	if model != "" {
-		args = append(args, "--model", model)
-	}
-	if sess.EffortOverride != "" {
-		args = append(args, "--effort", sess.EffortOverride)
-	}
+	args := m.buildResidentArgs(sess, cli, model)
 	env := cli.EffectiveEnv(prov, model)
 	// Same rule as runStreamJSONTurn, plus the approval hook: hook sessions
 	// need the file even with empty env (see runStreamJSONTurn).
@@ -312,8 +322,6 @@ func (m *Manager) spawnResident(sessionID string, sess *store.Session) (*residen
 	if sess.ClaudeSessionID != "" {
 		args = append(args, "--resume", sess.ClaudeSessionID)
 	}
-	args = append(args, cli.Args...)
-	args = m.appendHTMLRenderHint(args, cli)
 	if needsSettings && !hasArg(args, "--settings") {
 		if p, err := m.settingsFileEx(cli.Name, prov.Name, model, sess.EffortOverride, env, withHook); err == nil {
 			args = append(args, "--settings", p)

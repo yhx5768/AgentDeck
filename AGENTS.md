@@ -126,7 +126,7 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
   - **回放 = `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*-<sid>.jsonl`**：`response_item` 是模型 transcript（user/assistant message、reasoning summary、function_call/custom_tool_call + output），`token_usage_record` 是每步 usage，`turn_context.model` 是当前模型。`event_msg` 只用来兜底那些没有 response_item 的 tool 记录；用户消息只认 `content_item_kinds:["user.text"]`（`environment_context`、AGENTS.md 注入行必须跳过）。`codexhist` 有独立包；**别套 claudehist**（协议/目录都不同）。
   - **home 与 ducx**：原生 codex 读 `~/.codex`（或 `$CODEX_HOME`）；`ducx` 忽略 `CODEX_HOME`、固定写 `~/.baidu-cx`，所以 `cli.home` 优先，未声明时按 basename（ducx/baidu-codex）+ `~/.baidu-cx` 存在性兜底。
   - **`-c` 会打掉 ducx 的 provider 注入**：ducx 在检测到用户传了 `-c` 后不再注入自己的 `model_provider=oneapi`，会退回 `api.openai.com`。所以传递 effort（`-c model_reasoning_effort=…`）或 HTML hint（`-c instructions=…`）时必须同时传 `cli.model_provider`（配成 `oneapi`）。原生 codex 用 config.toml 时留空即可。
-  - **HTML 渲染约定**：codex 没有 `--append-system-prompt`，走 `-c instructions=<TOML 字符串>`（`codexInstructionsArg`，值用 `strconv.Quote` 编码）。`instructions` 每轮都从 config 层重新读、渲染成独立 developer 消息，所以 `exec resume` 也生效；`developer_instructions` **不行**——建线程时被持久化，resume 时新值静默忽略（假端点实测：新会话请求里有 marker，同一线程 resume 没有）。`cli.args` 里已有 `-c/--config instructions=…` 时不覆盖（`hasConfigOverride` 查重）。
+  - **HTML 渲染约定**：codex 没有 `--append-system-prompt`，走 `-c instructions=<TOML 字符串>`（`codexInstructions`，值用 `strconv.Quote` 编码）。`instructions` 每轮都从 config 层重新读、渲染成独立 developer 消息，所以 `exec resume` 也生效；`developer_instructions` **不行**——建线程时被持久化，resume 时新值静默忽略（假端点实测：新会话请求里有 marker，同一线程 resume 没有）。`cli.args` 里已有 `-c/--config instructions=…` 时不覆盖（`hasConfigOverride` 查重）。
   - **sandbox**：新会话用 `--sandbox workspace-write|read-only`（`bypassPermissions` → `--dangerously-bypass-approvals-and-sandbox`）；`exec resume` **不接受** `--sandbox`，靠线程继承，别硬塞。headless 没有审批卡，default 一律 workspace-write。
   - **模型与档位是动态的**：原生 codex 用 `debug models --bundled`；**launcher wrapper 不能用它**——ducx 的 `debug models --bundled` 只有上游 gpt 模型，网关实际可用的 GLM-5.3 / DeepSeek-V4 等全都不在里面。wrapper 把真实清单落在 `<home>/model-catalogs/<model_provider>-models.json`（`ducx models` 打印的就是它），并与 bundled 同形（slug/display_name/supported_reasoning_levels/input_modalities/context_window）。`LoadCatalogFor` 的优先级是：wrapper catalog 文件 → bundled → `ducx models` 纯文本（仅 id，无档位）。`/api/codex-models` 过滤 `visibility!="list"` 和 `supported_in_api=false`；config 的 `models: []` 留空是对的。档位走 `-c model_reasoning_effort`，逐模型校验。
   - **图片**：没有 claude 的多模态 stdin 通道，前端把图片降级为文件上传；runner 对图片扩展名额外传 `-i <path>`（`UploadedFile` 没有 MIME，只能看扩展名）。
@@ -245,6 +245,16 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **图标按钮要有人话说明**：面板头部的按钮全是纯图标，靠 `data-tip` 出自绘 tooltip（`.ws-tip`，`position:fixed` + 150ms 延迟 + 越界翻边）。**不用原生 `title`**：它要悬停一秒才出、样式不受控、触屏上根本不出现。tooltip 挂在 `document.body` 上（面板内可能有 transform/overflow），`z-index:190`——在浮层(150)之上、弹窗(200)之下。
 - **文件树可折叠**：树栏头部第一个按钮切 `collapsed`（宽度 260px → 40px，只留一条窄条 + 展开按钮，位置不变），预览区因此多出 220px；折叠状态存 localStorage（`cc-webui:ws-panel-tree-collapsed`）。图标在 `panel-right-close` / `panel-right-open` 之间换，两个都得在 renderIcons 白名单里。
 
+### 14. 会话级角色提示（RolePrompt）
+
+`store.Session.RolePrompt` 存一段追加到 system prompt 的纯文本，用来在建 worker 时定义身份、给常驻主 Agent 注入每轮规则。建会话 `POST /api/sessions` 与 `PATCH /api/sessions/{id}` 都收 `role_prompt`（空串 = 清空），服务端 `validateRolePrompt` 限 32 KiB，超限 400。它只影响提示词，**不是权限边界**，别当安全机制用。
+
+- **注入入口只有两个**：`runner/htmlhint.go` 的 `appendSystemPrompt`（claude/qoder/mcode 的 `--append-system-prompt`）和 `codexInstructions`（codex/ducx 的 `-c instructions=`）。角色提示与 HTML 渲染提示合并成**一份**（role 在前，空行分隔），因为 CLI 只接受一个 append 参数；`html_render_hint: false` 只关 hint，不影响角色提示。用户在 `cli.args` 里自带同名 flag 时整体跳过（沿用既有规则，角色提示也一并不注入）。
+- **覆盖全部 spawn 路径**：`buildStreamJSONArgs`（claude/qoder 一次性）、`buildResidentArgs`（常驻）、`buildMcodeArgs`、`buildCodexArgs`。opencode 没有 append 语义（v1 prompt 的 `system` 是覆盖），**暂不支持**：值照存，但不注入。
+- **生效时机**：非常驻会话下一轮生效；常驻进程的 argv 在 spawn 时固定，PATCH 只落库、**不自动重启**（重启会打断正在跑的一轮），需重启常驻或服务恢复后才生效。新建常驻会话首次 spawn 即带上。fork 复制 role prompt（身份/规则随分支走）；群成员影子会话不涉及。
+- `resumeCommand`（复制到终端的命令）**不带**角色提示——终端里 resume 要自己补 `--append-system-prompt`（codex 则是 `-c instructions=`）；它与 HTML 提示同属 cc-webui 注入的上下文，不写进命令是为了让命令可搬运。
+- AgentDeck skill：`new`/`set`/`run` 的 `--role-prompt` / `--role-prompt-file`，`get` 回显。用法约定：主 Agent 建 worker 时设置，worker 不改自己的角色提示。
+
 ## 后端包职责（`internal/`）
 
 | 包 | 职责 | 关键点 |
@@ -306,7 +316,7 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
 ## 约定
 
 - **交付可视化页面：走 `--append-system-prompt` 注入，不是靠这份文档**。当用户要图表、仪表盘、交互页、幻灯片式排版这类「一页 HTML」的东西时，**直接输出一整段 ` ```html ` 围栏代码块**（完整 `<!doctype html>` 文档），不要写 `.html` 文件到磁盘让用户自己去浏览器开。`md()` 会把 ` ```html ` 围栏升级成沙箱渲染容器：默认显示代码，点「渲染」才挂一个 `sandbox="allow-scripts"` 的 srcdoc iframe（不给 `allow-same-origin`，所以页面碰不到 app 的 localStorage / DOM / 带 cookie 的同源接口）。
-  - **注入点在服务端，不在这里**：`internal/runner/htmlhint.go` 的 `htmlRenderHint` 会被 `--append-system-prompt` 追加进每一轮的 system prompt（`runner.go` 的 claude one-shot、`resident.go` 的常驻、`runMcodeTurn` 的 mcode 三处）。codex/ducx 没有 append flag，走 `-c instructions=<TOML 字符串>`（`codexInstructionsArg`，buildCodexArgs 里注入）——它会被渲染成一条独立的 developer 消息，且**每次运行都从 config 读**，所以 `exec resume` 也有；`developer_instructions` 不行，它在建线程时写死，resume 时新值被静默忽略（假端点实测）。注意任何 `-c` 都会让 ducx 不再注入自己的 provider，所以注入 hint 时 `buildCodexArgs` 会一并补 `-c model_provider=<cli.model_provider>`。`appendHTMLRenderHint`/`hasConfigOverride` 会先查重，用户自己在 `cli.args` 里写了同名 flag 就不重复注入。开关是 `html_render_hint`，`*bool`、**nil（不写）= 开**，设 `false` 才关。这份文档只是给**读仓库 AGENTS.md 的模型**兜底——而 AGENTS.md 是仓库作用域的，会话 cwd 不在仓库里时它根本不加载，注入才是 per-session 的可靠路径。
+  - **注入点在服务端，不在这里**：`internal/runner/htmlhint.go` 的 `htmlRenderHint` 会被 `appendSystemPrompt` 以 `--append-system-prompt` 追加进每一轮的 system prompt（`buildStreamJSONArgs` 的 claude/qoder one-shot、`buildResidentArgs` 的常驻、`buildMcodeArgs` 的 mcode 三处；会话角色提示也在这里合并，见 §14）。codex/ducx 没有 append flag，走 `-c instructions=<TOML 字符串>`（`codexInstructions`，buildCodexArgs 里注入；角色提示与它共用这一个键）——它会被渲染成一条独立的 developer 消息，且**每次运行都从 config 读**，所以 `exec resume` 也有；`developer_instructions` 不行，它在建线程时写死，resume 时新值被静默忽略（假端点实测）。注意任何 `-c` 都会让 ducx 不再注入自己的 provider，所以注入 hint 时 `buildCodexArgs` 会一并补 `-c model_provider=<cli.model_provider>`。`appendSystemPrompt`/`hasConfigOverride` 会先查重，用户自己在 `cli.args` 里写了同名 flag 就不重复注入。开关是 `html_render_hint`，`*bool`、**nil（不写）= 开**，设 `false` 才关。这份文档只是给**读仓库 AGENTS.md 的模型**兜底——而 AGENTS.md 是仓库作用域的，会话 cwd 不在仓库里时它根本不加载，注入才是 per-session 的可靠路径。
   - 要求：**完全自包含**——不许外部 CSS/JS/字体/网络请求。图表用内联 SVG 或页面自己的 script。
   - iframe 里注入了宿主主题的 CSS 变量，**优先用它们而不是硬编码颜色**，页面就能跟随 app 的深浅色：`--background` `--surface` `--border` `--foreground` `--muted` `--accent` `--code-bg`。同时写上兜底值 `var(--background, #fff)`，没注入时也不至于裸奔。
   - 高度自动跟随内容，别在页面里做内层滚动（聊天滚动会被劫持）；宽表格自己套一个横向滚动容器。

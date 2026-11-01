@@ -871,13 +871,11 @@ func snakeCasePermissionMode(mode string) string {
 	return b.String()
 }
 
-// runStreamJSONTurn spawns one process for a single user message. If the
-// message contains images, the CLI is invoked with --input-format stream-json
-// and the message is encoded as a single JSON user message on stdin;
-// otherwise the text is piped via stdin as before.
-func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string, d streamJSONDialect) {
-	text := turnText(msg)
-	multimodal := len(msg.Images) > 0
+// buildStreamJSONArgs assembles the one-shot claude/qoder argv up to and
+// including the system-prompt append. Split out of runStreamJSONTurn so the
+// role-prompt merge is testable without spawning a process. model is resolved
+// by the caller because the settings file needs the same value.
+func (m *Manager) buildStreamJSONArgs(sess *store.Session, cli *config.CLI, model string, d streamJSONDialect, multimodal bool) []string {
 	args := []string{"-p", "--output-format", "stream-json"}
 	if d.verbose {
 		args = append(args, "--verbose")
@@ -895,6 +893,23 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 	if permMode != "" {
 		args = append(args, "--permission-mode", d.permissionMode(permMode))
 	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if sess.EffortOverride != "" {
+		args = append(args, d.effortFlag, sess.EffortOverride)
+	}
+	args = append(args, cli.Args...)
+	return m.appendSystemPrompt(args, cli, sess.RolePrompt)
+}
+
+// runStreamJSONTurn spawns one process for a single user message. If the
+// message contains images, the CLI is invoked with --input-format stream-json
+// and the message is encoded as a single JSON user message on stdin;
+// otherwise the text is piped via stdin as before.
+func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string, d streamJSONDialect) {
+	text := turnText(msg)
+	multimodal := len(msg.Images) > 0
 	// A cli that owns its model list (models_command) has no meaningful
 	// config-side default: the static provider list is only hint data. An
 	// empty override means "let the launcher pick", not "pin the first model
@@ -903,12 +918,7 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 	if model == "" && len(cli.ModelsCommand) == 0 {
 		model = prov.EffectiveModel("")
 	}
-	if model != "" {
-		args = append(args, "--model", model)
-	}
-	if sess.EffortOverride != "" {
-		args = append(args, d.effortFlag, sess.EffortOverride)
-	}
+	args := m.buildStreamJSONArgs(sess, cli, model, d, multimodal)
 	env := cli.EffectiveEnv(prov, model)
 	// Interactive approval (PermissionRequest hook) needs a --settings file
 	// even when there is no config env: without the file the CLI has nowhere
@@ -929,8 +939,6 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 	if sess.ClaudeSessionID != "" {
 		args = append(args, "--resume", sess.ClaudeSessionID)
 	}
-	args = append(args, cli.Args...)
-	args = m.appendHTMLRenderHint(args, cli)
 
 	if needsSettings && !hasArg(args, "--settings") {
 		if p, err := m.settingsFileEx(cli.Name, prov.Name, model, sess.EffortOverride, env, withHook); err == nil {
@@ -1274,7 +1282,7 @@ func (m *Manager) buildMcodeArgs(msg Message, sess *store.Session, cli *config.C
 		args = append(args, "--session", sess.ClaudeSessionID)
 	}
 	args = append(args, cli.Args...)
-	args = m.appendHTMLRenderHint(args, cli)
+	args = m.appendSystemPrompt(args, cli, sess.RolePrompt)
 	// Positional prompt before the attachment flags: `--file <path> <msg>`
 	// would let the array flag consume the message.
 	if msg.Text != "" {
@@ -1450,17 +1458,19 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 	}
 	// Any -c override makes ducx skip the provider it would otherwise inject,
 	// so a configured id is repeated here before the overrides that need it.
-	// The HTML hint below is one of them, which is why this is not gated on
-	// EffortOverride alone.
-	wantHint := m.htmlHintEnabled() && !hasConfigOverride(cli.Args, "instructions")
-	if (sess.EffortOverride != "" || wantHint) && cli.ModelProvider != "" {
+	// The role prompt / HTML hint below is one of them, which is why this is
+	// not gated on EffortOverride alone.
+	hintOn := m.htmlHintEnabled()
+	wantInstructions := (hintOn || strings.TrimSpace(sess.RolePrompt) != "") &&
+		!hasConfigOverride(cli.Args, "instructions")
+	if (sess.EffortOverride != "" || wantInstructions) && cli.ModelProvider != "" {
 		args = append(args, "-c", "model_provider="+cli.ModelProvider)
 	}
 	if sess.EffortOverride != "" {
 		args = append(args, "-c", "model_reasoning_effort="+sess.EffortOverride)
 	}
-	if wantHint {
-		args = append(args, "-c", codexInstructionsArg())
+	if wantInstructions {
+		args = append(args, "-c", codexInstructions(hintOn, sess.RolePrompt))
 	}
 	for _, f := range msg.Files {
 		if isImageFile(f.Path) {

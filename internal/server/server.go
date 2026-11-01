@@ -721,6 +721,19 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// maxRolePromptBytes caps the per-session role prompt. The text rides the
+// engine argv on every spawn (and inside codex's TOML override), so an
+// unbounded value would eventually run into argv limits; 32 KiB is far beyond
+// any realistic identity/rule text.
+const maxRolePromptBytes = 32 * 1024
+
+func validateRolePrompt(s string) error {
+	if len(s) > maxRolePromptBytes {
+		return fmt.Errorf("角色提示过长：最多 %d 字节（当前 %d 字节）", maxRolePromptBytes, len(s))
+	}
+	return nil
+}
+
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name           string `json:"name"`
@@ -735,6 +748,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// but in one round trip.
 		Resident bool   `json:"resident"`
 		PeerName string `json:"peer_name"`
+		// RolePrompt is appended to the engine's system prompt on every turn
+		// (claude/qoder/mcode via --append-system-prompt, codex via
+		// `-c instructions=`). Plain text, not a permission boundary.
+		RolePrompt string `json:"role_prompt"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
@@ -783,6 +800,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "unknown model for provider "+body.Provider+": "+body.Model)
 		return
 	}
+	if err := validateRolePrompt(body.RolePrompt); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if body.Cwd == "" {
 		writeErr(w, http.StatusBadRequest, "workspace (cwd) is required")
 		return
@@ -809,6 +830,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		PermissionMode: body.PermissionMode,
 		Resident:       body.Resident,
 		PeerName:       peerName,
+		RolePrompt:     body.RolePrompt,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -858,6 +880,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		SortOrder      *int    `json:"sort_order"`
 		Resident       *bool   `json:"resident"`
 		PeerName       *string `json:"peer_name"`
+		RolePrompt     *string `json:"role_prompt"`
 		Cwd            *string `json:"cwd"`
 		Unread         *bool   `json:"unread"`
 		Todo           *bool   `json:"todo"`
@@ -865,6 +888,12 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
 		return
+	}
+	if body.RolePrompt != nil {
+		if err := validateRolePrompt(*body.RolePrompt); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	// Unread/Todo are lightweight display flags toggled by the sidebar (open a
 	// session → clear unread; mark/clear todo). Route a flags-only patch on a
@@ -876,7 +905,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		body.Name == nil && body.CLI == nil && body.Provider == nil &&
 		body.Model == nil && body.Effort == nil && body.PermissionMode == nil &&
 		body.Archived == nil && body.SortOrder == nil && body.Resident == nil &&
-		body.PeerName == nil && body.Cwd == nil {
+		body.PeerName == nil && body.RolePrompt == nil && body.Cwd == nil {
 		if err := s.st.SetFlags(sess.ID, body.Unread, body.Todo); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1055,6 +1084,13 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.PermissionMode != nil {
 			cur.PermissionMode = *body.PermissionMode
+		}
+		if body.RolePrompt != nil {
+			// Stored only. A live resident keeps the value it was spawned with:
+			// restarting it here would interrupt an in-flight turn, so the new
+			// text applies on the next spawn (toggle resident, restart, or the
+			// next one-shot turn for non-resident sessions).
+			cur.RolePrompt = *body.RolePrompt
 		}
 		if body.Archived != nil {
 			cur.Archived = *body.Archived
@@ -2368,6 +2404,7 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 		ModelOverride:   src.ModelOverride,
 		EffortOverride:  src.EffortOverride,
 		PermissionMode:  src.PermissionMode,
+		RolePrompt:      src.RolePrompt,
 		Cwd:             src.Cwd,
 		ClaudeSessionID: forkedID,
 		CreatedAt:       now,

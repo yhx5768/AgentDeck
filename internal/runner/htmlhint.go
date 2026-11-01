@@ -19,7 +19,7 @@ import (
 //
 //	claude / qoder  --append-system-prompt <text>
 //	mcode           --append-system-prompt <text>
-//	codex / ducx    -c instructions=<text>（见 codexInstructionsArg）
+//	codex / ducx    -c instructions=<text>（见 codexInstructions）
 //	opencode        没有等价 flag。v1 prompt body 里的 system 字段是 **覆盖**
 //	                agent 自己的 system prompt（见 opencodeapi.PromptInput 的
 //	                注释），填进去会把 opencode 的 agent 指令顶掉，比不注入更糟，
@@ -56,36 +56,61 @@ const htmlRenderHint = `【本界面的 HTML 渲染能力】
 flowchart LR）。界面上会有「渲染」按钮把它画成图，跟随深浅色主题。这类图不要用
 ASCII 字符画，也不要塞进 HTML 页面里。`
 
-// appendHTMLRenderHint injects the hint into a spawn's args when the engine has a
-// real "append" flag and the user hasn't already supplied one in cli.Args.
+// appendSystemPrompt injects the per-session role prompt and/or the HTML render
+// hint into a spawn's args when the engine has a real "append" flag and the
+// user hasn't already supplied one in cli.Args.
+//
+// The two texts share a single --append-system-prompt argument because the CLI
+// accepts exactly one: passing the flag twice would make the last occurrence
+// win and silently drop the other text. Role prompt first (it defines the
+// worker's identity) and the interface hint second.
+//
 // hasArg matters: a user who put their own --append-system-prompt in config.yaml
 // must not end up with two (CLIs generally take the last one, so ours would
-// silently win and theirs would be ignored).
+// silently win and theirs would be ignored). That also means a session role
+// prompt is not injected when cli.Args carries its own flag — the user's
+// explicit config wins wholesale.
 //
 // The dedup check looks at cli.Args as well as args rather than trusting the
-// caller to have merged them already: all three call sites do append cli.Args
-// first, but mcode's ordering was once off by a few lines and the check silently
+// caller to have merged them already: all call sites do append cli.Args first,
+// but mcode's ordering was once off by a few lines and the check silently
 // stopped seeing the user's flag. Making the function order-independent removes
 // that whole class of bug.
-func (m *Manager) appendHTMLRenderHint(args []string, cli *config.CLI) []string {
-	if !m.htmlHintEnabled() {
-		return args
-	}
+func (m *Manager) appendSystemPrompt(args []string, cli *config.CLI, rolePrompt string) []string {
 	if hasArg(args, "--append-system-prompt") {
 		return args
 	}
 	if cli != nil && hasArg(cli.Args, "--append-system-prompt") {
 		return args
 	}
-	return append(args, "--append-system-prompt", htmlRenderHint)
+	text := composeSystemPrompt(m.htmlHintEnabled(), rolePrompt)
+	if text == "" {
+		return args
+	}
+	return append(args, "--append-system-prompt", text)
+}
+
+// composeSystemPrompt joins the parts that ride the single append flag: the
+// role prompt (when set) and the HTML render hint (when enabled). Empty when
+// neither applies, so callers never append an empty argument.
+func composeSystemPrompt(withHint bool, rolePrompt string) string {
+	var parts []string
+	if rp := strings.TrimSpace(rolePrompt); rp != "" {
+		parts = append(parts, rp)
+	}
+	if withHint {
+		parts = append(parts, htmlRenderHint)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (m *Manager) htmlHintEnabled() bool {
 	return m.cm == nil || m.cm.Get().HTMLHintEnabled()
 }
 
-// codexInstructionsArg renders the hint as a codex `-c instructions=...`
-// override. codex has no append flag, and its two neighbouring keys do not fit:
+// codexInstructions renders the role prompt and/or hint as a codex
+// `-c instructions=...` override. codex has no append flag, and its two
+// neighbouring keys do not fit:
 //
 //   - developer_instructions is stored with the thread at creation time, so
 //     `exec resume` keeps the old value and silently ignores the override —
@@ -97,8 +122,8 @@ func (m *Manager) htmlHintEnabled() bool {
 // developer message before the built-in blocks, so resumed sessions get it too.
 // The value must be TOML, not JSON; strconv.Quote's escapes are a subset TOML
 // accepts for this text (quotes and newlines only — no raw control bytes).
-func codexInstructionsArg() string {
-	return "instructions=" + strconv.Quote(htmlRenderHint)
+func codexInstructions(withHint bool, rolePrompt string) string {
+	return "instructions=" + strconv.Quote(composeSystemPrompt(withHint, rolePrompt))
 }
 
 // hasConfigOverride reports whether args already carries `-c <key>=...` (or the
