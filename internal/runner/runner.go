@@ -1143,7 +1143,7 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
 	model := prov.EffectiveModel(sess.ModelOverride)
 
-	h, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, resolvedCwd)
+	h, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, resolvedCwd, m.browserSessionFor(sessionID))
 	if err != nil {
 		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
 		m.setIdle(sessionID, err.Error())
@@ -1500,7 +1500,8 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 	hintOn := m.htmlHintEnabled()
 	wantInstructions := (hintOn || strings.TrimSpace(sess.RolePrompt) != "") &&
 		!hasConfigOverride(cli.Args, "instructions")
-	if (sess.EffortOverride != "" || wantInstructions) && cli.ModelProvider != "" {
+	_, wantBrowser := m.browserMCPInfo(sess.ID)
+	if (sess.EffortOverride != "" || wantInstructions || wantBrowser) && cli.ModelProvider != "" {
 		args = append(args, "-c", "model_provider="+cli.ModelProvider)
 	}
 	if sess.EffortOverride != "" {
@@ -1508,6 +1509,9 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 	}
 	if wantInstructions {
 		args = append(args, "-c", codexInstructions(hintOn, sess.RolePrompt))
+	}
+	if wantBrowser {
+		args, _ = m.appendBrowserMCPCodex(args, sess.ID)
 	}
 	for _, f := range msg.Files {
 		if isImageFile(f.Path) {

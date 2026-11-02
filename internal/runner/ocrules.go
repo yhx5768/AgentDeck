@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -88,6 +89,66 @@ func (m *Manager) ensureOpencodeRule() string {
 	if err := writeIfChanged(cfgPath, []byte(cfg)); err != nil {
 		log.Printf("写 %s 失败: %v", cfgPath, err)
 		return ""
+	}
+	return dir
+}
+
+// ensureOpencodeRuleFor is ensureOpencodeRule plus a browser MCP entry when
+// the session has browser tools. OpenCode's serve process reads its config at
+// startup and shares one process across sessions, so a browser-enabled session
+// gets its own config directory and its own serve process (see acquire).
+func (m *Manager) ensureOpencodeRuleFor(sessionID string) string {
+	if sessionID == "" {
+		return m.ensureOpencodeRule()
+	}
+	info, ok := m.browserMCPInfo(sessionID)
+	if !ok {
+		return m.ensureOpencodeRule()
+	}
+	base, err := opencodeConfigDir()
+	if err != nil {
+		log.Printf("opencode 隔离配置目录不可用: %v", err)
+		return ""
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		log.Printf("opencode 隔离配置目录创建失败 %s: %v", base, err)
+		return ""
+	}
+	config := map[string]any{
+		"$schema": "https://opencode.ai/config.json",
+	}
+	if m.cm == nil || m.cm.Get().HTMLHintEnabled() {
+		hintPath := filepath.Join(base, "HTML_RENDER_HINT.md")
+		hint := strings.TrimSpace(htmlRenderHint) + "\n"
+		if err := writeIfChanged(hintPath, []byte(hint)); err == nil {
+			config["instructions"] = []string{hintPath}
+		} else {
+			log.Printf("写 %s 失败: %v", hintPath, err)
+		}
+	}
+	config["mcp"] = map[string]any{
+		"servers": map[string]any{
+			"browser": map[string]any{
+				"type":        "local",
+				"command":     append([]string{info.Command}, info.Args...),
+				"environment": info.Env,
+			},
+		},
+	}
+	raw, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		log.Printf("opencode browser mcp: marshal: %v", err)
+		return m.ensureOpencodeRule()
+	}
+	dir := filepath.Join(base, "sessions", safeSessionName(sessionID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("opencode session config dir 创建失败 %s: %v", dir, err)
+		return m.ensureOpencodeRule()
+	}
+	path := filepath.Join(dir, "opencode.json")
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		log.Printf("写 %s 失败: %v", path, err)
+		return m.ensureOpencodeRule()
 	}
 	return dir
 }

@@ -134,7 +134,21 @@ internal/server.(*Server).handleBrowserStream() browser.go:185
 
 回归：打开 `https://icode.baidu.com/` 的 UUAP 扫码页并保持 SSE 面板，执行 5 轮 browser close/open + SSE 断开/重连，无 panic，服务 PID 不变；扫码本身需要用户账号，未在自动化里完成。
 
-## 未完成 / 已知限制
+## 多引擎 MCP 接入（2026-11-02）
+
+| 引擎 | 注入方式 | 状态 |
+|---|---|---|
+| Claude / Qoder | 每会话 `--mcp-config <0600 json>` | 已验证，原有路径不变 |
+| Codex / ducx | `-c mcp_servers.browser.*`；token 不放在 argv，改用 0700 wrapper + 0600 env 文件 | 已实测 `browser_status` 返回 running/URL/control |
+| OpenCode v2.1.4 | 每会话 `OPENCODE_CONFIG_DIR` 下的 `opencode.json`，`mcp.servers.browser`；浏览器会话使用独立 serve 进程 | 已实测 `browser_status` 返回 running/URL/control |
+| mcode 0.7.0 | `exec` 只自动加载 session cwd 的 `.mcp.json`；ACP 可按会话传 mcpServers，但 AgentDeck 未接 ACP | 未接入；不写用户仓库，因此本 PoC 的 mcode 无 browser_* 工具 |
+
+Codex 细节：`-c` 的值会出现在进程 argv，所以不能把 token 放进 `mcp_servers.browser.env`。现在生成 `data/browser/mcp/codex/<session>.sh`（0700）和 `<session>.env`（0600），wrapper 读取 env 后 exec `cc-webui -browser-mcp`；argv 只有 wrapper 路径。实测 `ducx mcp list` 能看到 browser，真实会话调用 `browser_status` 成功。
+
+OpenCode 细节：`opencode serve` 是长驻进程、配置在启动时读取，不能把不同会话的 MCP env 混在同一个 serve 里。浏览器开启时，`serveKey` 加入 session id，`OPENCODE_CONFIG_DIR` 指向 `~/.config/cc-webui/opencode/sessions/<session>/`，该目录的 `opencode.json` 含 `instructions` 和 `mcp.servers.browser`，文件 0600；非浏览器会话仍共用原 serve。实测真实会话调用 `browser_status` 成功。
+
+mcode 0.7.0 的 `exec` 只读取会话主工作目录的 `.mcp.json`；AgentDeck 不向用户仓库写文件，所以没有安全的 per-session 注入点。mcode ACP 协议有 per-session `mcpServers`，但当前 AgentDeck 的 mcode 引擎走 `exec`，本 PoC 不切换；后续可评估 ACP 或显式 opt-in 的 `.mcp.json`。
+
 
 - 单标签页；没有多 tab、frames/shadow DOM 完整支持、dialog、下载、上传、文件选择器。
 - 没有真正的出口代理（SOCKS5/HTTP CONNECT）；目前是导航前 URL 解析 + 私网/metadata 拦截，挡不住已打开页面里的子资源请求直连内网。产品化前应补浏览器级 egress gate（参考 OpenMausBot `server/browser/egress/`）。

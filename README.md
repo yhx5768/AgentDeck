@@ -46,7 +46,7 @@ AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流
 | 移动优先 PWA | 抽屉导航、底部操作面板、响应式布局、深浅主题切换，iOS 独立 PWA 会避开状态栏安全区。 |
 | 安全网关 | 单一 `gateway_token` 鉴权；文件与图片预览严格限制在会话工作区内。 |
 
-> **浏览器 PoC（实验分支）**：设置页可开启本地 Chrome，Claude 通过 MCP 使用 `browser_*` 工具，Web 面板可看实时画面并人工接管。默认关闭；能力边界、配置和未完成项见 [docs/browser-poc.md](docs/browser-poc.md)。
+> **浏览器 PoC（实验分支）**：设置页可开启本地 Chrome，Claude 通过 MCP 使用 `browser_*` 工具，Web 面板可看实时画面并人工接管。默认关闭；Claude/Qoder/Codex/OpenCode 已接，mcode 受项目 .mcp.json 限制未接；能力边界、配置和未完成项见 [docs/browser-poc.md](docs/browser-poc.md)。
 
 ---
 
