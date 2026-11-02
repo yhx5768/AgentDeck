@@ -172,8 +172,13 @@ func (p *Provider) EffectiveModel(override string) string {
 // an unset value means off; the runtime setting written by the Settings toggle
 // can override it without rewriting config.yaml.
 type BrowserConfig struct {
-	Enabled     *bool    `yaml:"enabled" json:"enabled,omitempty"`
-	ChromePath  string   `yaml:"chrome_path" json:"chrome_path,omitempty"`
+	Enabled    *bool  `yaml:"enabled" json:"enabled,omitempty"`
+	ChromePath string `yaml:"chrome_path" json:"chrome_path,omitempty"`
+	// ProfileKey, when set, makes every AgentDeck session use one stable Chrome
+	// profile (for example "me"), so a login survives switching sessions. Empty
+	// keeps the default per-session profile. Only one browser may use a shared
+	// profile at a time.
+	ProfileKey  string   `yaml:"profile_key" json:"profile_key,omitempty"`
 	MaxBrowsers int      `yaml:"max_browsers" json:"max_browsers,omitempty"`
 	IdleMinutes int      `yaml:"idle_minutes" json:"idle_minutes,omitempty"`
 	FPS         int      `yaml:"fps" json:"fps,omitempty"`

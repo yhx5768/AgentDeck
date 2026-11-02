@@ -23,6 +23,7 @@ var (
 	ErrDisabled       = errors.New("浏览器功能未开启")
 	ErrChromeMissing  = errors.New("未找到本地 Chrome/Chromium")
 	ErrCapacity       = errors.New("浏览器并发已达上限")
+	ErrProfileBusy    = errors.New("浏览器共享 profile 正在被另一个会话使用")
 	ErrHumanControl   = errors.New("浏览器已被人工接管")
 	errSessionStopped = errors.New("浏览器已关闭")
 )
@@ -51,10 +52,11 @@ type Manager struct {
 	cm      *config.Manager
 	dataDir string
 
-	mu       sync.Mutex
-	sessions map[string]*Session
-	enabled  bool
-	chrome   ChromeInfo
+	mu            sync.Mutex
+	sessions      map[string]*Session
+	profileOwners map[string]string // profile name -> session id
+	enabled       bool
+	chrome        ChromeInfo
 
 	settingsPath string
 	lastErr      string
@@ -62,11 +64,12 @@ type Manager struct {
 }
 
 type Session struct {
-	id       string
-	profile  string
-	ctx      context.Context
-	cancel   context.CancelFunc
-	allocCxl context.CancelFunc
+	id          string
+	profileName string
+	profile     string
+	ctx         context.Context
+	cancel      context.CancelFunc
+	allocCxl    context.CancelFunc
 
 	actionMu   sync.Mutex
 	mu         sync.Mutex
@@ -101,6 +104,8 @@ type Status struct {
 	MaxBrowsers  int          `json:"max_browsers"`
 	IdleMinutes  int          `json:"idle_minutes"`
 	Reason       string       `json:"reason,omitempty"`
+	ProfileMode  string       `json:"profile_mode,omitempty"`
+	ProfileKey   string       `json:"profile_key,omitempty"`
 	Install      *InstallPlan `json:"install,omitempty"`
 }
 
@@ -114,10 +119,11 @@ type SessionStatus struct {
 
 func NewManager(cm *config.Manager, dataDir string) *Manager {
 	m := &Manager{
-		cm:           cm,
-		dataDir:      dataDir,
-		sessions:     map[string]*Session{},
-		settingsPath: filepath.Join(dataDir, "browser", "settings.json"),
+		cm:            cm,
+		dataDir:       dataDir,
+		sessions:      map[string]*Session{},
+		profileOwners: map[string]string{},
+		settingsPath:  filepath.Join(dataDir, "browser", "settings.json"),
 	}
 	if cfg := cm.Get(); cfg != nil {
 		m.enabled = cfg.BrowserOn()
@@ -183,6 +189,12 @@ func (m *Manager) Status() Status {
 		Running:      running,
 		MaxBrowsers:  cfg.MaxBrowsers,
 		IdleMinutes:  cfg.IdleMinutes,
+	}
+	if cfg.ProfileKey != "" {
+		st.ProfileMode = "shared"
+		st.ProfileKey = cfg.ProfileKey
+	} else {
+		st.ProfileMode = "session"
 	}
 	if chrome.Path == "" {
 		plan := InstallPlanFor()
@@ -252,6 +264,23 @@ func (m *Manager) Install(ctx context.Context) (Status, error) {
 	return m.Enable(ctx, true)
 }
 
+// profileName is the logical login container: one per session by default, or
+// one stable key shared by sessions when browser.profile_key is set.
+func (m *Manager) profileName(sessionID string) string {
+	key := strings.TrimSpace(m.config().ProfileKey)
+	if key == "" {
+		return "session:" + sessionID
+	}
+	return "shared:" + profileKey(key)
+}
+
+func profileDirName(name string) string {
+	if strings.HasPrefix(name, "shared:") {
+		return "shared-" + profileKey(strings.TrimPrefix(name, "shared:"))
+	}
+	return profileKey(strings.TrimPrefix(name, "session:"))
+}
+
 func (m *Manager) getOrCreate(sessionID string) (*Session, error) {
 	m.mu.Lock()
 	if m.closed {
@@ -280,20 +309,27 @@ func (m *Manager) getOrCreate(sessionID string) (*Session, error) {
 		m.mu.Unlock()
 		return nil, ErrChromeMissing
 	}
-	profile := filepath.Join(m.dataDir, "browser", "profiles", profileKey(sessionID))
+	profName := m.profileName(sessionID)
+	if owner, ok := m.profileOwners[profName]; ok && owner != sessionID {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w：会话 %s", ErrProfileBusy, owner)
+	}
+	profile := filepath.Join(m.dataDir, "browser", "profiles", profileDirName(profName))
 	if err := os.MkdirAll(profile, 0o700); err != nil {
 		m.mu.Unlock()
 		return nil, err
 	}
 	s := &Session{
-		id:       sessionID,
-		profile:  profile,
-		lastUsed: time.Now(),
-		control:  "agent",
-		viewers:  map[chan Frame]struct{}{},
-		ready:    make(chan struct{}),
+		id:          sessionID,
+		profileName: profName,
+		profile:     profile,
+		lastUsed:    time.Now(),
+		control:     "agent",
+		viewers:     map[chan Frame]struct{}{},
+		ready:       make(chan struct{}),
 	}
 	m.sessions[sessionID] = s
+	m.profileOwners[profName] = sessionID
 	m.mu.Unlock()
 
 	// Start outside the manager lock: a slow first Chrome must not block
@@ -303,6 +339,9 @@ func (m *Manager) getOrCreate(sessionID string) (*Session, error) {
 	if err != nil {
 		m.mu.Lock()
 		delete(m.sessions, sessionID)
+		if m.profileOwners[profName] == sessionID {
+			delete(m.profileOwners, profName)
+		}
 		m.lastErr = err.Error()
 		m.mu.Unlock()
 		return nil, err
@@ -538,6 +577,9 @@ func (m *Manager) CloseSession(sessionID string) {
 	m.mu.Lock()
 	s := m.sessions[sessionID]
 	delete(m.sessions, sessionID)
+	if s != nil && m.profileOwners[s.profileName] == sessionID {
+		delete(m.profileOwners, s.profileName)
+	}
 	m.mu.Unlock()
 	if s != nil {
 		s.close()
@@ -573,6 +615,9 @@ func (m *Manager) CloseAll() {
 	for id, s := range m.sessions {
 		sessions = append(sessions, s)
 		delete(m.sessions, id)
+		if m.profileOwners[s.profileName] == id {
+			delete(m.profileOwners, s.profileName)
+		}
 	}
 	m.mu.Unlock()
 	for _, s := range sessions {
@@ -606,6 +651,9 @@ func (m *Manager) reap() {
 			if !human && idleFor > idle {
 				close = append(close, s)
 				delete(m.sessions, id)
+				if m.profileOwners[s.profileName] == id {
+					delete(m.profileOwners, s.profileName)
+				}
 			}
 		}
 		m.mu.Unlock()

@@ -87,6 +87,21 @@ MCP 配置只注入 Claude/qoder 这一类支持 `--mcp-config` 的引擎；code
   - 修复后回归：SSE 打开时输入 `https://www.baidu.com/`，take/navigate 200，SSE 继续出帧；agent `browser_open` 在 SSE 打开时正常。
 - Claude Code 2.1.226 真实会话实测：`browser_status` MCP 工具被调用并返回 `running=true` 等原文。
 
+## 登录态与 profile（2026-11-02）
+
+默认每个 AgentDeck session 一个 Chrome profile（`browser/profiles/<session-id>`）。`browser_close` 会保留该 profile 的 cookie，同一个 session 再打开仍登录；但切换到另一个 AgentDeck session 会使用新的 profile，看起来就像“登录没保存”。
+
+实测当前 18821 的 demo session `4c97b470…`：profile Cookies 约 28 KB，最后写入 20:10；包含 `console.cloud.baidu-int.com`、`.uuap.baidu.com` 等 host 的 cookie（不读取/输出值）。打开 CR `123088562` 到达 `console.cloud.baidu-int.com/...`，标题“百度智能云度厂版”，内容含评审/文件变更；`browser_close` 后重新打开同一 CR 仍可直接访问。结论：cookie 持久化本身正常，“又要登录”更可能是切了 cc-webui 会话，或页面停在 UUAP authorize 页尚未自动跳回。
+
+如果希望跨 AgentDeck 会话复用登录态，可配置一个稳定 profile：
+
+```yaml
+browser:
+  profile_key: "me"   # 留空 = 按会话隔离
+```
+
+同一时间只允许一个浏览器使用该共享 profile；第二个会话会收到“共享 profile 正在被另一个会话使用”的明确错误。迁移旧登录态：先关闭浏览器/服务，把 `browser/profiles/<旧 session>` 复制到 `browser/profiles/shared-<key>`，设置 `profile_key` 后重启。18821 预览已迁移到 `profile_key: user`，验证第二个会话在第一会话关闭浏览器后可直接打开 CR，无需重新扫码。
+
 ## 崩溃修复（2026-11-02）
 
 用户反馈在浏览器面板输入网址后卡住。现场：`cc-webui-browser-poc.service` 仍 active、无 panic、Chrome 子进程仍在。

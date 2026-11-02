@@ -1,6 +1,10 @@
 package browser
 
-import "testing"
+import (
+	"testing"
+
+	"cc-webui/internal/config"
+)
 
 func TestViewerCloseAndUnsubscribeDoNotDoubleClose(t *testing.T) {
 	s := &Session{viewers: map[chan Frame]struct{}{}, ready: make(chan struct{})}
@@ -29,5 +33,24 @@ func TestSubscribeAfterCloseIsAlreadyClosed(t *testing.T) {
 	unsub()
 	if _, ok := <-ch; ok {
 		t.Fatal("late viewer should get a closed channel")
+	}
+}
+
+func TestProfileNameModes(t *testing.T) {
+	cm := config.NewManager("", &config.Config{DataDir: t.TempDir(), Browser: config.BrowserConfig{}})
+	m := NewManager(cm, t.TempDir())
+	if got := m.profileName("s1"); got != "session:s1" {
+		t.Fatalf("session profile = %q", got)
+	}
+	if got := profileDirName("session:s1"); got != "s1" {
+		t.Fatalf("session dir = %q", got)
+	}
+	cm2 := config.NewManager("", &config.Config{DataDir: t.TempDir(), Browser: config.BrowserConfig{ProfileKey: "me"}})
+	m2 := NewManager(cm2, t.TempDir())
+	if got := m2.profileName("s1"); got != "shared:me" {
+		t.Fatalf("shared profile = %q", got)
+	}
+	if got := profileDirName("shared:me"); got != "shared-me" {
+		t.Fatalf("shared dir = %q", got)
 	}
 }

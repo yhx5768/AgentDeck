@@ -19,6 +19,7 @@ default_cwd: "~"
 # browser:
 #   enabled: false
 #   chrome_path: ""        # 留空自动检测；也可是绝对路径或 PATH 里的命令
+#   profile_key: ""       # 留空=按会话隔离；填稳定值（如 me）可跨会话复用登录态
 #   max_browsers: 2        # 1..4，同时运行的 Chrome 数
 #   idle_minutes: 10       # 1..60，空闲关闭，保留登录态
 #   fps: 8                 # 1..15，实时画面帧率
