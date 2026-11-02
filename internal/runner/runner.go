@@ -115,12 +115,15 @@ type sessionRuntime struct {
 
 // Manager spawns claude processes and fans out stream events.
 type Manager struct {
-	cm    *config.Manager
-	st    *store.Store
-	mu    sync.Mutex
-	procs map[string]*sessionRuntime
-	perm  *permissionState
-	grp   *groupState
+	cm *config.Manager
+	st *store.Store
+	// browserEnabled reports the live Settings toggle. The browser MCP config
+	// is injected per spawn only while it is on.
+	browserEnabled func() bool
+	mu             sync.Mutex
+	procs          map[string]*sessionRuntime
+	perm           *permissionState
+	grp            *groupState
 	// ocPool owns the `opencode serve` child processes shared by every
 	// opencode-kind session (see ocserve.go).
 	ocPool *opencodeServePool
@@ -130,8 +133,11 @@ type Manager struct {
 	ocTurnsV2 *ocTurnRegistryV2
 }
 
-func NewManager(cm *config.Manager, st *store.Store) *Manager {
+func NewManager(cm *config.Manager, st *store.Store, browserEnabled ...func() bool) *Manager {
 	m := &Manager{cm: cm, st: st, procs: map[string]*sessionRuntime{}, perm: newPermissionState(), grp: newGroupState()}
+	if len(browserEnabled) > 0 {
+		m.browserEnabled = browserEnabled[0]
+	}
 	m.ocPool = newOpencodeServePool(m)
 	m.ocTurns = newOcTurnRegistry()
 	m.ocTurnsV2 = newOcTurnRegistryV2()
@@ -930,6 +936,7 @@ func (m *Manager) buildStreamJSONArgs(sess *store.Session, cli *config.CLI, mode
 		args = append(args, d.effortFlag, sess.EffortOverride)
 	}
 	args = append(args, cli.Args...)
+	args = m.appendBrowserMCP(args, sess.ID)
 	return m.appendSystemPrompt(args, cli, sess.RolePrompt)
 }
 

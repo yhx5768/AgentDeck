@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"cc-webui/internal/browser"
 	"cc-webui/internal/config"
 	"cc-webui/internal/runner"
 	"cc-webui/internal/server"
@@ -31,10 +32,15 @@ func main() {
 	listen := flag.String("listen", "", "override listen address (e.g. 0.0.0.0:8321)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	permHelper := flag.Bool("perm-helper", false, "run as PermissionRequest hook helper (internal, spawned by the CLI)")
+	browserMCP := flag.Bool("browser-mcp", false, "run as the browser MCP stdio server (internal, spawned by the CLI)")
 	flag.Parse()
 
 	if *permHelper {
 		runner.RunPermHelper()
+		return
+	}
+	if *browserMCP {
+		browser.RunMCPProxy()
 		return
 	}
 
@@ -57,17 +63,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
-	mgr := runner.NewManager(cm, st)
+	bm := browser.NewManager(cm, cfg.DataDir)
 	// Owns the shared `opencode serve` child processes (they hold provider
 	// credentials in memory), so they are killed on shutdown.
+	mgr := runner.NewManager(cm, st, bm.Enabled)
 	defer mgr.Close()
+	defer bm.Shutdown()
 
 	static, err := fs.Sub(webFS, "web")
 	if err != nil {
 		log.Fatalf("embed fs: %v", err)
 	}
 
-	srv := server.New(cm, st, mgr, static)
+	srv := server.New(cm, st, mgr, static, bm)
 
 	// opencode providers that were logged into via the CLI are not listed in
 	// config.yaml; the discovery loop merges them into the live config and

@@ -12,6 +12,20 @@ data_dir: "./data"
 # 新建会话时的默认工作目录
 default_cwd: "~"
 
+# 浏览器 PoC（可选，默认关闭）。开启后 Claude 会话会拿到 browser_* MCP 工具，
+# Web UI 右上角出现浏览器面板。Chrome 必须是本机安装的 Chromium 系浏览器。
+# 运行时开关优先从 <data_dir>/browser/settings.json 读取；下面的 enabled 只是
+# 没有运行时设置时的默认值。
+# browser:
+#   enabled: false
+#   chrome_path: ""        # 留空自动检测；也可是绝对路径或 PATH 里的命令
+#   max_browsers: 2        # 1..4，同时运行的 Chrome 数
+#   idle_minutes: 10       # 1..60，空闲关闭，保留登录态
+#   fps: 8                 # 1..15，实时画面帧率
+#   quality: 60            # 20..90，JPEG 质量
+#   allow_local: false     # 是否允许访问 localhost/内网；默认拒绝
+#   allow_hosts: []        # 额外允许的 host 或 host:port
+
 # 每一轮都往 system prompt 追加一段「本界面能把整页 HTML 渲染成活的页面」的
 # 提示词（文本在 internal/runner/htmlhint.go），让模型把图表/仪表盘直接输出成
 # ```html 围栏而不是写成文件丢给用户自己开。

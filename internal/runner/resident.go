@@ -289,6 +289,7 @@ func (m *Manager) buildResidentArgs(sess *store.Session, cli *config.CLI, model 
 		args = append(args, "--effort", sess.EffortOverride)
 	}
 	args = append(args, cli.Args...)
+	args = m.appendBrowserMCP(args, sess.ID)
 	return m.appendSystemPrompt(args, cli, sess.RolePrompt)
 }
 

@@ -168,14 +168,35 @@ func (p *Provider) EffectiveModel(override string) string {
 	return p.DefaultModelName()
 }
 
+// BrowserConfig controls the optional browser runtime. Enabled is a pointer so
+// an unset value means off; the runtime setting written by the Settings toggle
+// can override it without rewriting config.yaml.
+type BrowserConfig struct {
+	Enabled     *bool    `yaml:"enabled" json:"enabled,omitempty"`
+	ChromePath  string   `yaml:"chrome_path" json:"chrome_path,omitempty"`
+	MaxBrowsers int      `yaml:"max_browsers" json:"max_browsers,omitempty"`
+	IdleMinutes int      `yaml:"idle_minutes" json:"idle_minutes,omitempty"`
+	FPS         int      `yaml:"fps" json:"fps,omitempty"`
+	Quality     int      `yaml:"quality" json:"quality,omitempty"`
+	AllowLocal  bool     `yaml:"allow_local" json:"allow_local,omitempty"`
+	AllowHosts  []string `yaml:"allow_hosts" json:"allow_hosts,omitempty"`
+}
+
+// BrowserOn reports the config-file default. The live switch is owned by the
+// browser manager, which persists a runtime override under data/browser.
+func (c *Config) BrowserOn() bool {
+	return c != nil && c.Browser.Enabled != nil && *c.Browser.Enabled
+}
+
 // Config is the top-level config structure.
 type Config struct {
-	Listen       string     `yaml:"listen"`
-	GatewayToken string     `yaml:"gateway_token"`
-	DataDir      string     `yaml:"data_dir"`
-	DefaultCwd   string     `yaml:"default_cwd"`
-	CLIs         []CLI      `yaml:"clis"`
-	Providers    []Provider `yaml:"providers"`
+	Listen       string        `yaml:"listen"`
+	GatewayToken string        `yaml:"gateway_token"`
+	DataDir      string        `yaml:"data_dir"`
+	DefaultCwd   string        `yaml:"default_cwd"`
+	Browser      BrowserConfig `yaml:"browser" json:"browser"`
+	CLIs         []CLI         `yaml:"clis"`
+	Providers    []Provider    `yaml:"providers"`
 
 	// DiscoveredProviders are runtime entries for engines whose providers live
 	// outside config.yaml — currently the provider ids an opencode cli reports
@@ -276,6 +297,33 @@ func Load(path string) (*Config, error) {
 		if cfg.Providers[i].Kind == "" {
 			cfg.Providers[i].Kind = KindClaude
 		}
+	}
+	if cfg.Browser.MaxBrowsers <= 0 {
+		cfg.Browser.MaxBrowsers = 2
+	}
+	if cfg.Browser.MaxBrowsers > 4 {
+		cfg.Browser.MaxBrowsers = 4
+	}
+	if cfg.Browser.IdleMinutes <= 0 {
+		cfg.Browser.IdleMinutes = 10
+	}
+	if cfg.Browser.IdleMinutes > 60 {
+		cfg.Browser.IdleMinutes = 60
+	}
+	if cfg.Browser.FPS <= 0 {
+		cfg.Browser.FPS = 8
+	}
+	if cfg.Browser.FPS > 15 {
+		cfg.Browser.FPS = 15
+	}
+	if cfg.Browser.Quality <= 0 {
+		cfg.Browser.Quality = 60
+	}
+	if cfg.Browser.Quality < 20 {
+		cfg.Browser.Quality = 20
+	}
+	if cfg.Browser.Quality > 90 {
+		cfg.Browser.Quality = 90
 	}
 	return cfg, nil
 }

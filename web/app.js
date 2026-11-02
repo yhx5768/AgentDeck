@@ -654,6 +654,7 @@ function renderIcons(root) {
     'panel-left-close', 'panel-left-open', 'list-collapse',
     // 工作区面板（右侧文件区）：开关按钮 + 文件树/预览里的图标
     'panel-right', 'git-compare', 'external-link', 'code', 'download',
+    'globe', 'arrow-left', 'arrow-right', 'rotate-cw', 'hand',
     'file-code', 'file-image', 'chevron-right', 'refresh-cw',
     'panel-right-close', 'panel-right-open', // 文件树折叠/展开
     'bot', 'users',

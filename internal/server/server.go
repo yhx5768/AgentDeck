@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode"
 
+	"cc-webui/internal/browser"
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/codexhist"
 	"cc-webui/internal/config"
@@ -113,11 +114,12 @@ func effortOKFor(kind, s string) bool {
 const cookieName = "ccgw_token"
 
 type Server struct {
-	cm     *config.Manager
-	st     *store.Store
-	mgr    *runner.Manager
-	static fs.FS
-	mux    *http.ServeMux
+	cm      *config.Manager
+	st      *store.Store
+	mgr     *runner.Manager
+	static  fs.FS
+	mux     *http.ServeMux
+	browser *browser.Manager
 
 	// ocCatalog memoizes a provider's model catalog per cli+provider (v1:
 	// `opencode models --verbose`; v2: `opencode api model.list --standalone`).
@@ -163,9 +165,12 @@ type ocCatalogEntry struct {
 // refresh runs behind it (see opencodeCatalog).
 const variantsTTL = 10 * time.Minute
 
-func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS) *Server {
+func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS, bm *browser.Manager) *Server {
+	if bm == nil {
+		bm = browser.NewManager(cm, cm.Get().DataDir)
+	}
 	s := &Server{
-		cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux(),
+		cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux(), browser: bm,
 		ocCatalog:      map[string]ocCatalogEntry{},
 		ocRefreshing:   map[string]bool{},
 		ocProviders:    map[string][]string{},
@@ -202,6 +207,14 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/sessions/{id}/goal", s.auth(s.handleSetGoal))
 	s.mux.Handle("DELETE /api/sessions/{id}/goal", s.auth(s.handleClearGoal))
 	s.mux.Handle("GET /api/sessions/{id}/events", s.auth(s.handleEvents))
+	s.mux.Handle("GET /api/browser/status", s.auth(s.handleBrowserStatus))
+	s.mux.Handle("POST /api/browser/enable", s.auth(s.handleBrowserEnable))
+	s.mux.Handle("POST /api/browser/disable", s.auth(s.handleBrowserDisable))
+	s.mux.Handle("POST /api/browser/install", s.auth(s.handleBrowserInstall))
+	s.mux.Handle("GET /api/sessions/{id}/browser/status", s.auth(s.handleBrowserSessionStatus))
+	s.mux.Handle("GET /api/sessions/{id}/browser/stream", s.auth(s.handleBrowserStream))
+	s.mux.Handle("POST /api/sessions/{id}/browser/input", s.auth(s.handleBrowserInput))
+	s.mux.HandleFunc("POST /api/internal/browser/mcp", s.handleInternalBrowserMCP)
 	s.mux.Handle("GET /api/claude-sessions", s.auth(s.handleClaudeSessions))
 	s.mux.Handle("GET /api/claude-sessions/preview", s.auth(s.handleClaudeSessionPreview))
 	s.mux.Handle("GET /api/opencode-sessions", s.auth(s.handleOpenCodeSessions))
@@ -1160,6 +1173,9 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	s.mgr.TeardownResident(id)
 	s.mgr.Stop(id)
 	s.mgr.ClearPermissions(id)
+	if s.browser != nil {
+		s.browser.CloseSession(id)
+	}
 	// Uploaded attachments live under data/uploads/<sid>/ — drop them with
 	// the session. Best-effort: the store is the source of truth, a leftover
 	// uploads dir is only wasted space.
@@ -2646,9 +2662,16 @@ func (s *Server) Run() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	srv := s.httpServer()
 	if srv == nil {
+		if s.browser != nil {
+			s.browser.Shutdown()
+		}
 		return nil
 	}
-	return srv.Shutdown(ctx)
+	err := srv.Shutdown(ctx)
+	if s.browser != nil {
+		s.browser.Shutdown()
+	}
+	return err
 }
 
 func (s *Server) setHTTPServer(srv *http.Server) {

@@ -101,6 +101,7 @@
           <span id="status-badge" class="status-badge"></span>
           <input id="session-cwd" class="cwd cwd-input" title="工作区目录（可编辑，项目迁移后改这里）" spellcheck="false" autocomplete="off">
           <div class="header-actions">
+            <button id="btn-browser" class="icon-btn" title="浏览器面板（实时画面 + 人工接管）"><i data-lucide="globe"></i></button>
             <button id="btn-workspace" class="icon-btn" title="工作区文件面板（文件树 + 预览）"><i data-lucide="panel-right"></i></button>
             <button id="btn-resident" class="icon-btn resident-icon-btn" title="常驻：保持进程在线，可被其他会话发消息"><i data-lucide="bot"></i></button>
             <button id="btn-resume" class="icon-btn" title="复制终端恢复该会话的命令"><i data-lucide="terminal"></i></button>
@@ -656,6 +657,14 @@
       </div>
       <label class="switch"><input type="checkbox" id="pref-sound"><span class="slider"></span></label>
     </div>
+    <div class="settings-row">
+      <div class="settings-text">
+        <div class="settings-label">浏览器</div>
+        <div class="settings-sub" id="browser-setting-status">正在检测 Chrome…</div>
+        <div class="settings-sub" id="browser-setting-note">开关保存在服务器，开启后 Claude 会话可使用 browser_* 工具。</div>
+      </div>
+      <label class="switch"><input type="checkbox" id="pref-browser"><span class="slider"></span></label>
+    </div>
     <div class="modal-actions">
       <button class="primary-btn" data-close>完成</button>
     </div>
@@ -681,6 +690,27 @@
   </div>
 </div>
 
+<!-- 浏览器 PoC：实时画面 + 人工接管（独立于工作区面板，不进入会话事件流） -->
+<div id="browser-panel" class="browser-panel hidden" aria-label="浏览器">
+  <div class="browser-head">
+    <div class="browser-nav">
+      <button id="browser-back" class="icon-btn" title="后退"><i data-lucide="arrow-left"></i></button>
+      <button id="browser-forward" class="icon-btn" title="前进"><i data-lucide="arrow-right"></i></button>
+      <button id="browser-reload" class="icon-btn" title="刷新"><i data-lucide="rotate-cw"></i></button>
+      <input id="browser-address" class="browser-address" placeholder="输入地址后回车，例如 example.com" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="browser-actions">
+      <button id="browser-take" class="ghost-btn">接管</button>
+      <button id="browser-close" class="icon-btn" title="关闭浏览器面板"><i data-lucide="x"></i></button>
+    </div>
+  </div>
+  <div id="browser-status" class="browser-status">正在连接浏览器…</div>
+  <div id="browser-stage" class="browser-stage">
+    <canvas id="browser-canvas" tabindex="0"></canvas>
+    <div id="browser-empty" class="browser-empty">浏览器面板会在这里显示实时画面。先让 Claude 打开一个页面，或在地址栏输入地址。</div>
+  </div>
+</div>
+
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
@@ -693,5 +723,6 @@
 <script src="/trajectory.js"></script>
 <script src="/app.js"></script>
 <script src="/workspace.js"></script>
+<script src="/browser.js"></script>
 </body>
 </html>
