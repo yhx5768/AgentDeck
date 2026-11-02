@@ -204,6 +204,8 @@ AgentDeck 有五个引擎，由 `config.yaml` 里 cli/provider 的 `kind` 决定
 
 开启常驻后，会话保持一个 `--input-format stream-json` 的双向进程在线，并把地址名写成 Claude transcript 末尾的 `custom-title`，CLI 据此注册 messaging socket。其他 Claude 会话用内置 `SendMessage({"to":"<地址名>", ...})` 发来消息；入站消息由 CLI 写成一条 `origin.kind:"peer"` 的 user 记录，经既有 stream 事件通路透天成紫色气泡。地址名变更需要重启常驻进程；rewind 会先拆掉常驻进程再截断 transcript，避免进程内存与磁盘历史分叉；服务重启后自动按已保存的地址名恢复。
 
+用一个常驻主会话给多个常驻 worker 派工、worker 用 `SendMessage` 回报的用法，见 [docs/main-agent-best-practices.md](docs/main-agent-best-practices.md)。
+
 ### 关于 env 注入
 
 Claude Code 的 `~/.claude/settings.json` 里的 `env` 段会覆盖进程继承的环境变量，因此只往进程注入 `ANTHROPIC_BASE_URL` 等并不生效。AgentDeck 的处理方式：
