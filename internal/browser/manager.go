@@ -68,6 +68,7 @@ type Session struct {
 	cancel   context.CancelFunc
 	allocCxl context.CancelFunc
 
+	actionMu   sync.Mutex
 	mu         sync.Mutex
 	started    bool
 	closed     bool

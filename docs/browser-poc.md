@@ -84,7 +84,18 @@ MCP 配置只注入 Claude/qoder 这一类支持 `--mcp-config` 的引擎；code
   - 并发第 3 个会话得到“浏览器并发已达上限”。
   - `file:///etc/passwd`、`169.254.169.254`、`100.100.100.200`、AgentDeck 自己的端口均被拒绝。
   - `browser_restart` 可用；密码字段 snapshot 显示 `[value masked]`，不泄露值。
+  - 修复后回归：SSE 打开时输入 `https://www.baidu.com/`，take/navigate 200，SSE 继续出帧；agent `browser_open` 在 SSE 打开时正常。
 - Claude Code 2.1.226 真实会话实测：`browser_status` MCP 工具被调用并返回 `running=true` 等原文。
+
+## 崩溃修复（2026-11-02）
+
+用户反馈在浏览器面板输入网址后卡住。现场：`cc-webui-browser-poc.service` 仍 active、无 panic、Chrome 子进程仍在。
+
+根因：`Manager.Input` / `Manager.Execute` 在调用 `chromedp.Run` 时持有 `Session.mu`；`Session.onEvent` 处理 `Page.screencastFrame` 时同步获取同一把锁。CDP 动作在等响应，而 chromedp 的事件循环被 `onEvent` 的 `Mutex.Lock` 阻塞，形成死锁。SIGQUIT goroutine dump 显示 `Manager.Input.Navigate.responseAction` 停在 `chromedp.Run`，`Session.onEvent` 停在 `sync.Mutex.Lock`。
+
+修复：新增 `Session.actionMu` 串行化 CDP 动作；`Session.mu` 只保护短状态和订阅者；`updatePage` 只在写入字段时短暂加锁；导航/截图/点击等动作加 5–30 秒超时。这样 screencast 事件不再被动作锁挡住。
+
+回归：面板 SSE 打开时输入 `https://www.baidu.com/`，`take` + `navigate` 返回 200，SSE 持续出帧；agent 在 SSE 打开时执行 `browser_open` 也正常。修复提交见本轮回报。
 
 ## 未完成 / 已知限制
 

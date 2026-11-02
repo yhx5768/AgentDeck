@@ -115,6 +115,15 @@ func boolArg(args map[string]any, key string) bool {
 	return v
 }
 
+// runAction bounds a CDP action so a stalled page cannot keep the HTTP
+// handler (and the browser panel request) waiting forever. Cancelling the
+// child context aborts the action, not the browser session.
+func (s *Session) runAction(timeout time.Duration, actions ...chromedp.Action) error {
+	ctx, cancel := context.WithTimeout(s.ctx, timeout)
+	defer cancel()
+	return chromedp.Run(ctx, actions...)
+}
+
 // Execute runs one MCP browser tool call. The caller already checked that the
 // session exists and the browser switch is on.
 func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[string]any) Result {
@@ -142,15 +151,21 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 	if err != nil {
 		return errorResult(err.Error())
 	}
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
+	closed := s.closed
+	human := s.control == "human"
+	if !closed && !human {
+		s.lastUsed = time.Now()
+	}
+	s.mu.Unlock()
+	if closed {
 		return errorResult(errSessionStopped.Error())
 	}
-	if s.control == "human" && name != "browser_status" {
+	if human {
 		return errorResult(ErrHumanControl.Error() + "；等待用户交还浏览器后再继续。")
 	}
-	s.lastUsed = time.Now()
 
 	switch name {
 	case "browser_open":
@@ -158,7 +173,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 		if err != nil {
 			return errorResult(err.Error())
 		}
-		if err := chromedp.Run(s.ctx, chromedp.Navigate(url)); err != nil {
+		if err := s.runAction(30*time.Second, chromedp.Navigate(url)); err != nil {
 			return errorResult("open failed: " + err.Error())
 		}
 		s.waitReady()
@@ -177,7 +192,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 			default:
 				return errorResult("action must be back, forward or reload")
 			}
-			if err := chromedp.Run(s.ctx, chromedp.Evaluate(js, nil)); err != nil {
+			if err := s.runAction(10*time.Second, chromedp.Evaluate(js, nil)); err != nil {
 				return errorResult("navigate failed: " + err.Error())
 			}
 			time.Sleep(300 * time.Millisecond)
@@ -188,7 +203,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 		if err != nil {
 			return errorResult(err.Error())
 		}
-		if err := chromedp.Run(s.ctx, chromedp.Navigate(url)); err != nil {
+		if err := s.runAction(30*time.Second, chromedp.Navigate(url)); err != nil {
 			return errorResult("navigate failed: " + err.Error())
 		}
 		s.waitReady()
@@ -209,7 +224,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 		js := fmt.Sprintf(`(() => { const el = %s; if (!el) return "__not_found__"; const t = (el.innerText || el.textContent || "").replace(/ /g, " "); return t.slice(%d, %d); })()`,
 			jsElement(sel), offset, offset+maxChars)
 		var out string
-		if err := chromedp.Run(s.ctx, chromedp.Evaluate(js, &out)); err != nil {
+		if err := s.runAction(10*time.Second, chromedp.Evaluate(js, &out)); err != nil {
 			return errorResult("read failed: " + err.Error())
 		}
 		if out == "__not_found__" {
@@ -220,9 +235,9 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 		var buf []byte
 		var err error
 		if boolArg(args, "full_page") {
-			err = chromedp.Run(s.ctx, chromedp.FullScreenshot(&buf, 80))
+			err = s.runAction(20*time.Second, chromedp.FullScreenshot(&buf, 80))
 		} else {
-			err = chromedp.Run(s.ctx, chromedp.CaptureScreenshot(&buf))
+			err = s.runAction(20*time.Second, chromedp.CaptureScreenshot(&buf))
 		}
 		if err != nil {
 			return errorResult("screenshot failed: " + err.Error())
@@ -237,7 +252,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 		if err != nil {
 			return errorResult(err.Error())
 		}
-		if err := chromedp.Run(s.ctx, chromedp.Click(sel, chromedp.ByQuery)); err != nil {
+		if err := s.runAction(15*time.Second, chromedp.Click(sel, chromedp.ByQuery)); err != nil {
 			return errorResult("click failed: " + err.Error())
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -261,7 +276,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 			return "ok";
 		})()`, jsElement(sel), jsonString(text), jsonString(text), fmt.Sprint(boolArg(args, "submit")))
 		var out string
-		if err := chromedp.Run(s.ctx, chromedp.Evaluate(js, &out)); err != nil {
+		if err := s.runAction(10*time.Second, chromedp.Evaluate(js, &out)); err != nil {
 			return errorResult("fill failed: " + err.Error())
 		}
 		if out != "ok" {
@@ -276,11 +291,11 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 		}
 		text := strArg(args, "text")
 		if boolArg(args, "clear") {
-			if err := chromedp.Run(s.ctx, chromedp.Clear(sel, chromedp.ByQuery)); err != nil {
+			if err := s.runAction(10*time.Second, chromedp.Clear(sel, chromedp.ByQuery)); err != nil {
 				return errorResult("clear failed: " + err.Error())
 			}
 		}
-		if err := chromedp.Run(s.ctx, chromedp.SendKeys(sel, text, chromedp.ByQuery)); err != nil {
+		if err := s.runAction(20*time.Second, chromedp.SendKeys(sel, text, chromedp.ByQuery)); err != nil {
 			return errorResult("type failed: " + err.Error())
 		}
 		s.updatePage()
@@ -291,7 +306,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 			return errorResult("key is required")
 		}
 		// chromedp.KeyEvent handles chords such as Control+a.
-		if err := chromedp.Run(s.ctx, chromedp.KeyEvent(key)); err != nil {
+		if err := s.runAction(10*time.Second, chromedp.KeyEvent(key)); err != nil {
 			return errorResult("press failed: " + err.Error())
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -319,14 +334,16 @@ func (s *Session) waitReady() {
 
 func (s *Session) updatePage() {
 	var url, title string
-	_ = chromedp.Run(s.ctx, chromedp.Location(&url), chromedp.Title(&title))
+	_ = s.runAction(5*time.Second, chromedp.Location(&url), chromedp.Title(&title))
+	s.mu.Lock()
 	s.url = url
 	s.title = title
+	s.mu.Unlock()
 }
 
 func (s *Session) snapshotText() string {
 	var out string
-	if err := chromedp.Run(s.ctx, chromedp.Evaluate(snapshotJS, &out)); err != nil {
+	if err := s.runAction(10*time.Second, chromedp.Evaluate(snapshotJS, &out)); err != nil {
 		return "snapshot failed: " + err.Error()
 	}
 	if len(out) > 20000 {
@@ -357,7 +374,7 @@ func (s *Session) wait(ctx context.Context, args map[string]any, timeout time.Du
 		}
 		js += "return " + strings.Join(conds, " && ") + "; })()"
 		var ok bool
-		if err := chromedp.Run(s.ctx, chromedp.Evaluate(js, &ok)); err != nil {
+		if err := s.runAction(10*time.Second, chromedp.Evaluate(js, &ok)); err != nil {
 			return fmt.Errorf("wait failed: %w", err)
 		}
 		if ok {
@@ -447,32 +464,40 @@ func (m *Manager) Input(ctx context.Context, sessionID string, ev InputEvent) er
 	if err != nil {
 		return err
 	}
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return errSessionStopped
 	}
 	if ev.Type == "take" {
 		s.control = "human"
 		s.lastUsed = time.Now()
+		s.mu.Unlock()
 		return nil
 	}
 	if ev.Type == "release" {
 		s.control = "agent"
 		s.lastUsed = time.Now()
+		s.mu.Unlock()
 		return nil
 	}
-	if s.control != "human" {
+	human := s.control == "human"
+	if human {
+		s.lastUsed = time.Now()
+	}
+	s.mu.Unlock()
+	if !human {
 		return ErrHumanControl
 	}
-	s.lastUsed = time.Now()
 	switch ev.Type {
 	case "navigate":
 		url, err := ValidateURL(ctx, ev.URL, m.config(), m.selfListen())
 		if err != nil {
 			return err
 		}
-		if err := chromedp.Run(s.ctx, chromedp.Navigate(url)); err != nil {
+		if err := s.runAction(30*time.Second, chromedp.Navigate(url)); err != nil {
 			return err
 		}
 		s.updatePage()
@@ -482,21 +507,21 @@ func (m *Manager) Input(ctx context.Context, sessionID string, ev InputEvent) er
 		if ev.Delta > 0 {
 			js = "history.forward()"
 		}
-		if err := chromedp.Run(s.ctx, chromedp.Evaluate(js, nil)); err != nil {
+		if err := s.runAction(10*time.Second, chromedp.Evaluate(js, nil)); err != nil {
 			return err
 		}
 		time.Sleep(300 * time.Millisecond)
 		s.updatePage()
 		return nil
 	case "reload":
-		if err := chromedp.Run(s.ctx, chromedp.Evaluate("location.reload()", nil)); err != nil {
+		if err := s.runAction(10*time.Second, chromedp.Evaluate("location.reload()", nil)); err != nil {
 			return err
 		}
 		time.Sleep(300 * time.Millisecond)
 		s.updatePage()
 		return nil
 	case "text":
-		return chromedp.Run(s.ctx, input.InsertText(ev.Text))
+		return s.runAction(10*time.Second, input.InsertText(ev.Text))
 	case "mouse":
 		typ := input.MouseMoved
 		switch ev.Action {
@@ -529,7 +554,7 @@ func (m *Manager) Input(ctx context.Context, sessionID string, ev InputEvent) er
 		if typ == input.KeyDown && ev.Text != "" {
 			p = p.WithText(ev.Text).WithUnmodifiedText(ev.Text)
 		}
-		return chromedp.Run(s.ctx, p)
+		return s.runAction(10*time.Second, p)
 	default:
 		return fmt.Errorf("unknown input type %q", ev.Type)
 	}
