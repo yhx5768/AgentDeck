@@ -25,7 +25,7 @@ go vet ./...                           # 干净
 GATEWAY_TOKEN=xxx CC_WEBUI_LISTEN=... CC_WEBUI_DATA_DIR=... ./cc-webui   # env 覆盖
 ```
 
-配置：`cp config.example.yaml config.yaml`。三层正交结构 `clis[] × providers[] × models[]`，生效 env 合并序 `cli.env → provider.env → model.env`（后者覆盖前者）。`config.yaml` 与 `data/` 均被 gitignore。
+配置：`cp config.example.yaml config.yaml`（百度内部只用 ducc/ducx 的精简版：`cp du_int.config.example.yaml config.yaml`）。三层正交结构 `clis[] × providers[] × models[]`，生效 env 合并序 `cli.env → provider.env → model.env`（后者覆盖前者）。`config.yaml` 与 `data/` 均被 gitignore。
 
 配置**热加载**：`config.Manager`（`internal/config/hot.go`）以 `atomic.Pointer[Config]` 持有当前配置，每 3s 轮询文件 mtime/size，变了就整体换指针——读配置永远经 `Server.cfg()` / `Manager.cfg()` getter，**严禁缓存 `*config.Config`**（否则热加载不生效）。`listen`/`data_dir` 保留启动值不换（服务/存储已绑定）；文件未显式给 token 时保留启动的自动生成 token（否则每次改动都登出）。解析失败保持旧配置并在下一 tick 重试。热加载成功后 `main.go` 里 `cm.Watch(3s, mgr.BroadcastConfigChanged)` 向所有 SSE 连接广播 transient `config_changed` 事件；前端 `refreshProfiles()` 重拉 `/api/clis`、`/api/providers` 并按签名去重，只重建当前会话的 cli/provider/model 下拉（已选值保留）。`/api/clis`、`/api/providers` 的 `env_keys` 由服务端 `sortedKeys` 排序——前端靠 JSON 字符串化签名判断变动，无序的 map 迭代会让签名每次都不一样。
 

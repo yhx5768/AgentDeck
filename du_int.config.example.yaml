@@ -1,0 +1,67 @@
+# AgentDeck 配置（内部标识仍为 cc-webui）—— 百度内部精简版
+#
+# 只保留 ducc / ducx 两个 CLI，模型清单由 CLI 自己提供，无需在这里声明。
+# 复制成 config.yaml 后填好 gateway_token 与两个二进制路径即可：
+#   cp du_int.config.example.yaml config.yaml
+# 需要更完整的示例（claude / opencode / mcode / qoder / codex 等）见 config.example.yaml。
+
+listen: "0.0.0.0:8321"
+
+# 简单鉴权 token（OpenClaw 风格）。为空则启动时随机生成并打印到控制台。
+# 也可用环境变量 GATEWAY_TOKEN 覆盖。
+gateway_token: "change-me-to-a-long-random-string"
+
+# 会话数据（db.json + 事件流）存放目录
+data_dir: "./data"
+
+# 新建会话时的默认工作目录
+default_cwd: "~"
+
+# 每一轮都往 system prompt 追加「本界面能把整页 HTML 渲染成活的页面」的约定，
+# 让模型把图表/仪表盘直接输出成 ```html 围栏。注释掉 = 开（默认），设 false 关闭。
+# ducc（claude 引擎）走 --append-system-prompt；ducx（codex 引擎）走
+# -c instructions=<TOML 字符串>。详见 config.example.yaml 的说明。
+# html_render_hint: false
+
+# 三层结构：clis[] × providers[] × models[]，生效 env 合并序
+# cli.env → provider.env → model.env（后者覆盖前者）。
+clis:
+  - name: "ducc"
+    # 换成你的 ducc 二进制路径（官方安装器一般落在 ~/.baidu-cc/baidu-cc/bin/ducc）
+    path: "/home/you/.baidu-cc/baidu-cc/bin/ducc"
+    # 模型清单从 CLI 自己的命令读取（`ducc models` → "Available Models: A, B, C"）。
+    # 网关模型随账号/CLI 升级变化，写死在 config 里会过期；留空则退回静态 models。
+    models_command: ["models"]
+    permission_mode: "default"   # 默认走 Web 审批卡；选 bypassPermissions 才全放行
+    partial_messages: true                # 逐 token 流式渲染（新版 CLI 支持）
+    args: []
+    env: {}
+
+  - name: "ducx"
+    kind: "codex"                 # ducx 是 Codex CLI 的百度二次封装，协议相同
+    path: "/home/you/.baidu-cx/baidu-cx/bin/ducx"
+    home: "~/.baidu-cx"           # ducx 忽略 CODEX_HOME，rollout 固定写这里
+    model_provider: "oneapi"      # 只要传 -c（例如档位/HTML hint），必须同时钉住
+                                  # provider，否则 ducx 会退回 api.openai.com
+    permission_mode: "bypassPermissions"  # default → --sandbox workspace-write
+    args: []
+    env: {}
+
+providers:
+  # ducc 的模型后端。模型清单来自 `ducc models`，这里留空即可——写死只会过期。
+  # 若想给某个模型声明输入模态（例如标 image 让前端知道它能读图），可在 models
+  # 里补一条同名条目，它只作模态提示、不再是可用集合：
+  #   models:
+  #     - name: "deepseek-v4.1-flash[1m]"
+  #       input: [text, image]
+  - name: "ducc-models"
+    env: {}                       # 端点/token 由 ducc launcher 自己注入
+    models: []
+
+  # ducx 的模型后端。可用模型与每个模型的推理档位由 CLI 侧目录提供
+  # （ducx 读自己的 <home>/model-catalogs/<model_provider>-models.json），
+  # 这里留空即可。
+  - name: "codex-ducx"
+    kind: "codex"
+    env: {}
+    models: []

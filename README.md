@@ -57,6 +57,8 @@ go build -o cc-webui .
 # 配置
 cp config.example.yaml config.yaml
 # 编辑 config.yaml：设置 gateway_token、你的 clis 与 providers
+# 百度内部只用 ducc / ducx（模型清单由 CLI 自己提供，无需声明）：
+#   cp du_int.config.example.yaml config.yaml
 
 # 运行
 ./cc-webui
@@ -159,7 +161,7 @@ providers:
     models: []                   # 留空：来自 `codex debug models --bundled`
 ```
 
-完整字段请参考 `config.example.yaml`。`html_render_hint: false` 可关闭每轮向模型注入的 HTML/Mermaid 输出约定。
+完整字段请参考 `config.example.yaml`（只保留 ducc / ducx 的百度内部精简版见 `du_int.config.example.yaml`）。`html_render_hint: false` 可关闭每轮向模型注入的 HTML/Mermaid 输出约定。
 
 ### 热加载
 
