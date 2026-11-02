@@ -42,7 +42,8 @@ func profileKey(sessionID string) string {
 }
 
 type settings struct {
-	Enabled bool `json:"enabled"`
+	Enabled       bool `json:"enabled"`
+	SharedProfile bool `json:"shared_profile"`
 }
 
 // Manager owns the PoC's one-browser-per-session runtime. It is deliberately
@@ -56,6 +57,7 @@ type Manager struct {
 	sessions      map[string]*Session
 	profileOwners map[string]string // profile name -> session id
 	enabled       bool
+	sharedProfile bool
 	chrome        ChromeInfo
 
 	settingsPath string
@@ -132,6 +134,7 @@ func NewManager(cm *config.Manager, dataDir string) *Manager {
 		var s settings
 		if json.Unmarshal(raw, &s) == nil {
 			m.enabled = s.Enabled
+			m.sharedProfile = s.SharedProfile
 		}
 	}
 	go m.reap()
@@ -163,7 +166,7 @@ func (m *Manager) persist() error {
 	if err := os.MkdirAll(filepath.Dir(m.settingsPath), 0o700); err != nil {
 		return err
 	}
-	raw, _ := json.Marshal(settings{Enabled: m.enabled})
+	raw, _ := json.Marshal(settings{Enabled: m.enabled, SharedProfile: m.sharedProfile})
 	tmp := m.settingsPath + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
@@ -174,6 +177,7 @@ func (m *Manager) persist() error {
 func (m *Manager) Status() Status {
 	m.mu.Lock()
 	enabled := m.enabled
+	shared := m.sharedProfile
 	running := len(m.sessions)
 	chrome := m.chrome
 	m.mu.Unlock()
@@ -190,9 +194,9 @@ func (m *Manager) Status() Status {
 		MaxBrowsers:  cfg.MaxBrowsers,
 		IdleMinutes:  cfg.IdleMinutes,
 	}
-	if cfg.ProfileKey != "" {
+	if shared {
 		st.ProfileMode = "shared"
-		st.ProfileKey = cfg.ProfileKey
+		st.ProfileKey = m.sharedKey()
 	} else {
 		st.ProfileMode = "session"
 	}
@@ -264,14 +268,34 @@ func (m *Manager) Install(ctx context.Context) (Status, error) {
 	return m.Enable(ctx, true)
 }
 
-// profileName is the logical login container: one per session by default, or
-// one stable key shared by sessions when browser.profile_key is set.
-func (m *Manager) profileName(sessionID string) string {
+// SetSharedProfile persists the Settings switch. Existing browsers are closed
+// because their profile path changes; the next browser open uses the new mode.
+func (m *Manager) SetSharedProfile(shared bool) (Status, error) {
+	m.mu.Lock()
+	m.sharedProfile = shared
+	err := m.persist()
+	m.mu.Unlock()
+	m.CloseAll()
+	return m.Status(), err
+}
+
+// sharedKey is the stable Chrome profile name used when the Settings switch
+// is on. browser.profile_key only names it; it does not enable sharing.
+func (m *Manager) sharedKey() string {
 	key := strings.TrimSpace(m.config().ProfileKey)
 	if key == "" {
+		key = "user"
+	}
+	return key
+}
+
+// profileName is the logical login container: one per session by default, or
+// one stable key shared by sessions while the Settings switch is on.
+func (m *Manager) profileName(sessionID string) string {
+	if !m.sharedProfile {
 		return "session:" + sessionID
 	}
-	return "shared:" + profileKey(key)
+	return "shared:" + profileKey(m.sharedKey())
 }
 
 func profileDirName(name string) string {

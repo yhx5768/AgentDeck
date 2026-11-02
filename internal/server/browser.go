@@ -80,6 +80,26 @@ func (s *Server) handleBrowserDisable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": status})
 }
 
+func (s *Server) handleBrowserProfileMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Shared bool `json:"shared"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if s.browser == nil {
+		writeErr(w, http.StatusServiceUnavailable, "浏览器管理器未初始化")
+		return
+	}
+	status, err := s.browser.SetSharedProfile(body.Shared)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error(), "status": status})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": status})
+}
+
 func (s *Server) handleBrowserInstall(w http.ResponseWriter, r *http.Request) {
 	if s.browser == nil {
 		writeErr(w, http.StatusServiceUnavailable, "浏览器管理器未初始化")

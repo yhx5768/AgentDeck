@@ -210,6 +210,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/browser/status", s.auth(s.handleBrowserStatus))
 	s.mux.Handle("POST /api/browser/enable", s.auth(s.handleBrowserEnable))
 	s.mux.Handle("POST /api/browser/disable", s.auth(s.handleBrowserDisable))
+	s.mux.Handle("POST /api/browser/profile-mode", s.auth(s.handleBrowserProfileMode))
 	s.mux.Handle("POST /api/browser/install", s.auth(s.handleBrowserInstall))
 	s.mux.Handle("GET /api/sessions/{id}/browser/status", s.auth(s.handleBrowserSessionStatus))
 	s.mux.Handle("GET /api/sessions/{id}/browser/stream", s.auth(s.handleBrowserStream))

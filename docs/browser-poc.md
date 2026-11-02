@@ -91,16 +91,22 @@ MCP 配置只注入 Claude/qoder 这一类支持 `--mcp-config` 的引擎；code
 
 默认每个 AgentDeck session 一个 Chrome profile（`browser/profiles/<session-id>`）。`browser_close` 会保留该 profile 的 cookie，同一个 session 再打开仍登录；但切换到另一个 AgentDeck session 会使用新的 profile，看起来就像“登录没保存”。
 
-实测当前 18821 的 demo session `4c97b470…`：profile Cookies 约 28 KB，最后写入 20:10；包含 `console.cloud.baidu-int.com`、`.uuap.baidu.com` 等 host 的 cookie（不读取/输出值）。打开 CR `123088562` 到达 `console.cloud.baidu-int.com/...`，标题“百度智能云度厂版”，内容含评审/文件变更；`browser_close` 后重新打开同一 CR 仍可直接访问。结论：cookie 持久化本身正常，“又要登录”更可能是切了 cc-webui 会话，或页面停在 UUAP authorize 页尚未自动跳回。
+设置页新增「跨会话共享浏览器登录态」开关，**默认关闭**：
 
-如果希望跨 AgentDeck 会话复用登录态，可配置一个稳定 profile：
+- 关闭：每个 session 独立 Chrome profile，各自登录态。18821 的 demo session 用 `profiles/4c97…`，可打开 CR `123088562`。
+- 开启：所有 session 使用同一个 shared profile，名字取 `browser.profile_key`（默认 `user`），路径 `browser/profiles/shared-<key>`。同一时间只允许一个浏览器使用；第二个 session 会收到“共享 profile 正在被另一个会话使用”的明确错误。
+- 切换开关会关闭当前浏览器，**下次打开生效**，避免已打开浏览器还停在旧 profile；状态持久化在 `data/browser/settings.json` 的 `shared_profile`，默认 `false`。
+- `browser.profile_key` 只给 shared profile 命名，本身不启用共享；是否共享由设置开关决定。
 
-```yaml
-browser:
-  profile_key: "me"   # 留空 = 按会话隔离
-```
+18821 验证：
 
-同一时间只允许一个浏览器使用该共享 profile；第二个会话会收到“共享 profile 正在被另一个会话使用”的明确错误。迁移旧登录态：先关闭浏览器/服务，把 `browser/profiles/<旧 session>` 复制到 `browser/profiles/shared-<key>`，设置 `profile_key` 后重启。18821 预览已迁移到 `profile_key: user`，验证第二个会话在第一会话关闭浏览器后可直接打开 CR，无需重新扫码。
+1. 默认关闭：demo 用 `profiles/4c97…` 打开 CR，登录态正常。
+2. 开启共享：demo 改用 `profiles/shared-user` 打开 CR，登录态正常。
+3. 第二会话在第一会话浏览器未关闭时被 busy 拒绝；关闭第一会话浏览器后，第二会话用 `shared-user` 打开 CR，无需重新扫码。
+4. 再关闭共享：第二会话改用 `profiles/<第二会话 id>` 打开 CR，跳到 UUAP 登录页，证明按 session 隔离恢复。
+5. 最终预览保持开关关闭；`shared-user` 登录态保留，用户需要跨会话复用时再打开开关即可。
+
+迁移旧登录态到 shared profile：先关闭浏览器/服务，把 `browser/profiles/<旧 session>` 复制到 `browser/profiles/shared-<key>`，开启设置开关后重启/重开浏览器。共享 profile 是登录态便利选项，不是多用户隔离。
 
 ## 崩溃修复（2026-11-02）
 

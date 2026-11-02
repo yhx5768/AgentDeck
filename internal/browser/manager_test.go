@@ -47,10 +47,37 @@ func TestProfileNameModes(t *testing.T) {
 	}
 	cm2 := config.NewManager("", &config.Config{DataDir: t.TempDir(), Browser: config.BrowserConfig{ProfileKey: "me"}})
 	m2 := NewManager(cm2, t.TempDir())
+	m2.sharedProfile = true
 	if got := m2.profileName("s1"); got != "shared:me" {
 		t.Fatalf("shared profile = %q", got)
 	}
 	if got := profileDirName("shared:me"); got != "shared-me" {
 		t.Fatalf("shared dir = %q", got)
+	}
+}
+
+func TestSetSharedProfilePersists(t *testing.T) {
+	dir := t.TempDir()
+	cm := config.NewManager("", &config.Config{DataDir: dir, Browser: config.BrowserConfig{ProfileKey: "me"}})
+	m := NewManager(cm, dir)
+	if got := m.Status().ProfileMode; got != "session" {
+		t.Fatalf("default profile mode = %q", got)
+	}
+	st, err := m.SetSharedProfile(true)
+	if err != nil {
+		t.Fatalf("enable shared: %v", err)
+	}
+	if st.ProfileMode != "shared" || st.ProfileKey != "me" {
+		t.Fatalf("shared status = %#v", st)
+	}
+	m2 := NewManager(cm, dir)
+	if got := m2.Status().ProfileMode; got != "shared" {
+		t.Fatalf("persisted profile mode = %q", got)
+	}
+	if _, err := m2.SetSharedProfile(false); err != nil {
+		t.Fatalf("disable shared: %v", err)
+	}
+	if got := m2.Status().ProfileMode; got != "session" {
+		t.Fatalf("disabled profile mode = %q", got)
 	}
 }

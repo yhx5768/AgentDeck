@@ -271,6 +271,8 @@
   const settingStatus = $('#browser-setting-status');
   const settingNote = $('#browser-setting-note');
   const settingSwitch = $('#pref-browser');
+  const sharedSwitch = $('#pref-browser-shared');
+  const sharedStatus = $('#browser-shared-status');
 
   function renderBrowserStatus(st) {
     if (!st) {
@@ -287,10 +289,12 @@
     settingStatus.textContent = st.enabled
       ? `已开启；Chrome：${st.chrome_path || '已找到'}；运行中 ${st.running || 0}/${st.max_browsers || 2}`
       : '已找到 Chrome，但浏览器开关未开启。';
-    const profile = st.profile_mode === 'shared'
-      ? `登录态：共享 profile「${st.profile_key}」，可跨会话复用。`
-      : '登录态：按会话隔离；切换会话会使用新的 Chrome profile，需要重新登录。';
-    settingNote.textContent = `${profile} 开关保存在服务器；开启后 Claude 会话可使用 browser_* 工具。`;
+    settingNote.textContent = '开关保存在服务器；开启后 Claude 会话可使用 browser_* 工具。';
+    const shared = st.profile_mode === 'shared';
+    sharedSwitch.checked = shared;
+    sharedStatus.textContent = shared
+      ? `已开启：所有会话共用 profile「${st.profile_key || 'user'}」，同一时间只允许一个浏览器；切换会关闭当前浏览器，下次打开生效。`
+      : '已关闭：每个会话独立 Chrome profile，各自登录态；切换会关闭当前浏览器，下次打开生效。';
   }
 
   async function loadBrowserStatus() {
@@ -301,6 +305,7 @@
     }
     const st = res.body.status;
     settingSwitch.checked = !!st.enabled;
+    sharedSwitch.checked = st.profile_mode === 'shared';
     renderBrowserStatus(st);
     return st;
   }
@@ -335,6 +340,21 @@
     settingSwitch.checked = false;
     return false;
   }
+
+  sharedSwitch.addEventListener('change', async (e) => {
+    sharedSwitch.disabled = true;
+    const res = await browserFetch('/api/browser/profile-mode', {
+      method: 'POST',
+      body: JSON.stringify({ shared: !!e.target.checked }),
+    });
+    sharedSwitch.disabled = false;
+    if (!res.ok) {
+      e.target.checked = !e.target.checked;
+      window.alert(res.body.error || '切换共享登录态失败。');
+      return;
+    }
+    if (res.body && res.body.status) renderBrowserStatus(res.body.status);
+  });
 
   settingSwitch.addEventListener('change', async (e) => {
     if (e.target.checked) {
