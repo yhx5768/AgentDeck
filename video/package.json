@@ -1,0 +1,14 @@
+{
+  "name": "agentdeck-intro-video",
+  "private": true,
+  "type": "module",
+  "description": "Code-driven intro film for AgentDeck: frames are a pure function of t, captured with Playwright and encoded with ffmpeg.",
+  "scripts": {
+    "capture": "node tools/capture.mjs",
+    "render": "node tools/render.mjs",
+    "build": "./tools/build.sh"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

@@ -20,3 +20,10 @@ openapi.json
 # 前端测试的依赖
 scripts/frontend-tests/node_modules/
 scripts/frontend-tests/package-lock.json
+
+# 介绍片（video/）：只入库源码与文档，产物全部可复现
+#   ./tools/build.sh   → 截图 → 分片并行渲染 → 合成音频 → out/final.mp4（约 6 分钟）
+video/out/
+video/assets/
+video/node_modules/
+video/package-lock.json

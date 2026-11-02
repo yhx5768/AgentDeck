@@ -1,0 +1,86 @@
+# AgentDeck 介绍视频用的**隔离**演示配置。
+#
+# 只服务 video/ 这套流程：独立端口 + 独立 data_dir（data-video/），
+# 绝不碰 :8321 上正在 dogfood 的活实例，也不读它的会话数据。
+#
+# 会话内容由 video/tools/seed-demo.py 预置，本配置只负责把五个引擎的
+# cli/provider 名字与 kind 摆出来，让界面上的下拉、标签、侧栏后缀是真的。
+#
+# ⚠️ 下面每个 cli 的 path 都**故意指向不存在的位置**，不要改回真实路径。
+#
+# 原因：种子数据里有几个会话标了 resident: true（为了让界面上的 📡 常驻标签、
+# 地址名、常驻开关都真实可见），而服务启动时的 mgr.RestoreResidents() 会为这些
+# 会话真的 spawn 一个 `claude --input-format stream-json` 常驻进程——它会带着
+# **你的真实凭据**起来（provider 的 env 为空时端点由 CLI 自己的
+# ~/.claude/settings.json 给）。这个坑踩过一次：残留了一个真的 claude 常驻进程，
+# 还往已被删掉的 worktree 路径写 settings 文件。指向不存在的路径后 spawn 立刻
+# 失败，什么都不会发生，而片子需要的一切（📡 按钮、常驻标签、地址名、开关状态）
+# 都来自 store 里的会话字段，不依赖进程活着。
+#
+# 同理，本配置也**不会被用来真的跑一轮模型**。
+listen: "127.0.0.1:8323"
+gateway_token: "agentdeck-demo"
+data_dir: "./data-video"
+default_cwd: "~"
+
+clis:
+  - name: "claude"
+    kind: "claude"
+    path: "/nonexistent/agentdeck-demo/claude"
+    permission_mode: "default"
+    partial_messages: true
+    args: []
+    env: {}
+
+  - name: "opencode"
+    kind: "opencode"
+    path: "/nonexistent/agentdeck-demo/opencode"
+    args: []
+    env: {}
+
+  - name: "mcode"
+    kind: "mcode"
+    path: "/nonexistent/agentdeck-demo/mcode"
+    args: []
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+
+  - name: "qoder"
+    kind: "qoder"
+    path: "/nonexistent/agentdeck-demo/qoder"
+    permission_mode: "default"
+    args: []
+    env: {}
+
+  - name: "ducx"
+    kind: "codex"
+    path: "/nonexistent/agentdeck-demo/ducx"
+    model_provider: "oneapi"
+    args: []
+    env: {}
+
+providers:
+  - name: "ducc-models"
+    kind: "claude"
+    models:
+      - name: "deepseek-v4.1-flash"
+      - name: "glm-5.3"
+      - name: "deepseek-v4-pro"
+
+  - name: "opencode-go"
+    kind: "opencode"
+    models:
+      - name: "glm-5.3"
+      - name: "deepseek-v4-pro"
+
+  - name: "mcode-minimax"
+    kind: "mcode"
+    models: []
+
+  - name: "qoder-cn"
+    kind: "qoder"
+    models: []
+
+  - name: "codex-ducx"
+    kind: "codex"
+    models: []
