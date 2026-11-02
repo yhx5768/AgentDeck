@@ -97,6 +97,22 @@ MCP 配置只注入 Claude/qoder 这一类支持 `--mcp-config` 的引擎；code
 
 回归：面板 SSE 打开时输入 `https://www.baidu.com/`，`take` + `navigate` 返回 200，SSE 持续出帧；agent 在 SSE 打开时执行 `browser_open` 也正常。修复提交见本轮回报。
 
+## SSE 订阅二次 close 修复（2026-11-02）
+
+用户用 `icode.baidu.com` 扫码登录后白屏，面板一直显示「浏览器连接断开，正在重连…」。服务仍 active，日志有 panic：
+
+```text
+http: panic serving ...: close of closed channel
+internal/browser.(*Session).Subscribe.func1.1() manager.go:462
+internal/server.(*Server).handleBrowserStream() browser.go:185
+```
+
+根因：`Session.close` 关闭所有 viewer channel 并清空 map；SSE handler 的 `defer unsub()` 又无条件 `close(ch)`。浏览器关闭/重连与 SSE 断开竞态时，同一个 channel 被关两次，panic 按 SSE 连接触发，前端于是不断重连。
+
+修复提交 `ce0701f`：`unsub` 只在 channel 仍在 map 里时关闭（`close` 和 `unsub` 都持 `Session.mu`）；`Subscribe` 遇到已关闭 session 返回已关闭 channel，handler 立即退出。新增 3 个回归测试覆盖 close+unsub、unsub+close、subscribe-after-close。
+
+回归：打开 `https://icode.baidu.com/` 的 UUAP 扫码页并保持 SSE 面板，执行 5 轮 browser close/open + SSE 断开/重连，无 panic，服务 PID 不变；扫码本身需要用户账号，未在自动化里完成。
+
 ## 未完成 / 已知限制
 
 - 单标签页；没有多 tab、frames/shadow DOM 完整支持、dialog、下载、上传、文件选择器。
