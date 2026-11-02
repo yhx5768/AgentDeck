@@ -318,7 +318,9 @@ func (s *Session) finishStart(err error) {
 		s.mu.Lock()
 		s.startErr = err
 		s.mu.Unlock()
-		close(s.ready)
+		if s.ready != nil {
+			close(s.ready)
+		}
 	})
 }
 
@@ -450,6 +452,13 @@ func (s *Session) stopScreencast() {
 func (s *Session) Subscribe() (<-chan Frame, func()) {
 	ch := make(chan Frame, 2)
 	s.mu.Lock()
+	if s.closed {
+		// A viewer that arrives after the browser closed gets an already
+		// closed stream; the SSE handler exits instead of waiting forever.
+		s.mu.Unlock()
+		close(ch)
+		return ch, func() {}
+	}
 	s.viewers[ch] = struct{}{}
 	s.lastUsed = time.Now()
 	s.mu.Unlock()
@@ -458,8 +467,13 @@ func (s *Session) Subscribe() (<-chan Frame, func()) {
 	unsub := func() {
 		once.Do(func() {
 			s.mu.Lock()
-			delete(s.viewers, ch)
-			close(ch)
+			// Session.close closes every viewer and clears the map. Only the
+			// side that still finds the channel in the map may close it, so
+			// close+unsub can never close the same channel twice.
+			if _, ok := s.viewers[ch]; ok {
+				delete(s.viewers, ch)
+				close(ch)
+			}
 			s.mu.Unlock()
 			s.stopScreencast()
 		})
