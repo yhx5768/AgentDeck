@@ -169,6 +169,36 @@ func PeerAttachmentEvent(line []byte) (*store.Event, bool) {
 	}, true
 }
 
+// isIdlePeerMessage reports whether the line is an inbound peer message that
+// started its own turn: the CLI writes it as an isMeta user line with
+// origin.kind=="peer", as opposed to the queued_command attachment shape a
+// message folded into an already-running turn takes.
+func isIdlePeerMessage(l histLine) bool {
+	return l.Type == "user" && l.Origin != nil && l.Origin.Kind == "peer"
+}
+
+// PeerMessageEvent parses one raw transcript line and returns the stream event
+// for an inbound peer message that started an idle turn, or ok=false for every
+// other line. The resident host tails the transcript with it because the CLI's
+// stream-json output carries no user frame for an idle peer turn (verified on
+// 2.1.258: only command_lifecycle/system/assistant/stream_event/result reach
+// stdout), so the transcript is their only live source.
+func PeerMessageEvent(line []byte) (*store.Event, bool) {
+	var l histLine
+	if json.Unmarshal(line, &l) != nil || !isIdlePeerMessage(l) {
+		return nil, false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, l.Timestamp)
+	if err != nil {
+		ts = time.Now()
+	}
+	return &store.Event{
+		Ts:   ts,
+		Kind: "stream",
+		Data: peerStreamEvent(l.UUID, l.Origin, l.Message.Content),
+	}, true
+}
+
 // peerStreamEvent builds the stream-event payload the frontend renders as a
 // 「⇢ 来自 xxx」 bubble: the idle path and the mid-turn attachment path share
 // one shape so the UI needs a single branch.

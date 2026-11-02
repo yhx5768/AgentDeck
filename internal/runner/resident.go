@@ -10,13 +10,15 @@ package runner
 //	host → CLI  {"type":"control_request","request_id":...,"request":{"subtype":...}}
 //	CLI  → host {"type":"control_response","response":{"subtype":"success"|"error","request_id":..., ...}}
 //
-// Turn boundaries come from the output stream: a user event with
-// origin.kind=="peer" starts an injected turn while idle, and "result" ends
-// whichever turn is in flight (the CLI may also inject peer messages mid-turn;
-// those only render, the single result still belongs to our turn). Mid-turn
-// injections do NOT appear on stdout — the narrator records them in the
-// transcript as queued_command attachments — so a transcript tailer
-// (procTailPeerAttachments) supplies them to the UI.
+// Turn boundaries come from two sources. A "result" frame always ends the
+// turn in flight. A turn the host did not start itself (an inbound peer
+// message) is NOT announced by the CLI on stdout: on 2.1.258 only
+// command_lifecycle/system/assistant/stream_event/result reach stdout, so the
+// first content frame of an untracked turn is the only live "it started
+// working" signal (see procClaimPeerTurn). The inbound message itself, and any
+// message folded into an already-running turn (a queued_command attachment),
+// are recovered from the transcript by a tailer (procTailPeerAttachments)
+// because stdout carries no frame for either.
 
 import (
 	"bufio"
@@ -553,6 +555,7 @@ func (m *Manager) procReadLoop(sessionID string, proc *residentProc, stdout io.R
 		delete(proc.pendingCtrl, rid)
 		close(ch)
 	}
+	peerTurnInFlight := proc.busy && proc.turnKind == "peer"
 	if proc.busy && proc.turnKind == "ours" {
 		select {
 		case proc.turnDone <- "dead":
@@ -568,18 +571,26 @@ func (m *Manager) procReadLoop(sessionID string, proc *residentProc, stdout io.R
 		r.resident = nil
 	}
 	r.mu.Unlock()
+	if peerTurnInFlight {
+		// The claimed peer turn's result frame will never arrive, so nothing
+		// else will clear the running state. Release it here (after dropping
+		// proc.mu: setIdle takes the runtime lock, and GetStatus takes them in
+		// the opposite order).
+		m.emit(sessionID, "status", map[string]string{"state": "interrupted"})
+		m.setIdle(sessionID, "interrupted")
+	}
 	if !stopping {
 		log.Printf("resident %s (pid %d) died: %s", sessionID, proc.pid, deadErr)
 		m.emit(sessionID, "status", map[string]string{"state": "resident_down", "error": deadErr})
 	}
 }
 
-// procTailPeerAttachments watches the CLI's transcript for peer messages that
-// were folded into a running turn. The CLI records those as attachment lines of
-// type queued_command, but its stream-json output carries no frame for them
-// (only assistant/user/system/result/stream_event reach stdout), so the
-// transcript is the only live source. Idle peer turns need no tail: they
-// already arrive as regular user events with origin.kind=peer.
+// procTailPeerAttachments watches the CLI's transcript for inbound peer
+// messages the stream-json output never carries: a message folded into a
+// running turn (an attachment line of type queued_command) and a message that
+// started an idle turn (a plain isMeta user line with origin.kind=peer). Both
+// are recovered here because stdout only carries
+// command_lifecycle/system/assistant/stream_event/result.
 func (m *Manager) procTailPeerAttachments(sessionID string, proc *residentProc, cwd, initialSID string, initialOffset int64) {
 	m.tailPeerAttachments(sessionID, proc.dead, func() string {
 		proc.mu.Lock()
@@ -590,8 +601,9 @@ func (m *Manager) procTailPeerAttachments(sessionID string, proc *residentProc, 
 
 // tailPeerAttachments is the testable poll loop: every interval it reads the
 // transcript of getSID() past the last consumed offset and broadcasts newly
-// appended peer queued-command attachments as user+origin stream events (the
-// shape the web UI already renders for idle peer turns).
+// appended peer messages — folded queued-command attachments and idle-turn
+// user lines — as user+origin stream events (the shape the web UI renders as
+// a 「⇢ 来自 xxx」 bubble).
 //
 // initialOffset is the transcript size captured before the process spawned, so
 // lines appended between spawn and the first poll are not lost. A negative
@@ -674,6 +686,19 @@ func (m *Manager) tailPeerAttachments(sessionID string, dead <-chan struct{}, ge
 			}
 			if ev, ok := claudehist.PeerAttachmentEvent(line); ok {
 				m.emit(sessionID, "stream", json.RawMessage(ev.Data))
+				continue
+			}
+			// An inbound peer message that started its own turn also never
+			// reaches stdout; the transcript is its only live source. Skip it
+			// when the stdout path already forwarded the same uuid.
+			if ev, ok := claudehist.PeerMessageEvent(line); ok {
+				var hdr struct {
+					UUID string `json:"uuid"`
+				}
+				_ = json.Unmarshal(ev.Data, &hdr)
+				if m.claimPeerSeen(sessionID, hdr.UUID) {
+					m.emit(sessionID, "stream", json.RawMessage(ev.Data))
+				}
 			}
 		}
 	}
@@ -716,6 +741,15 @@ func (m *Manager) procEvent(sessionID string, proc *residentProc, obj map[string
 	}
 
 	// Everything else is a regular stream event — forward it.
+	//
+	// A content frame of a turn nobody claimed is the live signal that an
+	// inbound peer message started a turn: the CLI does not announce idle peer
+	// turns on stdout (no user frame), so without this the session would never
+	// report running, the sidebar dot would never pulse, and a user message
+	// sent meanwhile would be written into the middle of the peer turn.
+	if typ == "assistant" || typ == "stream_event" {
+		m.procClaimPeerTurn(sessionID, proc)
+	}
 	m.emit(sessionID, "stream", obj)
 
 	switch typ {
@@ -726,12 +760,34 @@ func (m *Manager) procEvent(sessionID string, proc *residentProc, obj map[string
 	case "user":
 		if origin, ok := obj["origin"].(map[string]any); ok {
 			if kind, _ := origin["kind"].(string); kind == "peer" {
+				// Some CLI builds do emit the inbound frame on stdout. Record
+				// its uuid so the transcript tailer skips the same message.
+				uuid, _ := obj["uuid"].(string)
+				m.claimPeerSeen(sessionID, uuid)
 				m.procOnPeerMessage(sessionID, proc)
 			}
 		}
 	case "result":
 		m.procOnResult(sessionID, proc)
 	}
+}
+
+// procClaimPeerTurn marks an untracked turn as an inbound peer turn so
+// GetStatus reports running and Stop can interrupt it. It is a no-op once a
+// turn (ours or a peer's) is already claimed.
+func (m *Manager) procClaimPeerTurn(sessionID string, proc *residentProc) {
+	proc.mu.Lock()
+	if proc.busy {
+		proc.mu.Unlock()
+		return
+	}
+	proc.busy = true
+	proc.turnKind = "peer"
+	proc.interrupted = false
+	proc.mu.Unlock()
+
+	m.setRunning(sessionID, proc.interrupt)
+	m.emit(sessionID, "status", map[string]string{"state": "turn_start"})
 }
 
 // procOnInit captures the claude session id and slash commands from the init
@@ -766,21 +822,11 @@ func (m *Manager) procOnInit(sessionID string, proc *residentProc, obj map[strin
 	}
 }
 
-// procOnPeerMessage starts an injected peer turn when the process is idle
-// (mid-turn injections are rendered by the stream forward and need no state).
+// procOnPeerMessage starts an injected peer turn when the process is idle.
+// Only CLI builds that emit the inbound user frame on stdout reach here; the
+// content-frame fallback in procEvent covers the rest.
 func (m *Manager) procOnPeerMessage(sessionID string, proc *residentProc) {
-	proc.mu.Lock()
-	if proc.busy {
-		proc.mu.Unlock()
-		return
-	}
-	proc.busy = true
-	proc.turnKind = "peer"
-	proc.interrupted = false
-	proc.mu.Unlock()
-
-	m.setRunning(sessionID, proc.interrupt)
-	m.emit(sessionID, "status", map[string]string{"state": "turn_start"})
+	m.procClaimPeerTurn(sessionID, proc)
 }
 
 // procOnResult ends whichever turn is in flight.

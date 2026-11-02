@@ -100,6 +100,11 @@ type sessionRuntime struct {
 	streamSeqBase int64         // base: max(persisted seq) + 1, set lazily
 	resident      *residentProc // live resident process (nil in one-shot mode)
 
+	// peerSeen records inbound-peer message uuids already forwarded from the
+	// CLI's stdout, so the transcript tailer does not emit a duplicate bubble
+	// for the same message. Guarded by mu.
+	peerSeen map[string]struct{}
+
 	// Session Goal bookkeeping (see goal.go). goalAwait marks the injected
 	// evaluation turn; goalVerdict/goalTail hold what the model said about it.
 	// Guarded by mu like everything else here.
@@ -202,6 +207,31 @@ func (m *Manager) Busy(sessionID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.busyLocked()
+}
+
+// claimPeerSeen records an inbound-peer message uuid as already surfaced to the
+// UI. It returns true exactly once per uuid, so callers can use it both to
+// record the stdout-forwarded path and to gate the transcript tailer (which
+// re-reads the same message from disk). An empty uuid is never recorded and
+// always returns false — without an id there is nothing to dedup on.
+func (m *Manager) claimPeerSeen(sessionID, uuid string) bool {
+	if uuid == "" {
+		return false
+	}
+	r := m.rt(sessionID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.peerSeen == nil {
+		r.peerSeen = map[string]struct{}{}
+	}
+	if _, ok := r.peerSeen[uuid]; ok {
+		return false
+	}
+	if len(r.peerSeen) > 512 {
+		r.peerSeen = map[string]struct{}{}
+	}
+	r.peerSeen[uuid] = struct{}{}
+	return true
 }
 
 // LockForRewind atomically marks the session busy (so no turn can start) if it

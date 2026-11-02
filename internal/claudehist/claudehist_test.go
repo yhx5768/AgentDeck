@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeHist writes the given raw jsonl lines (one per string) to a fake
@@ -308,6 +309,59 @@ func TestPeerAttachmentEventIgnoresOtherLines(t *testing.T) {
 			t.Fatalf("line %q unexpectedly converted to %s", line, ev.Data)
 		}
 	}
+}
+
+// An idle-turn inbound peer message is a plain user line with origin=peer; the
+// resident host recovers it from the transcript because stdout carries no
+// frame for it.
+func TestPeerMessageEventConvertsIdleTurn(t *testing.T) {
+	line := []byte(`{"type":"user","isMeta":true,"uuid":"p0","timestamp":"2026-11-02T06:33:38.492Z",` +
+		`"origin":{"kind":"peer","name":"idle-peer","body":"idle body","from":"uds:/run/user/1000/cc-socks/1.sock"},` +
+		`"message":{"role":"user","content":"idle body"}}`)
+	ev, ok := PeerMessageEvent(line)
+	if !ok {
+		t.Fatal("idle peer message must convert")
+	}
+	var d struct {
+		Type   string `json:"type"`
+		UUID   string `json:"uuid"`
+		Origin *struct {
+			Kind string `json:"kind"`
+			Name string `json:"name"`
+			Body string `json:"body"`
+		} `json:"origin"`
+	}
+	if err := json.Unmarshal(ev.Data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Type != "user" || d.UUID != "p0" || d.Origin == nil ||
+		d.Origin.Kind != "peer" || d.Origin.Name != "idle-peer" || d.Origin.Body != "idle body" {
+		t.Fatalf("event = %s", ev.Data)
+	}
+	if !ev.Ts.Equal(time.Date(2026, 11, 2, 6, 33, 38, 492000000, time.UTC)) {
+		t.Fatalf("ts = %s", ev.Ts)
+	}
+}
+
+func TestPeerMessageEventIgnoresOtherLines(t *testing.T) {
+	lines := [][]byte{
+		[]byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"}}`),
+		[]byte(`{"type":"user","isMeta":true,"uuid":"m1","message":{"role":"user","content":"x"}}`),
+		[]byte(peerAttachmentLineForTest("q1", "worker-1", "fold in")),
+		[]byte(`{"type":"attachment","attachment":{"type":"queued_command","origin":{"kind":"peer"},"prompt":"x"}}`),
+		[]byte(`{"type":"assistant","message":{"role":"assistant","content":"x"}}`),
+		[]byte(`not json`),
+	}
+	for _, line := range lines {
+		if ev, ok := PeerMessageEvent(line); ok {
+			t.Fatalf("line %q unexpectedly converted to %s", line, ev.Data)
+		}
+	}
+}
+
+func peerAttachmentLineForTest(uuid, name, body string) string {
+	return `{"type":"attachment","uuid":"` + uuid + `","attachment":{"type":"queued_command","commandMode":"prompt",` +
+		`"prompt":"x","origin":{"kind":"peer","name":"` + name + `","body":"` + body + `"}}}`
 }
 
 func TestRenameSessionAppendsCustomTitle(t *testing.T) {

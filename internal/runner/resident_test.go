@@ -79,11 +79,11 @@ func wantPeerEvent(t *testing.T, ch <-chan *store.Event, name, body string) {
 	}
 }
 
-// TestTailPeerAttachmentsEmitsOnlyPeerFoldIns verifies the tailer emits the
-// mid-turn peer attachment that the CLI's stdout never carries, while ignoring
-// the surrounding transcript lines (task notifications, real user prompts, and
-// idle peer turns that already arrive as regular stream events).
-func TestTailPeerAttachmentsEmitsOnlyPeerFoldIns(t *testing.T) {
+// TestTailPeerAttachmentsEmitsOnlyPeerMessages verifies the tailer emits the
+// inbound peer messages the CLI's stdout never carries — both the idle-turn
+// user line and the mid-turn queued_command attachment — while ignoring the
+// surrounding transcript lines (real user prompts, task notifications).
+func TestTailPeerAttachmentsEmitsOnlyPeerMessages(t *testing.T) {
 	cwd, sid := "/proj/tail-test", "s1"
 	m, ch, path := tailHarness(t, cwd, sid)
 	dead := make(chan struct{})
@@ -96,9 +96,13 @@ func TestTailPeerAttachmentsEmitsOnlyPeerFoldIns(t *testing.T) {
 	}
 	appendFile(t, path,
 		`{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"}}`+"\n"+
-			`{"type":"attachment","uuid":"n1","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>x</task-notification>"}}`+"\n"+
-			`{"type":"user","isMeta":true,"uuid":"p0","origin":{"kind":"peer","name":"idle-peer","body":"idle"},"message":{"role":"user","content":"x"}}`+"\n")
+			`{"type":"attachment","uuid":"n1","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>x</task-notification>"}}`+"\n")
 	wantNoEvent(t, ch, 100*time.Millisecond)
+
+	// An idle-turn inbound peer message is a plain user line with origin=peer.
+	appendFile(t, path,
+		`{"type":"user","isMeta":true,"uuid":"p0","origin":{"kind":"peer","name":"idle-peer","body":"idle"},"message":{"role":"user","content":"x"}}`+"\n")
+	wantPeerEvent(t, ch, "idle-peer", "idle")
 
 	appendFile(t, path, peerAttachmentLine("q1", "worker-1", "【补充】再查一下构建")+"\n")
 	wantPeerEvent(t, ch, "worker-1", "【补充】再查一下构建")
@@ -148,4 +152,61 @@ func TestTailPeerAttachmentsPartialLine(t *testing.T) {
 	wantNoEvent(t, ch, 100*time.Millisecond)
 	appendFile(t, path, line[len(line)/2:]+"\n")
 	wantPeerEvent(t, ch, "worker-1", "partial")
+}
+
+// TestTailPeerAttachmentsSkipsStdoutForwardedUUID covers a CLI build that does
+// emit the inbound user frame on stdout: the stdout path records the uuid, so
+// the tailer must not draw the same message twice.
+func TestTailPeerAttachmentsSkipsStdoutForwardedUUID(t *testing.T) {
+	cwd, sid := "/proj/tail-test", "s1"
+	m, ch, path := tailHarness(t, cwd, sid)
+	m.claimPeerSeen("sess1", "p0")
+	dead := make(chan struct{})
+	defer close(dead)
+	go m.tailPeerAttachments("sess1", dead, func() string { return sid }, cwd, sid, -1, 5*time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, path,
+		`{"type":"user","isMeta":true,"uuid":"p0","origin":{"kind":"peer","name":"dup","body":"dup"},"message":{"role":"user","content":"x"}}`+"\n")
+	wantNoEvent(t, ch, 150*time.Millisecond)
+}
+
+// TestPeerTurnClaimedFromContentFrame pins the fix for inbound peer turns the
+// CLI never announces on stdout: the first content frame of an untracked turn
+// must flip the session to running (sidebar dot / workspace badge), and the
+// result frame must end it.
+func TestPeerTurnClaimedFromContentFrame(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Upsert(&store.Session{ID: "sess1", CLI: "claude", Provider: "p", Cwd: "/tmp", Resident: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{st: st, procs: map[string]*sessionRuntime{}}
+	proc := &residentProc{
+		dead:        make(chan struct{}),
+		initSeen:    make(chan struct{}),
+		idleCh:      make(chan struct{}),
+		turnDone:    make(chan string, 1),
+		pendingCtrl: map[string]chan map[string]any{},
+	}
+	if m.GetStatus("sess1").Running {
+		t.Fatal("fresh resident session must report idle")
+	}
+	m.procEvent("sess1", proc, map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_start"}})
+	if !m.GetStatus("sess1").Running {
+		t.Fatal("first content frame of an untracked turn must report running")
+	}
+	// A user frame for the same turn must not double-claim (and must record
+	// its uuid so the tailer skips it).
+	m.procEvent("sess1", proc, map[string]any{"type": "user", "uuid": "p1", "origin": map[string]any{"kind": "peer"}})
+	m.procEvent("sess1", proc, map[string]any{"type": "result", "subtype": "success"})
+	if m.GetStatus("sess1").Running {
+		t.Fatal("result must end the peer turn")
+	}
 }
