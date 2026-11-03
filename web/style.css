@@ -4125,6 +4125,18 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 }
 .board-card-meta { color: var(--dim); font-size: var(--fs-xs); line-height: 1.45; }
 .board-card-meta b { color: var(--fg); font-weight: 500; }
+.board-card-tags, .board-drawer-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.board-card-tags { margin: 0 0 5px; }
+.board-drawer-tags { margin: 0 0 var(--sp-3); }
+.board-tag {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: var(--r-full);
+  padding: 0 7px;
+  font-size: 10px;
+  line-height: 1.7;
+  white-space: nowrap;
+}
 .board-card-progress {
   margin-top: 5px;
   color: var(--dim);

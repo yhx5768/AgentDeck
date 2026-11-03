@@ -2410,6 +2410,19 @@ function syncMainAgentTabs(s) {
   if (!visible && tab.classList.contains('active')) switchChatTab('chat');
 }
 
+function boardTaskTags(task) {
+  const tags = Array.isArray(task.tags) ? task.tags.filter(Boolean) : [];
+  if (!tags.length) return null;
+  const row = document.createElement('div');
+  tags.forEach((tag) => {
+    const chip = document.createElement('span');
+    chip.className = 'board-tag';
+    chip.textContent = tag;
+    row.append(chip);
+  });
+  return row;
+}
+
 function boardTaskCard(task) {
   const card = document.createElement('article');
   card.className = 'board-card';
@@ -2435,13 +2448,18 @@ function boardTaskCard(task) {
   title.textContent = task.title || '（无标题）';
   title.title = task.full_title || task.title || '';
 
+  const tags = boardTaskTags(task);
+  if (tags) tags.className = 'board-card-tags';
+
   const meta = document.createElement('div');
   meta.className = 'board-card-meta';
   const worker = document.createElement('b');
   worker.textContent = task.worker || '未派工';
   meta.append('worker：', worker, ' · ', task.updated_at || '—');
 
-  card.append(top, title, meta);
+  card.append(top);
+  if (tags) card.append(tags);
+  card.append(title, meta);
   if (task.progress) {
     const progress = document.createElement('div');
     progress.className = 'board-card-progress';
@@ -2500,6 +2518,14 @@ function boardOpenDrawer(task) {
   projectEl.textContent = task.project || '未分类';
   projectEl.title = task.project || '';
   $('#board-drawer-title').textContent = task.full_title || task.title || '（无标题）';
+  const oldTags = $('#board-drawer-tags');
+  if (oldTags) oldTags.remove();
+  const drawerTags = boardTaskTags(task);
+  if (drawerTags) {
+    drawerTags.id = 'board-drawer-tags';
+    drawerTags.className = 'board-drawer-tags';
+    $('#board-drawer-title').after(drawerTags);
+  }
 
   const meta = $('#board-drawer-meta');
   meta.innerHTML = '';
