@@ -2518,6 +2518,7 @@ function boardOpenDrawer(task) {
   projectEl.textContent = task.project || '未分类';
   projectEl.title = task.project || '';
   $('#board-drawer-title').textContent = task.full_title || task.title || '（无标题）';
+  boardComposerSync(task);
   const oldTags = $('#board-drawer-tags');
   if (oldTags) oldTags.remove();
   const drawerTags = boardTaskTags(task);
@@ -2574,6 +2575,87 @@ function boardOpenDrawer(task) {
   $('#board-drawer-mask').classList.add('open');
   $('#board-drawer').classList.add('open');
 }
+
+// ---------- 抽屉输入框：复用主对话的消息链路 ----------
+// 消息发给当前 mainAgent 会话，不经过任务评论/worker。发送成功走 postMessage
+// 的乐观气泡 + SSE；忙碌时用主对话同一套 holdPending，轮次结束后自动提交。
+let boardComposerTaskId = null;
+
+function boardComposerStatus(text, kind = '') {
+  const el = $('#board-composer-status');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'board-composer-status'
+    + (kind ? ' ' + kind : '')
+    + (text ? '' : ' hidden');
+}
+
+function boardComposerSync(task) {
+  const input = $('#board-composer-input');
+  const send = $('#board-composer-send');
+  if (!input || !send) return;
+  const allowed = !!(state.current && state.current.main_agent);
+  input.disabled = !allowed;
+  send.disabled = !allowed;
+  input.placeholder = allowed
+    ? `发送消息到主 Agent（${state.current.peer_name || 'mainAgent'}）…`
+    : '当前会话不是主 Agent，不能发送';
+  if (boardComposerTaskId !== (task.id || '')) {
+    boardComposerTaskId = task.id || '';
+    input.value = '';
+    input.style.height = 'auto';
+    boardComposerStatus('');
+  }
+}
+
+async function boardSendToMain() {
+  const input = $('#board-composer-input');
+  const send = $('#board-composer-send');
+  const text = input ? input.value.trim() : '';
+  if (!text) return;
+  if (!state.current || !state.current.main_agent) {
+    boardComposerStatus('当前不是主 Agent 会话，消息未发送', 'error');
+    return;
+  }
+  if (send) send.disabled = true;
+  try {
+    if (isRunning()) {
+      holdPending(text, [], []);
+      input.value = '';
+      input.style.height = 'auto';
+      boardComposerStatus('已排队 · 当前轮结束后自动发送', 'queued');
+      return;
+    }
+    boardComposerStatus('发送中…');
+    await postMessage({ text, images: [], files: [] });
+    input.value = '';
+    input.style.height = 'auto';
+    boardComposerStatus('已发送 · 可在「对话」查看', 'ok');
+  } catch (e) {
+    boardComposerStatus('发送失败：' + (e && e.message ? e.message : e), 'error');
+  } finally {
+    if (send) send.disabled = false;
+  }
+}
+
+(() => {
+  const input = $('#board-composer-input');
+  const send = $('#board-composer-send');
+  if (!input || !send) return;
+  send.addEventListener('click', boardSendToMain);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      boardSendToMain();
+    }
+  });
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+  const gotoChat = $('#board-composer-goto-chat');
+  if (gotoChat) gotoChat.addEventListener('click', () => switchChatTab('chat'));
+})();
 
 // 任务抽屉宽度：拖拽/键盘调整，localStorage 持久化。默认 620px，
 // 桌面 360–900px；窄屏 CSS 强制 100vw，resizer 隐藏。
