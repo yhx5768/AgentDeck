@@ -16,6 +16,12 @@ default_cwd: "~"
 # 快照由外部脚本生成（iCafe 缓存 + 本地 routing-table），外部用户不需要 iCafe 登录。
 # agent_board_path: "/path/to/agent-board.json"
 
+# 可选：cc-webui 进程内自动同步。设置 routing_table 后，服务会监听该 Markdown
+# 台账并把变化同步到 agent_board_path 以及 agent_board_sync_stores 里的其他
+# store（例如预览 store）。留空关闭；不依赖 Python。
+# agent_board_routing_table: "/path/to/routing-table.md"
+# agent_board_sync_stores: ["/tmp/preview/agent-board.local.json"]
+
 # 浏览器 PoC（可选，默认关闭）。开启后 Claude 会话会拿到 browser_* MCP 工具，
 # Web UI 右上角出现浏览器面板。Chrome 必须是本机安装的 Chromium 系浏览器。
 # 运行时开关优先从 <data_dir>/browser/settings.json 读取；下面的 enabled 只是

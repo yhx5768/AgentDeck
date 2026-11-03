@@ -191,6 +191,7 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 	}
 	s.routes()
 	go s.watchAgentBoard()
+	go s.watchAgentBoardSync()
 	return s
 }
 
