@@ -1,10 +1,11 @@
 # 共享 profile 多 session 独立窗口设计（YHX-TODO-805）
 
 - 日期：2026-11-03
-- 状态：已集成到 `shared-profile-multiwindow` 分支并通过隔离测试；待合 master/重启 8321
+- 状态：已合入 master `ea0798b`，隔离测试通过；8321 重启待确认
 - 分支：`shared-profile-multiwindow`
 - worktree：`/home/soar/Projects/cc-webui-shared-multiwindow`
 - 基于：master `ca2d2bc`
+- 提交：`58534f5`（PoC）、`ea0798b`（集成）
 - PoC：`cmd/shared-profile-poc/main.go`
 
 ## 结论
@@ -150,6 +151,13 @@ flowchart TB
   - `TestSharedProfileMultiTarget`：两个 session 共享 cookie/localStorage，关闭一个另一个仍可读，最后一个关闭后 runtime 归零。
   - `TestSharedProfileTargetDestroyed`：直接销毁 target 后 session 被清理、ref 递减。
 - 隔离实例 18829（临时 profile）实测：两 session target 不同、SSE 都能出帧、take s1 后 s2 仍 agent、关闭 s1 后 s2 继续可读、最后关闭 running=0；per-session 模式另行验证 cookie 隔离、两个 Chrome、关闭一个不影响另一个。
+
+## 合入 master（2026-11-03）
+
+- `~/Projects/cc-webui` master 从 `ca2d2bc` fast-forward 到 `ea0798b`，无冲突、无 merge commit。
+- 构建 `go build -o /tmp/cc-webui-master-shared .`、`go vet ./...`、`internal/browser`/`internal/config`/`internal/server` 单测通过；`go test ./...` 仅既有 `TestServeKeyIsCompact` 基线失败。
+- 未 push、未重启 8321。重启建议由用户/主 Agent 用 `systemctl --user restart cc-webui.service` 或 detached `systemd-run --user` 定时执行；重启会中断所有会话。
+- 线上 shared-user profile 未触碰；隔离测试使用 `/tmp/ccwebui-shared-e2e` 临时 profile。
 
 ## 未完成
 
