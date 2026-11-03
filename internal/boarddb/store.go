@@ -277,6 +277,13 @@ func routingValue(value string) string {
 	return value
 }
 
+func routingTaskID(row routingRow) string {
+	if card := routingValue(row["card"]); card != "" {
+		return card
+	}
+	return routingValue(row["task_id"])
+}
+
 func parseRoutingTable(path string) ([]routingRow, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -300,7 +307,9 @@ func parseRoutingTable(path string) ([]routingRow, error) {
 		for i, column := range routingColumns {
 			row[column] = cells[i]
 		}
-		if strings.HasPrefix(row["card"], "YHX-TODO-") {
+		// Ledger-first: a row may have no iCafe card; task_id is then the
+		// stable identity. This is the gap 822 called out for the old syncers.
+		if routingTaskID(row) != "" {
 			rows = append(rows, row)
 		}
 	}
@@ -512,7 +521,8 @@ func (s *Store) upsertLinks(task map[string]any) error {
 }
 
 func (s *Store) mergeRoutingRow(row routingRow) error {
-	id := row["card"]
+	id := routingTaskID(row)
+	card := routingValue(row["card"])
 	worker := routingValue(row["worker_peer"])
 	status := routingValue(row["status"])
 	project := projectFromWorker(worker)
@@ -521,34 +531,55 @@ func (s *Store) mergeRoutingRow(row routingRow) error {
 	_ = s.db.QueryRow("SELECT updated_at FROM tasks WHERE id=?", id).Scan(&current)
 	var exists int
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM tasks WHERE id=?", id).Scan(&exists)
+	url := ""
+	externalJSON := "{}"
+	if card != "" {
+		url = "https://console.cloud.baidu-int.com/devops/icafe/issue/" + card + "/show"
+		if encoded, err := json.Marshal(map[string]string{"system": "icafe", "id": card, "url": url}); err == nil {
+			externalJSON = string(encoded)
+		}
+	}
 	if exists == 0 {
 		_, err := s.db.Exec(`INSERT INTO tasks(id,display_id,title,status,project,assignee,session_id,cwd,
-			progress,last_event,report_file,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, id, defaultString(row["task_id"], id), defaultString(status, "进行中"), project, worker,
+			progress,last_event,report_file,external_ref,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			id, card, defaultString(routingValue(row["task_id"]), id), defaultString(status, "进行中"), project, worker,
 			routingValue(row["session_id"]), routingValue(row["cwd"]), routingValue(row["last_report"]),
-			routingValue(row["last_event"]), routingValue(row["report_file"]),
+			routingValue(row["last_event"]), routingValue(row["report_file"]), externalJSON,
 			defaultString(updated, now()), defaultString(updated, now()))
-		return err
+		if err != nil {
+			return err
+		}
+	} else {
+		_, err := s.db.Exec(`UPDATE tasks SET display_id=COALESCE(NULLIF(?,''),display_id),
+			status=COALESCE(NULLIF(?,''),status),
+			project=COALESCE(NULLIF(?,''),project), assignee=COALESCE(NULLIF(?,''),assignee),
+			session_id=COALESCE(NULLIF(?,''),session_id), cwd=COALESCE(NULLIF(?,''),cwd),
+			last_event=COALESCE(NULLIF(?,''),last_event),
+			report_file=COALESCE(NULLIF(?,''),report_file),
+			external_ref=CASE WHEN ?<>'{}' THEN ? ELSE external_ref END,
+			progress=CASE WHEN progress_locked=1 THEN progress ELSE COALESCE(NULLIF(?,''),progress) END,
+			updated_at=CASE WHEN ?<>'' AND (?='' OR ? > updated_at) THEN ? ELSE updated_at END
+			WHERE id=?`, card, status, project, worker, routingValue(row["session_id"]), routingValue(row["cwd"]),
+			routingValue(row["last_event"]), routingValue(row["report_file"]),
+			externalJSON, externalJSON, routingValue(row["last_report"]),
+			updated, current, updated, updated, id)
+		if err != nil {
+			return err
+		}
 	}
-	_, err := s.db.Exec(`UPDATE tasks SET status=COALESCE(NULLIF(?,''),status),
-		project=COALESCE(NULLIF(?,''),project), assignee=COALESCE(NULLIF(?,''),assignee),
-		session_id=COALESCE(NULLIF(?,''),session_id), cwd=COALESCE(NULLIF(?,''),cwd),
-		last_event=COALESCE(NULLIF(?,''),last_event),
-		report_file=COALESCE(NULLIF(?,''),report_file),
-		progress=CASE WHEN progress_locked=1 THEN progress ELSE COALESCE(NULLIF(?,''),progress) END,
-		updated_at=CASE WHEN ?<>'' AND (?='' OR ? > updated_at) THEN ? ELSE updated_at END
-		WHERE id=?`, status, project, worker, routingValue(row["session_id"]), routingValue(row["cwd"]),
-		routingValue(row["last_event"]), routingValue(row["report_file"]), routingValue(row["last_report"]),
-		updated, current, updated, updated, id)
-	if err != nil {
-		return err
-	}
+	_ = s.upsertLinks(map[string]any{
+		"id": id, "icafe_id": card, "url": url,
+		"session": routingValue(row["session_id"]), "report_file": routingValue(row["report_file"]),
+	})
 	report := routingValue(row["last_report"])
 	if report != "" {
 		if worker != "" {
 			_, _ = s.db.Exec(`INSERT INTO workers(peer_name,session_id,cwd,updated_at,metadata)
 				VALUES(?,?,?,?, '{}') ON CONFLICT(peer_name) DO UPDATE SET
-				session_id=excluded.session_id, cwd=excluded.cwd, updated_at=excluded.updated_at`,
+				session_id=CASE WHEN excluded.session_id<>'' THEN excluded.session_id ELSE workers.session_id END,
+				cwd=CASE WHEN excluded.cwd<>'' THEN excluded.cwd ELSE workers.cwd END,
+				updated_at=excluded.updated_at`,
 				worker, routingValue(row["session_id"]), routingValue(row["cwd"]), updated)
 		}
 		_, _ = s.insertEventTx(id, updated, "最近回报", "worker", report, "", "local", 0)

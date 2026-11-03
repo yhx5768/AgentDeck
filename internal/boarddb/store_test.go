@@ -137,6 +137,45 @@ func TestMigrateOnceDoesNotOverwriteNewerDB(t *testing.T) {
 	}
 }
 
+func TestMigrateRoutingRowsWithoutICafeCard(t *testing.T) {
+	dir := t.TempDir()
+	routingPath := filepath.Join(dir, "routing-table.md")
+	routing := `| task_id | card | status | worker_peer | session_id | cwd | last_event | last_report | report_file | card_modified | comment_id | updated |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| local-task-1 | — | 进行中 | AgentDeck-卡片自动化 | sess-1 | /work | 派工 | 已接上 | — | — | — | 2026-11-03 20:00 |
+| other-task | OTHER-123 | 待验收 | Verify-生产发布 | sess-2 | /work | 完成 | 已完成 | report.md | — | — | 2026-11-03 20:01 |
+`
+	if err := os.WriteFile(routingPath, []byte(routing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(filepath.Join(dir, "board.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	result, err := st.MigrateOnce(filepath.Join(dir, "missing.json"), routingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Tasks != 2 {
+		t.Fatalf("tasks = %d", result.Tasks)
+	}
+	local, err := st.GetTask("local-task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local["icafe_id"] != "" || local["url"] != "" {
+		t.Fatalf("local task should not claim an iCafe card: %+v", local)
+	}
+	other, err := st.GetTask("OTHER-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other["icafe_id"] != "OTHER-123" || other["url"] == "" {
+		t.Fatalf("other card = %+v", other)
+	}
+}
+
 func TestCreateUpdateEventBindAndWorkers(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(filepath.Join(dir, "board.db"))
