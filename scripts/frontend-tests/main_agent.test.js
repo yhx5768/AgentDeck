@@ -333,6 +333,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
   check('CSS: reduced-motion 停动画', /prefers-reduced-motion[\s\S]*?\.ma-worker, \.ma-worker-more \{ animation: none !important; \}/.test(css));
   check('CSS: 移动端变量', /@media \(max-width: 760px\)[\s\S]*?--ma-overlap-extra: 14px/.test(css));
   check('CSS: worker 组底边对齐主头像', /\.ma-workers\s*\{[^}]*padding-top:\s*14px/s.test(css));
+  check('CSS: worker 递增 140ms stagger', css.includes('animation-delay: calc(var(--worker-i, 0) * 140ms)'));
+  check('CSS: entering 不重置 stagger', css.includes('animation-delay: calc(var(--worker-i, 0) * 140ms), 0ms'));
 
   console.log('角色提示弹窗');
 

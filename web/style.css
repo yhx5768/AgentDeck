@@ -444,12 +444,21 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   font-size: 10px; font-weight: 700; line-height: 1;
   flex: none; padding: 0; cursor: pointer;
   position: relative;
-  animation: ma-worker-bob 1.4s cubic-bezier(.45, 0, .55, 1) infinite;
-  animation-delay: calc(var(--worker-i, 0) * -160ms);
+  animation-name: ma-worker-bob;
+  animation-duration: 1.4s;
+  animation-timing-function: cubic-bezier(.45, 0, .55, 1);
+  animation-iteration-count: infinite;
+  animation-delay: calc(var(--worker-i, 0) * 140ms);
 }
 .ma-worker + .ma-worker { margin-left: -6px; }
 .ma-worker:hover { box-shadow: 0 4px 10px rgba(0, 0, 0, .18); z-index: 4; }
-.ma-worker.entering { animation: ma-worker-bob 1.4s cubic-bezier(.45, 0, .55, 1) infinite, ma-worker-in 180ms cubic-bezier(.2, .8, .2, 1); }
+.ma-worker.entering {
+  animation-name: ma-worker-bob, ma-worker-in;
+  animation-duration: 1.4s, 180ms;
+  animation-timing-function: cubic-bezier(.45, 0, .55, 1), cubic-bezier(.2, .8, .2, 1);
+  animation-iteration-count: infinite, 1;
+  animation-delay: calc(var(--worker-i, 0) * 140ms), 0ms;
+}
 .ma-worker.leaving { animation: ma-worker-out 160ms ease-in forwards; pointer-events: none; }
 .ma-worker-more {
   width: 26px; height: 26px;
@@ -459,8 +468,11 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   border: 1px solid var(--border);
   font-size: 10px; font-weight: 700; line-height: 1;
   flex: none;
-  animation: ma-worker-more-bob 1.4s cubic-bezier(.45, 0, .55, 1) infinite;
-  animation-delay: calc(var(--worker-i, 0) * -160ms);
+  animation-name: ma-worker-more-bob;
+  animation-duration: 1.4s;
+  animation-timing-function: cubic-bezier(.45, 0, .55, 1);
+  animation-iteration-count: infinite;
+  animation-delay: calc(var(--worker-i, 0) * 140ms);
 }
 .ma-total {
   position: absolute; left: -4px; bottom: -4px; z-index: 4;
