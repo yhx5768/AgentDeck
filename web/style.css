@@ -427,7 +427,8 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
    数量由 JS 按侧栏可用宽度计算，剩余收进 +N。 */
 .ma-workers {
   display: flex; align-items: flex-start; gap: 2px; flex: none;
-  padding-top: 5px;
+  /* 主头像 40 - worker 26 = 14px：worker 小头像底边与主头像底部齐平 */
+  padding-top: 14px;
   margin-left: calc(-1 * var(--ma-gap) - var(--ma-overlap-extra));
   margin-right: 12px;
   position: relative; z-index: 2;
@@ -496,7 +497,7 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   .ma-item { width: 48px; }
   .ma-avatar { width: 36px; height: 36px; }
   .ma-name { max-width: 48px; font-size: 10px; }
-  .ma-workers { padding-top: 5px; gap: 1px; margin-right: 8px; }
+  .ma-workers { padding-top: 14px; gap: 1px; margin-right: 8px; }
   .ma-worker, .ma-worker-more { width: 22px; height: 22px; font-size: 9px; }
   .ma-worker + .ma-worker { margin-left: -6px; }
   .ma-total { min-width: 16px; height: 16px; font-size: 9px; }
