@@ -57,11 +57,13 @@ func (s *Server) watchAgentBoardSync() {
 			time.Sleep(600 * time.Millisecond) // debounce a burst of writes
 			fingerprint = boardFileFingerprint(routing)
 			stores := boardSyncStores(cfg.AgentBoardSyncStores, s.agentBoardPath())
+			s.boardWriteMu.Lock()
 			for _, store := range stores {
 				if err := syncBoardStore(store, routing); err != nil {
 					fmt.Fprintf(os.Stderr, "agent-board sync %s: %v\n", store, err)
 				}
 			}
+			s.boardWriteMu.Unlock()
 			lastFingerprint = fingerprint
 		}
 		time.Sleep(time.Second)
