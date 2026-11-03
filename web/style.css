@@ -359,7 +359,9 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 /* ---------- 主 Agent 置顶头像条（侧栏 #session-list 上方） ---------- */
 /* 有 main_agent 会话时才渲染；横向滚动，不抢工作区栏的宽度。 */
 .main-agents {
-  display: flex; align-items: flex-start; gap: var(--sp-4);
+  display: flex; align-items: flex-start; justify-content: center;
+  justify-content: safe center;
+  gap: var(--sp-4);
   padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
