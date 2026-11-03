@@ -119,13 +119,13 @@
   }
 
   function openBrowserPanel() {
-    panel.classList.remove('hidden');
+    panel.classList.add('open');
     document.body.classList.add('browser-open');
     connectBrowser();
   }
 
   function closeBrowserPanel() {
-    panel.classList.add('hidden');
+    panel.classList.remove('open');
     document.body.classList.remove('browser-open');
     if (source) { source.close(); source = null; }
     currentId = '';
@@ -281,12 +281,12 @@
   $('#browser-close').onclick = closeBrowserPanel;
 
   $('#btn-browser').onclick = () => {
-    if (panel.classList.contains('hidden')) openBrowserPanel(); else closeBrowserPanel();
+    if (!panel.classList.contains('open')) openBrowserPanel(); else closeBrowserPanel();
   };
 
   // Keep the panel in sync with the selected AgentDeck session.
   setInterval(() => {
-    if (panel.classList.contains('hidden')) return;
+    if (!panel.classList.contains('open')) return;
     const id = activeSessionId();
     if (id !== currentId) connectBrowser();
   }, 700);

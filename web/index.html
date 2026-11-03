@@ -179,8 +179,8 @@
         </div>
         <div id="board-empty" class="board-empty hidden"></div>
         <div id="board-columns" class="board-columns"></div>
-        <div id="board-drawer-mask" class="board-drawer-mask hidden"></div>
-        <aside id="board-drawer" class="board-drawer hidden" aria-label="任务详情">
+        <div id="board-drawer-mask" class="board-drawer-mask"></div>
+        <aside id="board-drawer" class="board-drawer" aria-label="任务详情">
           <div class="board-drawer-head">
             <div class="board-drawer-kicker">
               <span id="board-drawer-id"></span>
@@ -343,7 +343,7 @@
 
   <!-- 工作区面板：Codex app 风格的右侧文件区（文件树 + 文件预览 + 改动视图）。
        默认收起，点聊天区右上角的「工作区」按钮展开；宽度可拖拽。 -->
-  <aside id="ws-panel" class="hidden" aria-label="工作区文件">
+  <aside id="ws-panel" class="ws-panel-closed" aria-label="工作区文件">
     <div id="ws-splitter" class="ws-splitter" title="拖拽调整宽度" aria-hidden="true"></div>
     <div id="ws-viewer">
       <div class="ws-viewer-head">
@@ -733,7 +733,7 @@
 </div>
 
 <!-- 浏览器 PoC：实时画面 + 人工接管（独立于工作区面板，不进入会话事件流） -->
-<div id="browser-panel" class="browser-panel hidden" aria-label="浏览器">
+<div id="browser-panel" class="browser-panel" aria-label="浏览器">
   <div class="browser-head">
     <div class="browser-nav">
       <button id="browser-back" class="icon-btn" title="后退"><i data-lucide="arrow-left"></i></button>

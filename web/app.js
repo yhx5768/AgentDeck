@@ -2482,8 +2482,8 @@ function boardCloseDrawer() {
   state.boardSelectedId = null;
   const drawer = $('#board-drawer');
   const mask = $('#board-drawer-mask');
-  if (drawer) drawer.classList.add('hidden');
-  if (mask) mask.classList.add('hidden');
+  if (drawer) drawer.classList.remove('open');
+  if (mask) mask.classList.remove('open');
   document.querySelectorAll('.board-card-selected').forEach((el) => {
     el.classList.remove('board-card-selected');
   });
@@ -2545,8 +2545,8 @@ function boardOpenDrawer(task) {
       timeline.append(row);
     });
   }
-  $('#board-drawer-mask').classList.remove('hidden');
-  $('#board-drawer').classList.remove('hidden');
+  $('#board-drawer-mask').classList.add('open');
+  $('#board-drawer').classList.add('open');
 }
 
 function boardStale(data) {
@@ -2674,7 +2674,7 @@ $('#board-project-filter').onchange = () => renderBoard();
 $('#board-drawer-close').onclick = () => boardCloseDrawer();
 $('#board-drawer-mask').onclick = () => boardCloseDrawer();
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('#board-drawer').classList.contains('hidden')) {
+  if (e.key === 'Escape' && $('#board-drawer').classList.contains('open')) {
     boardCloseDrawer();
   }
 });

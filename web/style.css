@@ -3595,8 +3595,17 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   background: var(--bg);
   border-left: 1px solid var(--border);
   overflow: hidden;
+  transition: width 200ms var(--ease), opacity 180ms var(--ease),
+              border-color 200ms var(--ease);
 }
-#ws-panel.hidden { display: none; }
+#ws-panel.ws-panel-closed {
+  width: 0 !important;
+  min-width: 0 !important;
+  opacity: 0;
+  pointer-events: none;
+  border-left-color: transparent;
+}
+#ws-panel.ws-panel-closed .ws-splitter { display: none; }
 
 /* 主区与面板之间的拖拽条 */
 .ws-splitter {
@@ -3889,8 +3898,16 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   background: var(--bg);
   border-left: 1px solid var(--border);
   box-shadow: -12px 0 32px rgba(0, 0, 0, .18);
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 220ms cubic-bezier(.2, .8, .2, 1), opacity 180ms var(--ease);
 }
-.browser-panel.hidden { display: none; }
+.browser-panel.open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
 .browser-head {
   flex: none;
   display: flex;
@@ -4171,6 +4188,13 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   inset: 0;
   background: rgba(0, 0, 0, .28);
   z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease);
+}
+.board-drawer-mask.open {
+  opacity: 1;
+  pointer-events: auto;
 }
 .board-drawer {
   position: fixed;
@@ -4187,6 +4211,15 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   flex-direction: column;
   padding: var(--sp-5);
   overflow: auto;
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 220ms cubic-bezier(.2, .8, .2, 1), opacity 180ms var(--ease);
+}
+.board-drawer.open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
 }
 .board-drawer-head {
   display: flex;
@@ -4242,4 +4275,14 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   padding: 1px 7px;
   font-size: 10px;
   background: var(--bg2);
+}
+
+/* 用户要求动画 150–250ms；系统减少动态效果时直接关闭。 */
+@media (prefers-reduced-motion: reduce) {
+  #ws-panel,
+  .browser-panel,
+  .board-drawer,
+  .board-drawer-mask {
+    transition: none !important;
+  }
 }

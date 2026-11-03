@@ -65,7 +65,7 @@ function wsToggle(force) {
   const next = typeof force === 'boolean' ? force : !wsState.open;
   wsState.open = next;
   localStorage.setItem(WS_OPEN_KEY, next ? '1' : '0');
-  $('#ws-panel').classList.toggle('hidden', !next);
+  $('#ws-panel').classList.toggle('ws-panel-closed', !next);
   $('#btn-workspace').classList.toggle('active', next);
   if (next) {
     wsEnsureRoot();
