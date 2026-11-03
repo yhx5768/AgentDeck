@@ -4137,7 +4137,12 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 }
 .board-column-toggle:hover { background: var(--bg); border-color: var(--border); color: var(--fg); }
 .board-column-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.board-column.collapsed { flex: 0 0 46px; width: 46px; }
+.board-column.collapsed {
+  flex: 0 0 46px;
+  width: 46px;
+  min-width: 46px;
+  max-width: 46px;
+}
 .board-column.collapsed .board-column-body { display: none; }
 .board-column.collapsed .board-column-head {
   flex-direction: column;
