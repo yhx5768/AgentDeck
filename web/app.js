@@ -6491,10 +6491,53 @@ function retryPending(itemId) {
 function cancelPending(itemId) {
   if (!state.current) return;
   const sid = state.current.id;
-  if (itemId) removePendingItem(sid, itemId);
-  else delete state.pendingBySid[sid];
+  if (!itemId) {
+    // 全部取消不回填：多条内容拼进输入框没有可读性。
+    delete state.pendingBySid[sid];
+    renderPendingBubble();
+    if (!isRunning() && !state.boardMockBusy) flushPending();
+    return;
+  }
+  const item = pendingItems(sid).find((entry) => entry.id === itemId);
+  if (!item || item.status === 'sending') return;
+  removePendingItem(sid, item.id);
   renderPendingBubble();
-  if (!isRunning()) flushPending();
+  // 取消一条排队消息时把正文回填到它的来源输入框，方便直接修改。
+  boardRefillFromPending(item.taskId, item.bodyText || item.text);
+  if (!isRunning() && !state.boardMockBusy) flushPending();
+}
+
+function refillChatInput(text) {
+  const input = $('#input');
+  if (!input || !text) return;
+  const existing = input.value.trimEnd();
+  input.value = existing ? `${existing}\n${text}` : text;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+// 把取消的排队消息回填到来源卡片抽屉；跨卡片时先切到看板并打开原卡。
+async function boardRefillFromPending(taskId, text) {
+  if (!text) return;
+  if (!taskId) { refillChatInput(text); return; }
+  const boardTab = document.querySelector('.chat-tab[data-tab="board"]');
+  if (!boardTab || !boardTab.classList.contains('active')) switchChatTab('board');
+  for (let i = 0; i < 50 && !state.agentBoard; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!state.agentBoard) await boardShow(true);
+  const task = ((state.agentBoard && state.agentBoard.tasks) || [])
+    .find((entry) => entry.id === taskId);
+  if (!task) { refillChatInput(text); return; }
+  boardOpenDrawer(task);
+  const input = $('#board-composer-input');
+  if (!input) return;
+  const existing = input.value.trimEnd();
+  input.value = existing ? `${existing}\n${text}` : text;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
 }
 
 // ---------- pending message queue (pinned to the composer) ----------
@@ -6594,10 +6637,10 @@ function renderPendingBubble() {
     const cancel = document.createElement('button');
     cancel.className = 'pb-cancel';
     cancel.type = 'button';
-    cancel.title = '取消这条待发送';
+    cancel.title = '取消这条待发送并回填输入框';
     cancel.textContent = '×';
     cancel.onclick = () => cancelPending(item.id);
-    row.append(cancel);
+    if (item.status !== 'sending') row.append(cancel);
     list.append(row);
   });
   el.append(head, list);

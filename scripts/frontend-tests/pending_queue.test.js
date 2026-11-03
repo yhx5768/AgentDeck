@@ -41,8 +41,10 @@ let postMessageImpl = async () => {};
 const sent = [];
 const sentEvents = [];
 const errors = [];
+const refills = [];
 async function postMessage(payload) { return postMessageImpl(payload); }
 async function boardAppendUserEvent(taskId, text) { sentEvents.push({ taskId, text }); }
+async function boardRefillFromPending(taskId, text) { refills.push({ taskId, text }); }
 function renderPendingBubble() {}
 function clearPendingBubble() {}
 function setErrorBanner(message) { errors.push(message); }
@@ -56,10 +58,10 @@ ${grabFn('flushPending')}
 ${grabFn('retryPending')}
 ${grabFn('cancelPending')}
 window.__x = {
-  state, sent, sentEvents, errors,
+  state, sent, sentEvents, errors, refills,
   pendingItems, enqueuePending, holdPending, flushPending, retryPending, cancelPending,
   setPost(fn) { postMessageImpl = fn; },
-  reset() { state.pendingBySid = {}; state.current = { id: 's1' }; state.boardMockBusy = false; sent.length = 0; sentEvents.length = 0; errors.length = 0; postMessageImpl = async () => {}; },
+  reset() { state.pendingBySid = {}; state.current = { id: 's1' }; state.boardMockBusy = false; sent.length = 0; sentEvents.length = 0; errors.length = 0; refills.length = 0; postMessageImpl = async () => {}; },
 };
 `;
 
@@ -152,6 +154,20 @@ test('每条消息自带的任务上下文不被后来的卡片覆盖，成功�
     { taskId: 'A', text: '请处理 A' },
     { taskId: 'B', text: '请处理 B' },
   ]);
+});
+
+test('取消排队消息会回填来源卡片，发送中的条目不取消', async () => {
+  x.reset();
+  x.state.boardMockBusy = true;
+  const a = x.holdPending('ctx A', [], [], { taskId: 'A', bodyText: '正文 A' });
+  x.holdPending('ctx B', [], [], { taskId: 'B', bodyText: '正文 B' });
+  await x.cancelPending(a.id);
+  assert.deepStrictEqual(plain(x.refills), [{ taskId: 'A', text: '正文 A' }]);
+  assert.deepStrictEqual(plain(x.pendingItems('s1').map((item) => item.text)), ['ctx B']);
+  const c = x.holdPending('ctx C', [], [], { taskId: 'C', bodyText: '正文 C' });
+  c.status = 'sending';
+  await x.cancelPending(c.id);
+  assert.strictEqual(x.pendingItems('s1').length, 2);
 });
 
 test('模拟忙碌开关开启时只保留队列，不 POST；关闭后继续发送', async () => {
