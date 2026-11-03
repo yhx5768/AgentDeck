@@ -550,7 +550,7 @@ const state = {
   archived: [],
   current: null,      // current session object
   es: null,
-  pendingBySid: {},   // sessionId -> 待发送消息 {text, images}；本轮结束后自动提交，切会话不丢
+  pendingBySid: {},   // sessionId -> 待发送队列 [{id,text,images,files,status,error,at}]；本轮结束后逐条提交
   seenSeq: new Set(), // seqs already rendered on this connection
   toolBlocks: {},     // tool_use_id -> details element
   toolTimers: {},     // tool_use_id -> {timer, start} live elapsed ticker
@@ -2904,6 +2904,7 @@ function boardComposerSync(task) {
     input.style.height = 'auto';
     boardComposerStatus('');
   }
+  boardQueueStatus();
 }
 
 async function boardAppendUserEvent(taskId, text) {
@@ -2933,12 +2934,14 @@ async function boardSendToMain() {
     ? `${boardTaskContext(boardDrawerTask)}\n${text}`
     : text;
   try {
-    if (isRunning()) {
-      holdPending(message, [], []);
-      await boardAppendUserEvent(boardDrawerTask && boardDrawerTask.id, text);
+    if (isRunning() || pendingItems(state.current.id).length) {
+      holdPending(message, [], [], {
+        taskId: boardDrawerTask && boardDrawerTask.id,
+        bodyText: text,
+      });
       input.value = '';
       input.style.height = 'auto';
-      boardComposerStatus('已排队 · 当前轮结束后自动发送', 'queued');
+      boardComposerStatus(`已排队 · 队列 ${pendingItems(state.current.id).length} 条`, 'queued');
       return;
     }
     boardComposerStatus('发送中…');
@@ -4041,7 +4044,7 @@ function flushHistory() {
   syncTaskPanel();
   // 切走期间本轮已结束的会话：回放里的旧 turn_end 被上面挡住，在这里按
   // 最新状态补交该会话的待发送消息。
-  if (state.current && state.pendingBySid[state.current.id] && !isRunning()) flushPending();
+  if (state.current && pendingItems(state.current.id).length && !isRunning()) flushPending();
   state.nearBottom = true;
   scrollBottom();
   updateLoadMoreBtn();
@@ -6334,8 +6337,9 @@ async function sendMessage() {
   // While a turn is streaming, don't POST immediately — the backend would
   // queue it, but the optimistic bubble lands mid-stream and the on-screen
   // order diverges from the actual (post-turn) order. Hold the message and
-  // auto-submit when the running turn ends.
-  if (isRunning()) {
+  // auto-submit when the running turn ends. If a queue already exists (e.g.
+  // the head failed), append instead of jumping the queue.
+  if (isRunning() || pendingItems(state.current.id).length) {
     holdPending(text, images, files);
     return;
   }
@@ -6378,76 +6382,187 @@ async function postMessage(payload) {
   }
 }
 
-// Hold a message until the running turn ends, then flushPending submits it.
-// 按会话保存：切走再切回 chip 仍在，轮次在切走期间结束的由 flushHistory 补交。
-// Renders a dashed chip docked to the composer so the user sees what's queued.
-function holdPending(text, images, files) {
-  if (!state.current) return;
-  // A second send while one is already held replaces it (latest intent wins).
-  state.pendingBySid[state.current.id] = { text, images, files };
-  renderPendingBubble();
+// Hold messages until the running turn ends. Each session keeps an ordered
+// queue; rapid sends append instead of replacing. The queue drains one message
+// per idle transition, so the server never receives a burst out of order.
+let pendingSeq = 0;
+
+function pendingItems(sid) {
+  return (sid && state.pendingBySid[sid]) || [];
 }
 
-// Submit the held message (if any) now that the session is idle. Called from
-// the status event handler on live turn_end / interrupted, and from
-// flushHistory when the turn ended while the session was in the background.
+function pendingQueue(sid) {
+  if (!state.pendingBySid[sid]) state.pendingBySid[sid] = [];
+  return state.pendingBySid[sid];
+}
+
+function enqueuePending(sid, text, images, files, meta = {}) {
+  const item = {
+    id: 'pend-' + (++pendingSeq),
+    text: text || '',
+    images: images || [],
+    files: files || [],
+    status: 'queued',
+    error: '',
+    at: Date.now(),
+    ...meta,
+  };
+  pendingQueue(sid).push(item);
+  return item;
+}
+
+function removePendingItem(sid, itemId) {
+  const q = pendingItems(sid);
+  const index = q.findIndex((item) => item.id === itemId);
+  if (index >= 0) q.splice(index, 1);
+  if (!q.length) delete state.pendingBySid[sid];
+  return q;
+}
+
+function holdPending(text, images, files, meta) {
+  if (!state.current) return null;
+  const item = enqueuePending(state.current.id, text, images, files, meta);
+  renderPendingBubble();
+  return item;
+}
+
+// Submit the head of the queue now that the session is idle. Called from the
+// status event handler on live turn_end / interrupted, and from flushHistory
+// when the turn ended while the session was in the background. Only one item
+// is submitted per idle transition; the rest stay queued for the next one.
 async function flushPending() {
   if (!state.current) return;
   const sid = state.current.id;
-  const payload = state.pendingBySid[sid];
-  if (!payload) return;
-  delete state.pendingBySid[sid];
-  clearPendingBubble();
-  try {
-    await postMessage(payload);
-  } catch (e) {
-    // Re-hold on transient failure so it isn't lost; surface the error.
-    // 若 await 期间用户已切走，payload 仍挂回原会话，chip 由 renderPendingBubble
-    // 按当前会话重绘（当前会话无 pending 时等于清除）。
-    state.pendingBySid[sid] = payload;
+  const q = pendingItems(sid);
+  if (!q.length) { clearPendingBubble(); return; }
+  const item = q[0];
+  if (item.status === 'sending' || item.status === 'error') {
     renderPendingBubble();
-    setErrorBanner('待发送消息提交失败：' + (e.message || 'unknown error'));
+    return;
   }
+  item.status = 'sending';
+  renderPendingBubble();
+  try {
+    await postMessage({ text: item.text, images: item.images, files: item.files });
+    if (item.taskId) await boardAppendUserEvent(item.taskId, item.bodyText || '');
+    removePendingItem(sid, item.id);
+  } catch (e) {
+    // Keep the failed message at the head so order is preserved; the user can
+    // retry or cancel it without losing the rest of the queue.
+    item.status = 'error';
+    item.error = (e && e.message) || 'unknown error';
+    setErrorBanner('待发送消息提交失败：' + item.error);
+  }
+  renderPendingBubble();
 }
 
-function cancelPending() {
-  if (state.current) delete state.pendingBySid[state.current.id];
-  clearPendingBubble();
+function retryPending(itemId) {
+  if (!state.current) return;
+  const item = pendingItems(state.current.id).find((entry) => entry.id === itemId);
+  if (!item) return;
+  item.status = 'queued';
+  item.error = '';
+  renderPendingBubble();
+  if (!isRunning()) flushPending();
 }
 
-// ---------- pending message chip (pinned to the composer) ----------
-// A held message shows as a dashed chip docked at the top of the composer card
-// (above the attachments row) with a 待发送 label and a cancel button. It's a
-// composer affordance, not part of the message stream — living inside the
-// floating composer it never scrolls away while the turn streams, and the
-// composer's ResizeObserver grows the #messages padding to make room for it.
+function cancelPending(itemId) {
+  if (!state.current) return;
+  const sid = state.current.id;
+  if (itemId) removePendingItem(sid, itemId);
+  else delete state.pendingBySid[sid];
+  renderPendingBubble();
+  if (!isRunning()) flushPending();
+}
+
+// ---------- pending message queue (pinned to the composer) ----------
+// Held messages show as a dashed list docked at the top of the composer card,
+// above the attachments row. The list is a composer affordance, not part of the
+// message stream; it stays put while the turn streams and the composer's
+// ResizeObserver grows the #messages padding to make room.
 function pendingEl() { return $('#pending-bubble'); }
 
+function boardQueueStatus() {
+  if (!state.current) return;
+  const statusEl = $('#board-composer-status');
+  if (!statusEl) return;
+  const q = pendingItems(state.current.id);
+  if (!q.length) {
+    if ((statusEl.textContent || '').includes('队列')) boardComposerStatus('');
+    return;
+  }
+  const failed = q.some((item) => item.status === 'error');
+  if (failed) boardComposerStatus(`队列 ${q.length} 条 · 有发送失败`, 'error');
+  else boardComposerStatus(`已排队 · 队列 ${q.length} 条`, 'queued');
+}
+
 function renderPendingBubble() {
-  const p = state.current && state.pendingBySid[state.current.id];
-  if (!p) { clearPendingBubble(); return; }
+  const sid = state.current && state.current.id;
+  const q = pendingItems(sid);
+  if (!q.length) { clearPendingBubble(); boardQueueStatus(); return; }
   let el = pendingEl();
   if (!el) {
     el = document.createElement('div');
     el.id = 'pending-bubble';
-    el.className = 'pending-bubble';
-    el.innerHTML = '<span class="pb-tag"></span><span class="pb-text"></span><button class="pb-cancel" type="button" title="取消待发送"></button>';
-    el.querySelector('.pb-cancel').onclick = cancelPending;
-    const cancelIcon = document.createElement('i');
-    cancelIcon.dataset.lucide = 'x';
-    el.querySelector('.pb-cancel').appendChild(cancelIcon);
-    renderIcons(el);
+    el.className = 'pending-bubble pending-queue';
   }
   // 固定在输入框卡片顶部（insertBefore 对已有节点是移动），与消息流无关，
   // 流式事件再多也不会把它顶走。
   const card = $('.composer-card');
   card.insertBefore(el, card.firstChild);
-  el.querySelector('.pb-tag').textContent = '待发送 · 本轮结束后自动提交';
-  const txt = el.querySelector('.pb-text');
-  const label = p.text || ((p.images && p.images.length) || (p.files && p.files.length) ? '(仅附件)' : '');
-  txt.textContent = label;
-  el.classList.toggle('has-text', !!label);
-  el.classList.toggle('has-images', !!(p.images && p.images.length));
+  el.textContent = '';
+
+  const head = document.createElement('div');
+  head.className = 'pb-head';
+  const tag = document.createElement('span');
+  tag.className = 'pb-tag';
+  tag.textContent = `待发送 ${q.length} 条 · 本轮结束后逐条提交`;
+  const cancelAll = document.createElement('button');
+  cancelAll.className = 'pb-cancel-all';
+  cancelAll.type = 'button';
+  cancelAll.textContent = '全部取消';
+  cancelAll.onclick = () => cancelPending();
+  head.append(tag, cancelAll);
+
+  const list = document.createElement('div');
+  list.className = 'pb-list';
+  q.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.className = 'pb-item';
+    const idx = document.createElement('span');
+    idx.className = 'pb-index';
+    idx.textContent = String(index + 1);
+    const text = document.createElement('span');
+    text.className = 'pb-text';
+    const label = item.text
+      || ((item.images && item.images.length) || (item.files && item.files.length) ? '(仅附件)' : '');
+    text.textContent = label;
+    text.title = label;
+    const badge = document.createElement('span');
+    badge.className = 'pb-state ' + (item.status || 'queued');
+    badge.textContent = item.status === 'sending' ? '发送中'
+      : item.status === 'error' ? '失败' : '排队';
+    if (item.status === 'error' && item.error) badge.title = item.error;
+    row.append(idx, text, badge);
+    if (item.status === 'error') {
+      const retry = document.createElement('button');
+      retry.className = 'pb-retry';
+      retry.type = 'button';
+      retry.textContent = '重试';
+      retry.onclick = () => retryPending(item.id);
+      row.append(retry);
+    }
+    const cancel = document.createElement('button');
+    cancel.className = 'pb-cancel';
+    cancel.type = 'button';
+    cancel.title = '取消这条待发送';
+    cancel.textContent = '×';
+    cancel.onclick = () => cancelPending(item.id);
+    row.append(cancel);
+    list.append(row);
+  });
+  el.append(head, list);
+  boardQueueStatus();
 }
 
 function clearPendingBubble() {
