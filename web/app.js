@@ -2747,8 +2747,8 @@ function boardRenderTimeline(task) {
     kind.className = 'board-drawer-event-kind' + (isUser ? ' kind-user' : '');
     kind.textContent = event.kind || '事件';
     const text = document.createElement('div');
-    text.className = 'board-drawer-event-text';
-    text.textContent = event.text || '';
+    text.className = 'board-drawer-event-text md';
+    text.innerHTML = md(event.text || '', { artifacts: false });
     row.append(boardEventAvatar(event.kind), at, kind, text);
     timeline.append(row);
   });
@@ -5369,6 +5369,17 @@ function renderFileContent(body, data, line) {
 // 落在工作区外的（别的会话的项目）退回旧的文件预览浮层——/api/files 允许读
 // 任一会话的 cwd，而工作区面板的接口只认当前会话。
 $('#messages').addEventListener('click', (e) => {
+  const a = e.target.closest('a[data-file-path]');
+  if (!a) return;
+  e.preventDefault();
+  const path = a.dataset.filePath;
+  const line = parseInt(a.dataset.fileLine || '0', 10);
+  if (typeof wsOpenPath === 'function' && wsOpenPath(path, line)) return;
+  openFileViewer(path, line);
+});
+
+// 任务流里的本地文件链接：复用工作区面板/文件预览。
+$('#board-drawer-timeline').addEventListener('click', (e) => {
   const a = e.target.closest('a[data-file-path]');
   if (!a) return;
   e.preventDefault();
