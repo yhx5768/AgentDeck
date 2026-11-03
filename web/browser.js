@@ -312,7 +312,7 @@
       return;
     }
     settingStatus.textContent = st.enabled
-      ? `已开启；Chrome：${st.chrome_path || '已找到'}；运行中 ${st.running || 0}/${st.max_browsers || 2}`
+      ? `已开启；Chrome：${st.chrome_path || '已找到'}；运行中 ${st.running || 0}/${(st.profile_mode === 'shared' ? (st.max_windows || 4) : (st.max_browsers || 2))}`
       : '已找到 Chrome，但浏览器开关未开启。';
     settingNote.textContent = '开关保存在服务器；开启后 Claude 会话可使用 browser_* 工具。';
     const shared = st.profile_mode === 'shared';

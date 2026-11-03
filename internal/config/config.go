@@ -178,8 +178,12 @@ type BrowserConfig struct {
 	// profile (for example "me"), so a login survives switching sessions. Empty
 	// keeps the default per-session profile. Only one browser may use a shared
 	// profile at a time.
-	ProfileKey  string   `yaml:"profile_key" json:"profile_key,omitempty"`
-	MaxBrowsers int      `yaml:"max_browsers" json:"max_browsers,omitempty"`
+	ProfileKey  string `yaml:"profile_key" json:"profile_key,omitempty"`
+	MaxBrowsers int    `yaml:"max_browsers" json:"max_browsers,omitempty"`
+	// MaxWindows limits sessions sharing one profile (one target/window each).
+	// It only applies when the shared-profile switch is on; MaxBrowsers still
+	// limits independent Chrome processes in per-session mode.
+	MaxWindows  int      `yaml:"max_windows" json:"max_windows,omitempty"`
 	IdleMinutes int      `yaml:"idle_minutes" json:"idle_minutes,omitempty"`
 	FPS         int      `yaml:"fps" json:"fps,omitempty"`
 	Quality     int      `yaml:"quality" json:"quality,omitempty"`
@@ -318,6 +322,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Browser.MaxBrowsers > 4 {
 		cfg.Browser.MaxBrowsers = 4
+	}
+	if cfg.Browser.MaxWindows <= 0 {
+		cfg.Browser.MaxWindows = 4
+	}
+	if cfg.Browser.MaxWindows > 8 {
+		cfg.Browser.MaxWindows = 8
 	}
 	if cfg.Browser.IdleMinutes <= 0 {
 		cfg.Browser.IdleMinutes = 10

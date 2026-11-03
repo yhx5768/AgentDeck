@@ -14,9 +14,10 @@
   - macOS 且找到 Homebrew：用户确认后执行 `brew install --cask google-chrome`，可用 `brew uninstall --cask google-chrome` 回退。
   - Linux/Windows 或没有 Homebrew：只展示官方下载地址/安装命令，不代跑 `sudo` 或交互式安装器。
   - 用户拒绝则保持关闭并显示原因。
-- 单会话/单 Chrome/单标签页的运行时：
-  - 每个 AgentDeck session 一个 `user-data-dir`，登录态跨轮次保留。
-  - 最大并发 `browser.max_browsers`（默认 2），空闲 `browser.idle_minutes`（默认 10）关闭。
+- 浏览器运行时：
+  - 默认每个 AgentDeck session 一个 Chrome 进程和一个 `user-data-dir`，登录态跨轮次保留。
+  - 共享开关开启时只有一个 Chrome 进程/一个 shared profile，每个 session 一个 target/window；cookie/localStorage 共享，窗口之间互不关闭，最多 `browser.max_windows` 个。
+  - 最大并发 `browser.max_browsers`（默认 2，per-session 模式），空闲 `browser.idle_minutes`（默认 10）关闭。
   - 浏览器帧走独立 `GET /api/sessions/{id}/browser/stream` SSE，不进入会话事件流。
   - 人工接管/交还走 `POST /api/sessions/{id}/browser/input`；接管期间 agent 工具被拒绝。
 - Claude 通过 MCP 使用：
@@ -50,6 +51,7 @@ browser:
   enabled: false
   chrome_path: ""
   max_browsers: 2
+  max_windows: 4
   idle_minutes: 10
   fps: 8
   quality: 60
@@ -102,7 +104,7 @@ MCP 配置只注入 Claude/qoder 这一类支持 `--mcp-config` 的引擎；code
 设置页新增「跨会话共享浏览器登录态」开关，**默认关闭**：
 
 - 关闭：每个 session 独立 Chrome profile，各自登录态。18821 的 demo session 用 `profiles/4c97…`，可打开 CR `123088562`。
-- 开启：所有 session 使用同一个 shared profile，名字取 `browser.profile_key`（默认 `user`），路径 `browser/profiles/shared-<key>`。同一时间只允许一个浏览器使用；第二个 session 会收到“共享 profile 正在被另一个会话使用”的明确错误。
+- 开启：所有 session 使用同一个 shared profile，名字取 `browser.profile_key`（默认 `user`），路径 `browser/profiles/shared-<key>`。所有 session 共用一个 Chrome 进程，但各自有独立的 target/window；cookie/localStorage 在同一 profile 内共享，最多 `browser.max_windows`（默认 4）个 session 窗口。关闭一个窗口不影响其他窗口，最后一个窗口关闭后才回收 Chrome。
 - 切换开关会关闭当前浏览器，**下次打开生效**，避免已打开浏览器还停在旧 profile；状态持久化在 `data/browser/settings.json` 的 `shared_profile`，默认 `false`。
 - `browser.profile_key` 只给 shared profile 命名，本身不启用共享；是否共享由设置开关决定。
 
@@ -110,7 +112,7 @@ MCP 配置只注入 Claude/qoder 这一类支持 `--mcp-config` 的引擎；code
 
 1. 默认关闭：demo 用 `profiles/4c97…` 打开 CR，登录态正常。
 2. 开启共享：demo 改用 `profiles/shared-user` 打开 CR，登录态正常。
-3. 第二会话在第一会话浏览器未关闭时被 busy 拒绝；关闭第一会话浏览器后，第二会话用 `shared-user` 打开 CR，无需重新扫码。
+3. 两个会话同时开启共享 profile：各自独立 target/window，第二会话不再被 busy 拒绝；关闭第一会话只关它的窗口，第二会话继续可用，关闭最后一个才回收 Chrome。隔离实例 18829 已验证 cookie/localStorage 共享、SSE 双路出帧、按 target 接管、逐窗口关闭。
 4. 再关闭共享：第二会话改用 `profiles/<第二会话 id>` 打开 CR，跳到 UUAP 登录页，证明按 session 隔离恢复。
 5. 最终预览保持开关关闭；`shared-user` 登录态保留，用户需要跨会话复用时再打开开关即可。
 

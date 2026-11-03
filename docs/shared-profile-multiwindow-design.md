@@ -1,7 +1,7 @@
 # 共享 profile 多 session 独立窗口设计（YHX-TODO-805）
 
 - 日期：2026-11-03
-- 状态：设计 + 最小 PoC 完成；未改 master、未部署、未触碰 8321 的 shared-user profile
+- 状态：已集成到 `shared-profile-multiwindow` 分支并通过隔离测试；待合 master/重启 8321
 - 分支：`shared-profile-multiwindow`
 - worktree：`/home/soar/Projects/cc-webui-shared-multiwindow`
 - 基于：master `ca2d2bc`
@@ -137,8 +137,22 @@ flowchart TB
 - 配置/上限/手动关窗/工具语义与测试：1–2 人日。
 - 合计约 4–7 人日；不含 803 的 Xvfb 整窗捕获。
 
+## 集成实现（2026-11-03）
+
+已按推荐 A 在分支实现：
+
+- `Manager` 增加 `profileRuntime`/`runtimeStarts`，shared 模式按 profile 复用一个 Chrome；`refs` 随 session 增减，最后一个释放时关闭 Chrome。
+- `Session` 增加 `runtime`/`targetID`；shared 模式用 `Target.createTarget(NewWindow:true)` 建窗口，失败回退 tab，再用 `chromedp.NewContext(root, WithTargetID)` 附着；target 首次附着必须用长生命周期 context，避免超时子 context 把 CDP session 一起取消。
+- `CloseSession` 只关当前 target 并释放 ref；`CloseAll`/idle reaper 同样。
+- shared 模式移除 `profileOwners` busy 检查；`max_windows` 限制窗口数（默认 4，1..8）。
+- `browser_close`/`browser_restart` 改为窗口级语义；`targetDestroyed` 由浏览器事件监听异步清理 session，避免在 chromedp 事件循环里取消 target 造成死锁。
+- 测试：`internal/browser/shared_profile_test.go`
+  - `TestSharedProfileMultiTarget`：两个 session 共享 cookie/localStorage，关闭一个另一个仍可读，最后一个关闭后 runtime 归零。
+  - `TestSharedProfileTargetDestroyed`：直接销毁 target 后 session 被清理、ref 递减。
+- 隔离实例 18829（临时 profile）实测：两 session target 不同、SSE 都能出帧、take s1 后 s2 仍 agent、关闭 s1 后 s2 继续可读、最后关闭 running=0；per-session 模式另行验证 cookie 隔离、两个 Chrome、关闭一个不影响另一个。
+
 ## 未完成
 
-- 未把 runtime 接进 AgentDeck manager；当前 PoC 是独立命令。
 - 未改 master、未部署、未重启 8321、未触碰线上 shared-user profile。
-- 未验证旧版 Chrome、macOS/Windows、手动关窗和 targetDestroyed 处理。
+- 未验证旧版 Chrome、macOS/Windows；手动关窗路径已用 targetDestroyed 测试覆盖。
+- 未做 `browser_restart` 在 shared 模式的专门回归（实现为关当前 target 后重建）。

@@ -69,8 +69,8 @@ var Tools = []Tool{
 	{Name: "browser_type", Description: "Type text key by key into an element or the focused element.", InputSchema: obj(map[string]any{"ref": str("ref from snapshot"), "selector": str("CSS selector"), "text": str("text to type"), "clear": boolean("clear the field first")}, "text")},
 	{Name: "browser_press", Description: "Press a key or chord, such as Enter, Escape, Control+a.", InputSchema: obj(map[string]any{"key": str("key or chord")}, "key")},
 	{Name: "browser_wait", Description: "Wait for text, an element or a URL substring.", InputSchema: obj(map[string]any{"text": str("text to wait for"), "selector": str("CSS selector"), "url_includes": str("URL substring"), "timeout_ms": map[string]any{"type": "integer"}})},
-	{Name: "browser_close", Description: "Close this session's browser. Saved logins are kept in its profile.", InputSchema: obj(map[string]any{})},
-	{Name: "browser_restart", Description: "Restart this session's browser. Open pages are lost; logins are kept.", InputSchema: obj(map[string]any{})},
+	{Name: "browser_close", Description: "Close this session's window/tab. Saved logins are kept; other sessions sharing the profile stay open.", InputSchema: obj(map[string]any{})},
+	{Name: "browser_restart", Description: "Recreate this session's window/tab. Open pages are lost; logins are kept and other shared sessions stay open.", InputSchema: obj(map[string]any{})},
 }
 
 var refRE = regexp.MustCompile(`^e[0-9]{1,6}$`)
@@ -133,7 +133,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 	switch name {
 	case "browser_close":
 		m.CloseSession(sessionID)
-		return textResult("Browser closed. Saved logins are kept in this session's profile.")
+		return textResult("Window/tab closed. Saved logins are kept; other shared sessions stay open.")
 	case "browser_restart":
 		m.CloseSession(sessionID)
 		if _, err := m.getOrCreate(sessionID); err != nil {
@@ -144,7 +144,7 @@ func (m *Manager) Execute(ctx context.Context, sessionID, name string, args map[
 		// Status is a read: it must not start a browser just to report that
 		// none is running.
 		st := m.SessionStatus(sessionID)
-		return textResult(fmt.Sprintf("running=%v\nurl=%s\ntitle=%s\ncontrol=%s", st.Running, st.URL, st.Title, st.Control))
+		return textResult(fmt.Sprintf("running=%v\nurl=%s\ntitle=%s\ncontrol=%s\ntarget=%s", st.Running, st.URL, st.Title, st.Control, st.Target))
 	}
 
 	s, err := m.getOrCreate(sessionID)
