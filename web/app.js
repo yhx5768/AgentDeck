@@ -2692,6 +2692,9 @@ function boardEventAvatar(kind) {
     '最近回报': ['报', 'ev-report'],
     '路由事件': ['路', 'ev-route'],
     '建卡': ['建', 'ev-create'],
+    '原始任务': ['原', 'ev-create'],
+    'A2A 发': ['发', 'ev-agent'],
+    'A2A 收': ['收', 'ev-user'],
     '最近进度': ['进', 'ev-report'],
   };
   const [label, cls] = map[kind] || ['事', 'ev-other'];
@@ -2715,7 +2718,7 @@ function boardRenderTimeline(task) {
     timeline.append(boardMuted('暂无时间线'));
     return;
   }
-  const order = ['主 Agent 回复', '用户消息', '最近回报', '路由事件', '建卡', '最近进度'];
+  const order = ['主 Agent 回复', '用户消息', 'A2A 发', 'A2A 收', '最近回报', '路由事件', '原始任务', '建卡', '最近进度'];
   const present = order.filter((kind) => events.some((e) => e.kind === kind));
   const extra = events.map((e) => e.kind).filter((k) => k && !order.includes(k));
   const kinds = present.concat([...new Set(extra)]);
