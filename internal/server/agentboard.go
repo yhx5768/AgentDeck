@@ -69,6 +69,9 @@ func (s *Server) watchAgentBoard() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
+		if s.agentBoardDBMode() {
+			continue
+		}
 		path := s.agentBoardPath()
 		info, err := os.Stat(path)
 		var mod time.Time
@@ -92,6 +95,10 @@ func (s *Server) watchAgentBoard() {
 }
 
 func (s *Server) handleAgentBoard(w http.ResponseWriter, r *http.Request) {
+	if s.agentBoardDBMode() {
+		s.handleAgentBoardDB(w, r)
+		return
+	}
 	path := s.agentBoardPath()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -126,6 +133,10 @@ func (s *Server) handleAgentBoard(w http.ResponseWriter, r *http.Request) {
 // between browser tabs and gives external writers one documented path. The
 // JSON file stays the source of truth until the task store moves to a DB.
 func (s *Server) handleAgentBoardAppendEvent(w http.ResponseWriter, r *http.Request) {
+	if s.agentBoardDBMode() {
+		s.handleAgentBoardAppendEventDB(w, r)
+		return
+	}
 	taskID := r.PathValue("id")
 	var body struct {
 		Kind   string `json:"kind"`

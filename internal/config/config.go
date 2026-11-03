@@ -213,10 +213,15 @@ type Config struct {
 	GatewayToken string `yaml:"gateway_token"`
 	DataDir      string `yaml:"data_dir"`
 	DefaultCwd   string `yaml:"default_cwd"`
-	// AgentBoardPath points at the JSON snapshot served by GET /api/agent-board.
-	// Empty means <data_dir>/agent-board.local.json. The file is generated outside
-	// cc-webui (iCafe cache + local routing table); the UI never talks to iCafe.
+	// AgentBoardPath points at the legacy JSON snapshot. When AgentBoardDBPath
+	// is empty it is the read/write board store. When the DB is enabled it is
+	// only a one-time import source and is never written again.
 	AgentBoardPath string `yaml:"agent_board_path"`
+	// AgentBoardDBPath enables the SQLite board store. On startup an empty DB
+	// imports AgentBoardPath plus AgentBoardRoutingTable once; afterwards the DB
+	// is the sole write source and the JSON file watchers stay off. Changes
+	// require a restart.
+	AgentBoardDBPath string `yaml:"agent_board_db_path"`
 	// AgentBoardRoutingTable enables the in-process auto sync: when set, the
 	// server watches this Markdown table and rewrites AgentBoardPath plus any
 	// AgentBoardSyncStores. Empty disables the watcher.

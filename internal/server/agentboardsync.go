@@ -40,6 +40,10 @@ func (s *Server) watchAgentBoardSync() {
 	var lastPath string
 	var lastFingerprint string
 	for {
+		if s.agentBoardDBMode() {
+			time.Sleep(time.Second)
+			continue
+		}
 		cfg := s.cfg()
 		routing := strings.TrimSpace(cfg.AgentBoardRoutingTable)
 		if routing == "" {

@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode"
 
+	"cc-webui/internal/boarddb"
 	"cc-webui/internal/browser"
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/codexhist"
@@ -152,10 +153,16 @@ type Server struct {
 	boardLastPath string
 	boardLastMod  time.Time
 	boardLastSize int64
-	// boardWriteMu serializes in-process timeline appends. The board file is
-	// still shared with external tools; this only removes races between
-	// concurrent browser tabs served by this process.
+	// boardWriteMu serializes in-process JSON timeline appends. The board file
+	// is still shared with external tools; this only removes races between
+	// concurrent browser tabs served by this process. Unused with boardDB.
 	boardWriteMu sync.Mutex
+	// boardDB is set when agent_board_db_path is configured. It is then the
+	// sole board write source; boardDBErr records a startup failure so the API
+	// reports it instead of silently falling back to the legacy JSON file.
+	boardDB     *boarddb.Store
+	boardDBErr  error
+	boardDBOnce sync.Once
 
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
@@ -190,8 +197,12 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 		ocDiscoverKick: make(chan struct{}, 1),
 	}
 	s.routes()
-	go s.watchAgentBoard()
-	go s.watchAgentBoardSync()
+	if s.agentBoardDBConfigured() {
+		s.initAgentBoardDB()
+	} else {
+		go s.watchAgentBoard()
+		go s.watchAgentBoardSync()
+	}
 	return s
 }
 
@@ -214,6 +225,12 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/agent-board", s.auth(s.handleAgentBoard))
 	s.mux.Handle("GET /api/agent-board/events", s.auth(s.handleAgentBoardEvents))
 	s.mux.Handle("POST /api/agent-board/tasks/{id}/events", s.auth(s.handleAgentBoardAppendEvent))
+	s.mux.Handle("GET /api/agent-board/tasks/{id}", s.auth(s.handleAgentBoardGetTask))
+	s.mux.Handle("POST /api/agent-board/tasks", s.auth(s.handleAgentBoardCreateTask))
+	s.mux.Handle("PATCH /api/agent-board/tasks/{id}", s.auth(s.handleAgentBoardUpdateTask))
+	s.mux.Handle("POST /api/agent-board/tasks/{id}/worker", s.auth(s.handleAgentBoardBindWorker))
+	s.mux.Handle("GET /api/agent-board/workers", s.auth(s.handleAgentBoardWorkers))
+	s.mux.Handle("POST /api/agent-board/backup", s.auth(s.handleAgentBoardBackup))
 	s.mux.Handle("GET /api/sessions", s.auth(s.handleListSessions))
 	s.mux.Handle("POST /api/sessions", s.auth(s.handleCreateSession))
 	s.mux.Handle("GET /api/sessions/{id}", s.auth(s.handleGetSession))
@@ -2713,6 +2730,7 @@ func (s *Server) Run() error {
 // Shutdown stops accepting connections and waits for in-flight requests, so
 // the caller can then close the pooled `opencode serve` children cleanly.
 func (s *Server) Shutdown(ctx context.Context) error {
+	defer s.closeAgentBoardDB()
 	srv := s.httpServer()
 	if srv == nil {
 		if s.browser != nil {
