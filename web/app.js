@@ -2627,12 +2627,6 @@ function boardComposerSync(task) {
     input.style.height = 'auto';
     boardComposerStatus('');
   }
-  const hint = $('#board-composer-context-hint');
-  if (hint) {
-    hint.textContent = task.id
-      ? `发送时附带任务上下文 · ${task.icafe_id || task.id}`
-      : '发送时附带任务上下文';
-  }
 }
 
 async function boardSendToMain() {
@@ -2653,14 +2647,14 @@ async function boardSendToMain() {
       holdPending(message, [], []);
       input.value = '';
       input.style.height = 'auto';
-      boardComposerStatus('已排队 · 当前轮结束后自动发送（含任务上下文）', 'queued');
+      boardComposerStatus('已排队 · 当前轮结束后自动发送', 'queued');
       return;
     }
-    boardComposerStatus('发送中…（含任务上下文）');
+    boardComposerStatus('发送中…');
     await postMessage({ text: message, images: [], files: [] });
     input.value = '';
     input.style.height = 'auto';
-    boardComposerStatus('已发送（含任务上下文）· 可在「对话」查看', 'ok');
+    boardComposerStatus('已发送 · 可在「对话」查看', 'ok');
   } catch (e) {
     boardComposerStatus('发送失败：' + (e && e.message ? e.message : e), 'error');
   } finally {
