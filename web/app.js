@@ -577,6 +577,8 @@ const state = {
   // 前端只缓存；mainAgentMaxBytes 是同一接口给出的 role_prompt 字节上限。
   mainAgentPrompt: null,
   mainAgentMaxBytes: 32768,
+  agentBoard: null,        // GET /api/agent-board snapshot (read-only)
+  agentBoardLoading: false,
   drafts: {},         // sessionId -> {text, attachments}
   attached: [],       // 待发送附件：[{kind:'image',media_type,data} | {kind:'file',name,size,path}]
   nsAttached: [],     // images staged in the new-session composer
@@ -2136,6 +2138,7 @@ $('#main-agent-toggle').onchange = async (e) => {
       method: 'PATCH',
       body: JSON.stringify(mainAgentToggleBody(s, on, def)),
     }));
+    syncMainAgentTabs(state.current);
     updateResidentUI();
     updateRolePromptButton();
     renderSessionList();
@@ -2286,6 +2289,7 @@ $('#modal-role-prompt').addEventListener('keydown', (e) => {
 async function openSession(id) {
   const s = await api(`/api/sessions/${id}`);
   state.current = s;
+  syncMainAgentTabs(s);
   // 待发送消息按会话留在 pendingBySid 里，切换不清空；下面随视图重建恢复显示。
   state.seenSeq = new Set();
   state.toolBlocks = {};
@@ -2367,11 +2371,197 @@ function switchChatTab(tab) {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
   const isTraj = tab === 'traj';
-  $('#msg-wrap').classList.toggle('hidden', isTraj);
+  const isBoard = tab === 'board';
+  $('#msg-wrap').classList.toggle('hidden', isTraj || isBoard);
   $('#traj-view').classList.toggle('hidden', !isTraj);
-  $('#composer').classList.toggle('hidden', isTraj);
+  $('#board-view').classList.toggle('hidden', !isBoard);
+  $('#composer').classList.toggle('hidden', isTraj || isBoard);
   if (isTraj) trajShow();
+  if (isBoard) boardShow();
 }
+
+// 看板只对 main_agent 会话显示；取消标记时如果正停在看板，切回对话。
+function syncMainAgentTabs(s) {
+  const tab = document.querySelector('.chat-tab[data-tab="board"]');
+  if (!tab) return;
+  const visible = !!(s && s.main_agent);
+  tab.classList.toggle('hidden', !visible);
+  if (!visible && tab.classList.contains('active')) switchChatTab('chat');
+}
+
+function boardTaskCard(task) {
+  const details = document.createElement('details');
+  details.className = 'board-card';
+  const summary = document.createElement('summary');
+
+  const top = document.createElement('div');
+  top.className = 'board-card-top';
+  const id = document.createElement('span');
+  id.className = 'board-card-id';
+  id.textContent = task.id || '';
+  const project = document.createElement('span');
+  project.className = 'board-project';
+  project.textContent = task.project || '未分类';
+  project.title = task.project || '';
+  top.append(id, project);
+
+  const title = document.createElement('div');
+  title.className = 'board-card-title';
+  title.textContent = task.title || '（无标题）';
+  title.title = task.full_title || task.title || '';
+
+  const meta = document.createElement('div');
+  meta.className = 'board-card-meta';
+  const worker = document.createElement('b');
+  worker.textContent = task.worker || '未派工';
+  meta.append('worker：', worker, ' · ', task.updated_at || '—');
+
+  summary.append(top, title, meta);
+  if (task.progress) {
+    const progress = document.createElement('div');
+    progress.className = 'board-card-progress';
+    progress.textContent = task.progress;
+    progress.title = task.progress;
+    summary.append(progress);
+  }
+  details.append(summary);
+
+  const detail = document.createElement('div');
+  detail.className = 'board-card-detail';
+  const line = (label, value) => {
+    if (!value) return;
+    const row = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = label + '：';
+    row.append(b, String(value));
+    detail.append(row);
+  };
+  line('状态', task.status);
+  line('负责人', task.owner);
+  line('会话', task.session);
+  line('cwd', task.cwd);
+  line('最近事件', task.last_event);
+  line('报告', task.report_file);
+  if (task.url) {
+    const row = document.createElement('div');
+    const a = document.createElement('a');
+    a.href = task.url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = '在 iCafe 打开';
+    row.append(a);
+    detail.append(row);
+  }
+  details.append(detail);
+  return details;
+}
+
+function boardStale(data) {
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/.exec(data.generated_at || '');
+  if (!m) return false;
+  const ts = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+  const minutes = Number(data.stale_after_minutes || 30);
+  return Date.now() - ts > minutes * 60000;
+}
+
+function renderBoard() {
+  const data = state.agentBoard;
+  const columns = $('#board-columns');
+  const empty = $('#board-empty');
+  const source = $('#board-source');
+  const updated = $('#board-updated');
+  const filter = $('#board-project-filter');
+  if (!data) return;
+
+  if (data.source === 'missing') {
+    source.textContent = '快照缺失';
+    updated.textContent = data.error || '';
+    columns.innerHTML = '';
+    empty.textContent = '看板快照还没有生成；请先运行 work/tools/agent_board_snapshot.py。';
+    empty.classList.remove('hidden');
+    return;
+  }
+
+  source.textContent = 'iCafe 缓存 + 本地路由表';
+  const stale = boardStale(data);
+  updated.textContent = data.generated_at ? `更新于 ${data.generated_at}` : '';
+  updated.classList.toggle('board-stale', stale);
+  if (stale) updated.textContent += '（可能已过期）';
+
+  const projects = data.projects || [];
+  const current = filter.value;
+  filter.replaceChildren(new Option('全部项目', ''));
+  projects.forEach((p) => filter.append(new Option(p, p)));
+  filter.value = projects.includes(current) ? current : '';
+  const selected = filter.value;
+  const tasks = (data.tasks || []).filter((t) => !selected || t.project === selected);
+
+  const order = data.status_order || ['新建', '进行中', '待人工', '待验收', '已完成', '已取消'];
+  const groups = new Map(order.map((s) => [s, []]));
+  tasks.forEach((t) => {
+    const key = t.status || '其他';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  });
+
+  columns.innerHTML = '';
+  if (!tasks.length) {
+    empty.textContent = selected ? `项目「${selected}」下没有任务。` : '暂无任务。';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  for (const [status, list] of groups) {
+    if (!order.includes(status) && !list.length) continue;
+    const column = document.createElement('section');
+    column.className = 'board-column';
+    const head = document.createElement('div');
+    head.className = 'board-column-head';
+    const name = document.createElement('span');
+    name.textContent = status;
+    const count = document.createElement('span');
+    count.className = 'board-column-count';
+    count.textContent = String(list.length);
+    head.append(name, count);
+    const body = document.createElement('div');
+    body.className = 'board-column-body';
+    if (!list.length) {
+      const none = document.createElement('div');
+      none.className = 'board-card-meta';
+      none.textContent = '暂无';
+      body.append(none);
+    } else {
+      list.forEach((task) => body.append(boardTaskCard(task)));
+    }
+    column.append(head, body);
+    columns.append(column);
+  }
+}
+
+async function boardShow(force = false) {
+  if (state.agentBoardLoading) return;
+  if (!force && state.agentBoard) {
+    renderBoard();
+    return;
+  }
+  state.agentBoardLoading = true;
+  const empty = $('#board-empty');
+  empty.textContent = '正在读取看板快照…';
+  empty.classList.remove('hidden');
+  $('#board-columns').innerHTML = '';
+  try {
+    state.agentBoard = await api('/api/agent-board');
+    renderBoard();
+  } catch (err) {
+    empty.textContent = '读取看板失败：' + err.message;
+    empty.classList.remove('hidden');
+  } finally {
+    state.agentBoardLoading = false;
+  }
+}
+
+$('#board-refresh').onclick = () => boardShow(true);
+$('#board-project-filter').onchange = () => renderBoard();
 document.querySelectorAll('.chat-tab').forEach((b) => {
   b.onclick = () => switchChatTab(b.dataset.tab);
 });

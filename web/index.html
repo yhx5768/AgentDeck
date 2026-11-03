@@ -115,6 +115,7 @@
       <div id="chat-tabs">
         <button class="chat-tab active" data-tab="chat">对话</button>
         <button class="chat-tab" data-tab="traj">轨迹</button>
+        <button class="chat-tab hidden" data-tab="board" id="chat-tab-board">看板</button>
       </div>
 
       <div id="msg-wrap">
@@ -158,6 +159,26 @@
             <div id="traj-detail-body"></div>
   </aside>
         </div>
+      </div>
+
+      <div id="board-view" class="hidden">
+        <div id="board-toolbar">
+          <div class="board-heading">
+            <span class="board-title">主 Agent 看板</span>
+            <span id="board-source" class="board-source"></span>
+          </div>
+          <div class="board-tools">
+            <label class="board-filter-label">项目
+              <select id="board-project-filter">
+                <option value="">全部</option>
+              </select>
+            </label>
+            <button id="board-refresh" class="ghost-btn" title="重新读取看板快照">刷新</button>
+            <span id="board-updated" class="board-updated"></span>
+          </div>
+        </div>
+        <div id="board-empty" class="board-empty hidden"></div>
+        <div id="board-columns" class="board-columns"></div>
       </div>
 
       <footer id="composer">

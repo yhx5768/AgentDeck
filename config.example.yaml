@@ -12,6 +12,10 @@ data_dir: "./data"
 # 新建会话时的默认工作目录
 default_cwd: "~"
 
+# 主 Agent 看板快照 JSON（GET /api/agent-board）。留空用 <data_dir>/agent-board.json。
+# 快照由外部脚本生成（iCafe 缓存 + 本地 routing-table），外部用户不需要 iCafe 登录。
+# agent_board_path: "/path/to/agent-board.json"
+
 # 浏览器 PoC（可选，默认关闭）。开启后 Claude 会话会拿到 browser_* MCP 工具，
 # Web UI 右上角出现浏览器面板。Chrome 必须是本机安装的 Chromium 系浏览器。
 # 运行时开关优先从 <data_dir>/browser/settings.json 读取；下面的 enabled 只是

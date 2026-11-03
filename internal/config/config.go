@@ -209,13 +209,17 @@ func (c *Config) BrowserOn() bool {
 
 // Config is the top-level config structure.
 type Config struct {
-	Listen       string        `yaml:"listen"`
-	GatewayToken string        `yaml:"gateway_token"`
-	DataDir      string        `yaml:"data_dir"`
-	DefaultCwd   string        `yaml:"default_cwd"`
-	Browser      BrowserConfig `yaml:"browser" json:"browser"`
-	CLIs         []CLI         `yaml:"clis"`
-	Providers    []Provider    `yaml:"providers"`
+	Listen       string `yaml:"listen"`
+	GatewayToken string `yaml:"gateway_token"`
+	DataDir      string `yaml:"data_dir"`
+	DefaultCwd   string `yaml:"default_cwd"`
+	// AgentBoardPath points at the JSON snapshot served by GET /api/agent-board.
+	// Empty means <data_dir>/agent-board.json. The file is generated outside
+	// cc-webui (iCafe cache + local routing table); the UI never talks to iCafe.
+	AgentBoardPath string        `yaml:"agent_board_path"`
+	Browser        BrowserConfig `yaml:"browser" json:"browser"`
+	CLIs           []CLI         `yaml:"clis"`
+	Providers      []Provider    `yaml:"providers"`
 
 	// DiscoveredProviders are runtime entries for engines whose providers live
 	// outside config.yaml — currently the provider ids an opencode cli reports

@@ -196,6 +196,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/providers", s.auth(s.handleProviders))
 	s.mux.Handle("GET /api/config", s.auth(s.handleConfig))
 	s.mux.Handle("GET /api/main-agent-prompt", s.auth(s.handleMainAgentPrompt))
+	s.mux.Handle("GET /api/agent-board", s.auth(s.handleAgentBoard))
 	s.mux.Handle("GET /api/sessions", s.auth(s.handleListSessions))
 	s.mux.Handle("POST /api/sessions", s.auth(s.handleCreateSession))
 	s.mux.Handle("GET /api/sessions/{id}", s.auth(s.handleGetSession))
