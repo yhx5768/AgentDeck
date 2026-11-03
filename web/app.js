@@ -2509,6 +2509,7 @@ function boardCloseDrawer() {
 
 function boardOpenDrawer(task) {
   state.boardSelectedId = task.id || null;
+  boardDrawerTask = task;
   document.querySelectorAll('.board-card').forEach((el) => {
     el.classList.toggle('board-card-selected', el.dataset.taskId === task.id);
   });
@@ -2580,6 +2581,26 @@ function boardOpenDrawer(task) {
 // 消息发给当前 mainAgent 会话，不经过任务评论/worker。发送成功走 postMessage
 // 的乐观气泡 + SSE；忙碌时用主对话同一套 holdPending，轮次结束后自动提交。
 let boardComposerTaskId = null;
+let boardDrawerTask = null;
+
+function boardTaskContext(task) {
+  const lines = [
+    '【来自看板任务抽屉】',
+    `task_id: ${task.id || '—'}`,
+    `卡片: ${task.icafe_id || '—'}${task.url ? ' · ' + task.url : ''}`,
+    `标题: ${task.full_title || task.title || '—'}`,
+    `状态: ${task.status || '—'} · 项目: ${task.project || '—'}`,
+    `worker: ${task.worker || '未派工'} · 会话: ${task.session || '—'}`,
+    `cwd: ${task.cwd || '—'}`,
+    `最近事件: ${task.last_event || '—'}`,
+    `报告: ${task.report_file || '—'}`,
+    '---',
+  ];
+  if (Array.isArray(task.tags) && task.tags.length) {
+    lines.splice(4, 0, `标签: ${task.tags.join(' / ')}`);
+  }
+  return lines.join('\n');
+}
 
 function boardComposerStatus(text, kind = '') {
   const el = $('#board-composer-status');
@@ -2606,6 +2627,12 @@ function boardComposerSync(task) {
     input.style.height = 'auto';
     boardComposerStatus('');
   }
+  const hint = $('#board-composer-context-hint');
+  if (hint) {
+    hint.textContent = task.id
+      ? `发送时附带任务上下文 · ${task.icafe_id || task.id}`
+      : '发送时附带任务上下文';
+  }
 }
 
 async function boardSendToMain() {
@@ -2618,19 +2645,22 @@ async function boardSendToMain() {
     return;
   }
   if (send) send.disabled = true;
+  const message = boardDrawerTask
+    ? `${boardTaskContext(boardDrawerTask)}\n${text}`
+    : text;
   try {
     if (isRunning()) {
-      holdPending(text, [], []);
+      holdPending(message, [], []);
       input.value = '';
       input.style.height = 'auto';
-      boardComposerStatus('已排队 · 当前轮结束后自动发送', 'queued');
+      boardComposerStatus('已排队 · 当前轮结束后自动发送（含任务上下文）', 'queued');
       return;
     }
-    boardComposerStatus('发送中…');
-    await postMessage({ text, images: [], files: [] });
+    boardComposerStatus('发送中…（含任务上下文）');
+    await postMessage({ text: message, images: [], files: [] });
     input.value = '';
     input.style.height = 'auto';
-    boardComposerStatus('已发送 · 可在「对话」查看', 'ok');
+    boardComposerStatus('已发送（含任务上下文）· 可在「对话」查看', 'ok');
   } catch (e) {
     boardComposerStatus('发送失败：' + (e && e.message ? e.message : e), 'error');
   } finally {
