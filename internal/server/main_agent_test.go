@@ -120,9 +120,17 @@ func TestMainAgentPromptEndpoint(t *testing.T) {
 	if body.MaxBytes != maxRolePromptBytes {
 		t.Fatalf("max_bytes = %d, want %d", body.MaxBytes, maxRolePromptBytes)
 	}
-	for _, want := range []string{"1. 归属", "5. 状态", "9. 台账", "mainAgent", "Worker 规则"} {
+	for _, want := range []string{"1. 归属", "2. 派工", "3. 查询", "4. 状态", "5. 回报", "6. 收尾", "7. 禁用", "mainAgent", "Worker 规则"} {
 		if !strings.Contains(body.Prompt, want) {
 			t.Errorf("default prompt lost %q", want)
+		}
+	}
+	// The built-in template must stay workspace-neutral; local paths, iCafe,
+	// the routing table, old local statuses and workspace commands belong in a
+	// session-specific role_prompt override.
+	for _, banned := range []string{"/home/", "iCafe", "routing-table", "待确认", "受阻", ".claude", "work/", "agentdeck.py"} {
+		if strings.Contains(body.Prompt, banned) {
+			t.Errorf("default prompt must not contain %q", banned)
 		}
 	}
 	if len(body.Prompt) > maxRolePromptBytes {

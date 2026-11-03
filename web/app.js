@@ -1385,7 +1385,7 @@ document.addEventListener('pointerdown', (e) => {
 
 // ---------- 主 Agent 置顶头像条 ----------
 // main_agent 只是会话上的标记（不是权限）：它让会话钉在侧栏最上方，并作为
-// 「一键填入路由规则」的提示。可以同时标记多个——都显示出来，常驻的排前面。
+// 「一键填入主 Agent 规则」的提示。可以同时标记多个——都显示出来，常驻的排前面。
 function mainAgentSessions() {
   return (state.sessions || [])
     .filter((s) => s.main_agent)
@@ -2111,7 +2111,7 @@ $('#resident-name').onchange = async (e) => {
 };
 
 // 「作为主 Agent」开关要写哪些字段（纯函数，便于前端测试）：
-//   打开：标记 + 写入默认路由规则（调用方已确认覆盖自定义内容）；
+//   打开：标记 + 写入默认主 Agent 规则（调用方已确认覆盖自定义内容）；
 //   关闭：只取消标记；仅当角色提示仍等于默认值时才清空，自定义内容保留。
 function mainAgentToggleBody(sess, on, defaultPrompt) {
   if (on) return { main_agent: true, role_prompt: defaultPrompt };
@@ -2135,7 +2135,7 @@ $('#main-agent-toggle').onchange = async (e) => {
   try {
     const def = await ensureMainAgentPrompt();
     if (on && mainAgentNeedsOverwriteConfirm(s, def) &&
-        !confirm('开启主 Agent 会用默认路由规则覆盖当前角色提示，确定继续？')) {
+        !confirm('开启主 Agent 会用默认主 Agent 规则覆盖当前角色提示，确定继续？')) {
       e.target.checked = false;
       return;
     }

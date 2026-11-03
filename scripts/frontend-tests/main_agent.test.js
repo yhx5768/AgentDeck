@@ -12,6 +12,7 @@ const { JSDOM } = require('jsdom');
 
 const WEB = path.resolve(__dirname, '../../web');
 const src = fs.readFileSync(path.join(WEB, 'app.js'), 'utf8');
+const indexHtml = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');
 
 function grabFn(name) {
   const s = src.indexOf('function ' + name + '(');
@@ -161,6 +162,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
     X.mainAgentNeedsOverwriteConfirm({ role_prompt: '' }, DEFAULT) === false);
 
   console.log('机器人面板的主 Agent 提示');
+  check('使用通用规则文案',
+    indexHtml.includes('注入通用规则并置顶') && !indexHtml.includes('注入路由规则并置顶'));
 
   state.current = {
     id: 's1', name: '调度', main_agent: true, peer_name: 'worker', resident: false,
