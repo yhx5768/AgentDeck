@@ -213,22 +213,6 @@ type Config struct {
 	GatewayToken string `yaml:"gateway_token"`
 	DataDir      string `yaml:"data_dir"`
 	DefaultCwd   string `yaml:"default_cwd"`
-	// AgentBoardPath points at the legacy JSON snapshot. When AgentBoardDBPath
-	// is empty it is the read/write board store. When the DB is enabled it is
-	// only a one-time import source and is never written again.
-	AgentBoardPath string `yaml:"agent_board_path"`
-	// AgentBoardDBPath enables the SQLite board store. On startup an empty DB
-	// imports AgentBoardPath plus AgentBoardRoutingTable once; afterwards the DB
-	// is the sole write source and the JSON file watchers stay off. Changes
-	// require a restart.
-	AgentBoardDBPath string `yaml:"agent_board_db_path"`
-	// AgentBoardRoutingTable enables the in-process auto sync: when set, the
-	// server watches this Markdown table and rewrites AgentBoardPath plus any
-	// AgentBoardSyncStores. Empty disables the watcher.
-	AgentBoardRoutingTable string `yaml:"agent_board_routing_table"`
-	// AgentBoardSyncStores lists extra JSON stores to sync (for example a
-	// preview store). AgentBoardPath is always included.
-	AgentBoardSyncStores []string `yaml:"agent_board_sync_stores"`
 	// AgentBoardMockBusy turns the board drawer composer into a queue test
 	// harness: the UI keeps messages in the local pending queue instead of
 	// posting them. Test previews set this; production leaves it false.

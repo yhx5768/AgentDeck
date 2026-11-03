@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"cc-webui/internal/boarddb"
 	"cc-webui/internal/config"
 )
 
@@ -26,17 +27,26 @@ func writeBoardFile(t *testing.T, path string, value any) {
 func boardDBServer(t *testing.T, jsonPath, routingPath string) *Server {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := &config.Config{
-		DataDir:                dir,
-		AgentBoardPath:         jsonPath,
-		AgentBoardDBPath:       filepath.Join(dir, "board.db"),
-		AgentBoardRoutingTable: routingPath,
-	}
+	cfg := &config.Config{DataDir: dir}
 	s := &Server{cm: config.NewManager(filepath.Join(dir, "config.yaml"), cfg), boardHub: newBoardHub()}
-	s.initAgentBoardDB()
+	s.initAgentBoardDB(boardPaths{
+		DB:           filepath.Join(dir, "agent-board.db"),
+		LegacyJSON:   jsonPath,
+		RoutingTable: routingPath,
+	})
 	if s.boardDBErr != nil {
 		t.Fatal(s.boardDBErr)
 	}
+	t.Cleanup(s.closeAgentBoardDB)
+	return s
+}
+
+func boardDBServerAt(t *testing.T, dbPath, jsonPath, routingPath string) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := &config.Config{DataDir: dir}
+	s := &Server{cm: config.NewManager(filepath.Join(dir, "config.yaml"), cfg), boardHub: newBoardHub()}
+	s.initAgentBoardDB(boardPaths{DB: dbPath, LegacyJSON: jsonPath, RoutingTable: routingPath})
 	t.Cleanup(s.closeAgentBoardDB)
 	return s
 }
@@ -72,7 +82,7 @@ func TestAgentBoardDBMigratesOnStartup(t *testing.T) {
 	s := boardDBServer(t, jsonPath, routingPath)
 
 	w := httptest.NewRecorder()
-	s.handleAgentBoard(w, httptest.NewRequest(http.MethodGet, "/api/agent-board", nil))
+	s.handleAgentBoardDB(w, httptest.NewRequest(http.MethodGet, "/api/agent-board", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
 	}
@@ -106,7 +116,7 @@ func TestAgentBoardDBEventDoesNotWriteLegacyJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/agent-board/tasks/YHX-TODO-819/events", body)
 	req.SetPathValue("id", "YHX-TODO-819")
 	w := httptest.NewRecorder()
-	s.handleAgentBoardAppendEvent(w, req)
+	s.handleAgentBoardAppendEventDB(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
 	}
@@ -138,7 +148,7 @@ func TestAgentBoardDBEventDoesNotWriteLegacyJSON(t *testing.T) {
 		strings.NewReader(`{"kind":"用户消息","text":"抽屉消息","at":"2026-11-03 20:10:00"}`))
 	req.SetPathValue("id", "YHX-TODO-819")
 	w = httptest.NewRecorder()
-	s.handleAgentBoardAppendEvent(w, req)
+	s.handleAgentBoardAppendEventDB(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("duplicate code = %d body=%s", w.Code, w.Body.String())
 	}
@@ -218,15 +228,90 @@ func TestAgentBoardDBCreateUpdateBind(t *testing.T) {
 	}
 }
 
-func TestAgentBoardDBNotConfigured(t *testing.T) {
+func TestAgentBoardDBCreatesEmptyWithoutLegacyFiles(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &config.Config{DataDir: dir, AgentBoardPath: filepath.Join(dir, "store.json")}
-	s := &Server{cm: config.NewManager(filepath.Join(dir, "config.yaml"), cfg)}
-	req := httptest.NewRequest(http.MethodPost, "/api/agent-board/tasks", strings.NewReader(`{"title":"x"}`))
+	s := boardDBServer(t, filepath.Join(dir, "missing.json"), filepath.Join(dir, "missing-table.md"))
 	w := httptest.NewRecorder()
-	s.handleAgentBoardCreateTask(w, req)
-	if w.Code != http.StatusConflict {
+	s.handleAgentBoardDB(w, httptest.NewRequest(http.MethodGet, "/api/agent-board", nil))
+	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot["tasks"].([]any)) != 0 {
+		t.Fatalf("tasks = %v", snapshot["tasks"])
+	}
+	if _, err := os.Stat(s.boardDB.Path()); err != nil {
+		t.Fatalf("db not created: %v", err)
+	}
+}
+
+func TestAgentBoardDBFailedImportRemovesNewDB(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "store.json")
+	if err := os.WriteFile(jsonPath, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "agent-board.db")
+	s := boardDBServerAt(t, dbPath, jsonPath, "")
+	if s.boardDBErr == nil {
+		t.Fatal("expected migration failure")
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("partial DB should be removed, stat err = %v", err)
+	}
+}
+
+func TestDefaultBoardPathsNeedNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	paths := defaultBoardPaths(dir)
+	if paths.DB != filepath.Join(dir, "agent-board.db") {
+		t.Fatalf("db = %q", paths.DB)
+	}
+	if paths.LegacyJSON != filepath.Join(dir, "agent-board.local.json") {
+		t.Fatalf("legacy json = %q", paths.LegacyJSON)
+	}
+	if paths.RoutingTable != defaultAgentBoardRoutingTable {
+		t.Fatalf("routing = %q", paths.RoutingTable)
+	}
+	if !filepath.IsAbs(defaultAgentBoardRoutingTable) {
+		t.Fatalf("routing path should be absolute: %q", defaultAgentBoardRoutingTable)
+	}
+}
+
+func TestAgentBoardDBExistingSkipsMigration(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "agent-board.db")
+	st, err := boarddb.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateTask(map[string]any{"id": "YHX-TODO-999", "title": "已有任务"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	jsonPath := filepath.Join(dir, "store.json")
+	writeBoardFile(t, jsonPath, sampleBoardJSON())
+	s := boardDBServerAt(t, dbPath, jsonPath, "")
+	if s.boardDBErr != nil {
+		t.Fatal(s.boardDBErr)
+	}
+	w := httptest.NewRecorder()
+	s.handleAgentBoardDB(w, httptest.NewRequest(http.MethodGet, "/api/agent-board", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	tasks := snapshot["tasks"].([]any)
+	if len(tasks) != 1 || tasks[0].(map[string]any)["id"] != "YHX-TODO-999" {
+		t.Fatalf("existing DB should not import legacy JSON: %v", tasks)
 	}
 }
 
@@ -236,18 +321,12 @@ func TestAgentBoardDBOpenFailureReportsError(t *testing.T) {
 	if err := os.Mkdir(blocked, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{
-		DataDir:          dir,
-		AgentBoardPath:   filepath.Join(dir, "store.json"),
-		AgentBoardDBPath: blocked,
-	}
-	s := &Server{cm: config.NewManager(filepath.Join(dir, "config.yaml"), cfg), boardHub: newBoardHub()}
-	s.initAgentBoardDB()
+	s := boardDBServerAt(t, blocked, filepath.Join(dir, "missing.json"), "")
 	if s.boardDBErr == nil {
 		t.Fatal("expected open failure")
 	}
 	w := httptest.NewRecorder()
-	s.handleAgentBoard(w, httptest.NewRequest(http.MethodGet, "/api/agent-board", nil))
+	s.handleAgentBoardDB(w, httptest.NewRequest(http.MethodGet, "/api/agent-board", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
 	}

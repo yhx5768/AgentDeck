@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,46 +14,70 @@ import (
 	"cc-webui/internal/boarddb"
 )
 
-// SQLite board mode (YHX-TODO-821). When agent_board_db_path is configured the
-// DB is the sole write source: the legacy JSON file and routing table are
-// imported once at startup and never written again. Reads and writes below all
-// go through boarddb, and every successful write broadcasts the same SSE event
-// the JSON watcher used to produce.
+// SQLite board store (YHX-TODO-821). The DB is always <data_dir>/agent-board.db;
+// there is no board configuration. On first start (DB file absent) the legacy
+// JSON snapshot and the local routing table are imported once if they exist.
+// Reads and writes all go through boarddb.
 
-func (s *Server) agentBoardDBConfigured() bool {
-	return strings.TrimSpace(s.cfg().AgentBoardDBPath) != ""
+const defaultAgentBoardRoutingTable = "/home/soar/Projects/reading/work/projects/agentdeck-main-agent/routing-table.md"
+
+// boardPaths keeps the three fixed paths explicit so tests can override them
+// without adding user-facing config.
+type boardPaths struct {
+	DB           string
+	LegacyJSON   string
+	RoutingTable string
 }
 
-// agentBoardDBMode is true once the server has committed to DB mode, or when
-// the live config asks for it (which requires a restart). Checking the live
-// config alone would flip back to JSON mode if someone removed the DB path
-// during a hot reload while the DB connection is still open.
-func (s *Server) agentBoardDBMode() bool {
-	return s.boardDB != nil || s.boardDBErr != nil || s.agentBoardDBConfigured()
+func defaultBoardPaths(dataDir string) boardPaths {
+	return boardPaths{
+		DB:           filepath.Join(dataDir, "agent-board.db"),
+		LegacyJSON:   filepath.Join(dataDir, "agent-board.local.json"),
+		RoutingTable: defaultAgentBoardRoutingTable,
+	}
 }
 
-func (s *Server) initAgentBoardDB() {
-	path := strings.TrimSpace(s.cfg().AgentBoardDBPath)
-	st, err := boarddb.Open(path)
+func removeSQLiteFiles(path string) {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Remove(path + suffix)
+	}
+}
+
+func (s *Server) initAgentBoardDB(paths boardPaths) {
+	_, statErr := os.Stat(paths.DB)
+	dbExisted := statErr == nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		s.boardDBErr = fmt.Errorf("stat agent-board db: %w", statErr)
+		log.Printf("agent-board: %v; board API disabled", s.boardDBErr)
+		return
+	}
+	st, err := boarddb.Open(paths.DB)
 	if err != nil {
 		s.boardDBErr = fmt.Errorf("open agent-board db: %w", err)
 		log.Printf("agent-board: %v; board API disabled", s.boardDBErr)
 		return
 	}
-	result, err := st.MigrateOnce(s.agentBoardPath(), strings.TrimSpace(s.cfg().AgentBoardRoutingTable))
+	if dbExisted {
+		s.boardDB = st
+		log.Printf("agent-board: sqlite %s exists; legacy migration skipped", paths.DB)
+		return
+	}
+	tasks, events, err := st.Migrate(paths.LegacyJSON, paths.RoutingTable)
 	if err != nil {
 		_ = st.Close()
+		// The DB did not exist before this start, so discard the partial
+		// import and let the next start retry instead of skipping forever.
+		removeSQLiteFiles(paths.DB)
 		s.boardDBErr = fmt.Errorf("migrate agent-board db: %w", err)
 		log.Printf("agent-board: %v; board API disabled", s.boardDBErr)
 		return
 	}
-	s.boardDB = st
-	if result.Migrated {
-		log.Printf("agent-board: sqlite %s imported %d tasks / %d events from %s",
-			path, result.Tasks, result.Events, result.Source)
-	} else {
-		log.Printf("agent-board: sqlite %s ready (%s)", path, result.Reason)
+	if count, countErr := st.CountTasks(); countErr == nil {
+		tasks = count
 	}
+	s.boardDB = st
+	log.Printf("agent-board: sqlite %s created; imported %d tasks / %d new events",
+		paths.DB, tasks, events)
 }
 
 func (s *Server) closeAgentBoardDB() {
@@ -67,11 +92,11 @@ func (s *Server) boardDBStore(w http.ResponseWriter) (*boarddb.Store, bool) {
 	if s.boardDB != nil {
 		return s.boardDB, true
 	}
+	message := "看板数据库未初始化"
 	if s.boardDBErr != nil {
-		writeErr(w, http.StatusInternalServerError, "看板数据库不可用: "+s.boardDBErr.Error())
-		return nil, false
+		message = "看板数据库不可用: " + s.boardDBErr.Error()
 	}
-	writeErr(w, http.StatusConflict, "看板仍在 JSON 模式；请配置 agent_board_db_path 并重启")
+	writeErr(w, http.StatusInternalServerError, message)
 	return nil, false
 }
 

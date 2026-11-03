@@ -146,20 +146,11 @@ type Server struct {
 	// native codex keep separate rollout trees).
 	codexCaches map[string]*codexhist.StatsCache
 
-	// boardHub fans out local agent-board file changes to SSE subscribers.
-	// The watcher only polls file metadata (1s) and never talks to iCafe.
-	boardHub      *boardHub
-	boardMu       sync.Mutex
-	boardLastPath string
-	boardLastMod  time.Time
-	boardLastSize int64
-	// boardWriteMu serializes in-process JSON timeline appends. The board file
-	// is still shared with external tools; this only removes races between
-	// concurrent browser tabs served by this process. Unused with boardDB.
-	boardWriteMu sync.Mutex
-	// boardDB is set when agent_board_db_path is configured. It is then the
-	// sole board write source; boardDBErr records a startup failure so the API
-	// reports it instead of silently falling back to the legacy JSON file.
+	// boardHub fans out agent-board changes to SSE subscribers. The board is
+	// always stored at <data_dir>/agent-board.db; no file watcher is needed.
+	boardHub *boardHub
+	// boardDB is the SQLite board store. boardDBErr records a startup failure so
+	// the API reports it instead of silently falling back to the legacy JSON.
 	boardDB     *boarddb.Store
 	boardDBErr  error
 	boardDBOnce sync.Once
@@ -197,12 +188,7 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 		ocDiscoverKick: make(chan struct{}, 1),
 	}
 	s.routes()
-	if s.agentBoardDBConfigured() {
-		s.initAgentBoardDB()
-	} else {
-		go s.watchAgentBoard()
-		go s.watchAgentBoardSync()
-	}
+	s.initAgentBoardDB(defaultBoardPaths(s.cfg().DataDir))
 	return s
 }
 
@@ -222,9 +208,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/providers", s.auth(s.handleProviders))
 	s.mux.Handle("GET /api/config", s.auth(s.handleConfig))
 	s.mux.Handle("GET /api/main-agent-prompt", s.auth(s.handleMainAgentPrompt))
-	s.mux.Handle("GET /api/agent-board", s.auth(s.handleAgentBoard))
+	s.mux.Handle("GET /api/agent-board", s.auth(s.handleAgentBoardDB))
 	s.mux.Handle("GET /api/agent-board/events", s.auth(s.handleAgentBoardEvents))
-	s.mux.Handle("POST /api/agent-board/tasks/{id}/events", s.auth(s.handleAgentBoardAppendEvent))
+	s.mux.Handle("POST /api/agent-board/tasks/{id}/events", s.auth(s.handleAgentBoardAppendEventDB))
 	s.mux.Handle("GET /api/agent-board/tasks/{id}", s.auth(s.handleAgentBoardGetTask))
 	s.mux.Handle("POST /api/agent-board/tasks", s.auth(s.handleAgentBoardCreateTask))
 	s.mux.Handle("PATCH /api/agent-board/tasks/{id}", s.auth(s.handleAgentBoardUpdateTask))

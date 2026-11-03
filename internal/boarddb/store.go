@@ -128,6 +128,12 @@ func (s *Store) HasTasks() (bool, error) {
 	return n > 0, nil
 }
 
+func (s *Store) CountTasks() (int, error) {
+	var n int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM tasks").Scan(&n)
+	return n, err
+}
+
 func (s *Store) metaLocked(key string) string {
 	var value string
 	if err := s.db.QueryRow("SELECT value FROM schema_meta WHERE key=?", key).Scan(&value); err != nil {

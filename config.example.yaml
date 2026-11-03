@@ -12,22 +12,9 @@ data_dir: "./data"
 # 新建会话时的默认工作目录
 default_cwd: "~"
 
-# 主 Agent 看板本地 store JSON（GET /api/agent-board）。留空用 <data_dir>/agent-board.local.json。
-# 未启用 agent_board_db_path 时，这是看板的读写源；启用 DB 后只作为一次性导入源，不再写入。
-# agent_board_path: "/path/to/agent-board.json"
-
-# 主 Agent 看板 SQLite（WAL）。设置后看板唯一写入源是 DB：
-# - 首次启动且 DB 为空时，一次性导入 agent_board_path 和 agent_board_routing_table；
-# - 之后不再读写 JSON，也不再运行 routing-table 文件监听；
-# - 建任务/改状态/写事件/绑定 worker 用 API 或 work/tools/agent_board_db_cli.py；
-# - 切换需重启进程。备份/回滚：GET /api/agent-board 导出 JSON，或看板 CLI snapshot。
-# agent_board_db_path: "/path/to/agent-board.sqlite"
-
-# 可选：cc-webui 进程内自动同步。设置 routing_table 后，服务会监听该 Markdown
-# 台账并把变化同步到 agent_board_path 以及 agent_board_sync_stores 里的其他
-# store（例如预览 store）。留空关闭；不依赖 Python。
-# agent_board_routing_table: "/path/to/routing-table.md"
-# agent_board_sync_stores: ["/tmp/preview/agent-board.local.json"]
+# 主 Agent 看板自动使用 <data_dir>/agent-board.db，无需配置。
+# 首次启动（DB 文件不存在）会尝试一次性导入 <data_dir>/agent-board.local.json
+# 和本机 routing-table；文件不存在则直接新建空库。
 
 # 浏览器 PoC（可选，默认关闭）。开启后 Claude 会话会拿到 browser_* MCP 工具，
 # Web UI 右上角出现浏览器面板。Chrome 必须是本机安装的 Chromium 系浏览器。
