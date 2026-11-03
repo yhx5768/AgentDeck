@@ -2558,13 +2558,14 @@ function boardOpenDrawer(task) {
     timeline.append(none);
   } else {
     events.forEach((event) => {
+      const isUser = event.kind === '用户消息';
       const row = document.createElement('div');
-      row.className = 'board-drawer-event';
+      row.className = 'board-drawer-event' + (isUser ? ' board-event-user' : '');
       const at = document.createElement('span');
       at.className = 'board-drawer-event-at';
       at.textContent = event.at || '';
       const kind = document.createElement('span');
-      kind.className = 'board-drawer-event-kind';
+      kind.className = 'board-drawer-event-kind' + (isUser ? ' kind-user' : '');
       kind.textContent = event.kind || '事件';
       const text = document.createElement('div');
       text.className = 'board-drawer-event-text';
@@ -2629,6 +2630,19 @@ function boardComposerSync(task) {
   }
 }
 
+async function boardAppendUserEvent(taskId, text) {
+  if (!taskId || !text) return;
+  try {
+    await api(`/api/agent-board/tasks/${encodeURIComponent(taskId)}/events`, {
+      method: 'POST',
+      body: JSON.stringify({ kind: '用户消息', text, source: 'drawer' }),
+    });
+  } catch (e) {
+    // 主对话已发出，任务流记录失败不阻塞发送；下一次看板刷新仍可看到主对话。
+    console.warn('看板任务流记录失败', e);
+  }
+}
+
 async function boardSendToMain() {
   const input = $('#board-composer-input');
   const send = $('#board-composer-send');
@@ -2645,6 +2659,7 @@ async function boardSendToMain() {
   try {
     if (isRunning()) {
       holdPending(message, [], []);
+      await boardAppendUserEvent(boardDrawerTask && boardDrawerTask.id, text);
       input.value = '';
       input.style.height = 'auto';
       boardComposerStatus('已排队 · 当前轮结束后自动发送', 'queued');
@@ -2652,6 +2667,7 @@ async function boardSendToMain() {
     }
     boardComposerStatus('发送中…');
     await postMessage({ text: message, images: [], files: [] });
+    await boardAppendUserEvent(boardDrawerTask && boardDrawerTask.id, text);
     input.value = '';
     input.style.height = 'auto';
     boardComposerStatus('已发送 · 可在「对话」查看', 'ok');

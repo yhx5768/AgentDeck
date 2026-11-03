@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -118,6 +119,123 @@ func (s *Server) handleAgentBoard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// handleAgentBoardAppendEvent appends one event to a task timeline. The board
+// is otherwise read-only; keeping this write in the server avoids races
+// between browser tabs and gives external writers one documented path. The
+// JSON file stays the source of truth until the task store moves to a DB.
+func (s *Server) handleAgentBoardAppendEvent(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	var body struct {
+		Kind   string `json:"kind"`
+		Text   string `json:"text"`
+		At     string `json:"at"`
+		Source string `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体不是合法 JSON")
+		return
+	}
+	body.Text = strings.TrimSpace(body.Text)
+	if body.Text == "" {
+		writeErr(w, http.StatusBadRequest, "事件正文不能为空")
+		return
+	}
+	if body.Kind == "" {
+		body.Kind = "用户消息"
+	}
+	if body.Source == "" {
+		body.Source = "drawer"
+	}
+	if body.At == "" {
+		body.At = time.Now().Format("2006-01-02 15:04:05")
+	}
+
+	s.boardWriteMu.Lock()
+	defer s.boardWriteMu.Unlock()
+
+	path := s.agentBoardPath()
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		writeErr(w, http.StatusNotFound, "看板 store 不存在："+path)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取看板 store 失败: "+err.Error())
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		writeErr(w, http.StatusInternalServerError, "看板 store JSON 无效: "+err.Error())
+		return
+	}
+	tasks, _ := payload["tasks"].([]any)
+	var task map[string]any
+	for _, item := range tasks {
+		candidate, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if fmt.Sprint(candidate["id"]) == taskID {
+			task = candidate
+			break
+		}
+	}
+	if task == nil {
+		writeErr(w, http.StatusNotFound, "任务不存在: "+taskID)
+		return
+	}
+	timeline, _ := task["timeline"].([]any)
+	for _, item := range timeline {
+		existing, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if fmt.Sprint(existing["at"]) == body.At &&
+			fmt.Sprint(existing["kind"]) == body.Kind &&
+			fmt.Sprint(existing["text"]) == body.Text {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok": true, "task_id": taskID, "at": body.At, "duplicate": true,
+			})
+			return
+		}
+	}
+	event := map[string]any{
+		"at":     body.At,
+		"kind":   body.Kind,
+		"text":   body.Text,
+		"source": body.Source,
+	}
+	updated := make([]any, 0, len(timeline)+1)
+	updated = append(updated, event)
+	updated = append(updated, timeline...)
+	if len(updated) > 100 {
+		updated = updated[:100]
+	}
+	task["timeline"] = updated
+	task["updated_at"] = body.At
+
+	out, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "编码看板 store 失败: "+err.Error())
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		writeErr(w, http.StatusInternalServerError, "写入看板 store 失败: "+err.Error())
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		writeErr(w, http.StatusInternalServerError, "替换看板 store 失败: "+err.Error())
+		return
+	}
+	if s.boardHub != nil {
+		s.boardHub.broadcast()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "task_id": taskID, "at": body.At,
+	})
 }
 
 // handleAgentBoardEvents streams a refresh trigger whenever the local store

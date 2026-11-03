@@ -179,3 +179,101 @@ func TestHandleAgentBoardEventsStreams(t *testing.T) {
 		t.Fatalf("second event = %q", got)
 	}
 }
+
+func TestHandleAgentBoardAppendEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-board.json")
+	store := map[string]any{
+		"tasks": []any{map[string]any{
+			"id":         "YHX-TODO-780",
+			"updated_at": "2026-11-02 14:36",
+			"timeline": []any{map[string]any{
+				"at": "2026-11-02 14:36", "kind": "主 Agent 回复", "text": "旧事件",
+			}},
+		}},
+	}
+	raw, _ := json.Marshal(store)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := boardServer(t, path)
+	s.boardHub = newBoardHub()
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/agent-board/tasks/YHX-TODO-780/events",
+		strings.NewReader(`{"kind":"用户消息","text":"  请同步给 worker  ","at":"2026-11-03 16:40:00","source":"drawer"}`))
+	req.SetPathValue("id", "YHX-TODO-780")
+	w := httptest.NewRecorder()
+	s.handleAgentBoardAppendEvent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, body=%s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	tasks := got["tasks"].([]any)
+	task := tasks[0].(map[string]any)
+	timeline := task["timeline"].([]any)
+	if len(timeline) != 2 {
+		t.Fatalf("timeline len = %d", len(timeline))
+	}
+	first := timeline[0].(map[string]any)
+	if first["kind"] != "用户消息" || first["text"] != "请同步给 worker" ||
+		first["source"] != "drawer" || first["at"] != "2026-11-03 16:40:00" {
+		t.Fatalf("event = %v", first)
+	}
+	if task["updated_at"] != "2026-11-03 16:40:00" {
+		t.Fatalf("updated_at = %v", task["updated_at"])
+	}
+
+	// 同样的 at/kind/text 重试时不重复追加。
+	req2 := httptest.NewRequest(http.MethodPost,
+		"/api/agent-board/tasks/YHX-TODO-780/events",
+		strings.NewReader(`{"kind":"用户消息","text":"请同步给 worker","at":"2026-11-03 16:40:00","source":"drawer"}`))
+	req2.SetPathValue("id", "YHX-TODO-780")
+	w2 := httptest.NewRecorder()
+	s.handleAgentBoardAppendEvent(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("duplicate code = %d", w2.Code)
+	}
+	raw, _ = os.ReadFile(path)
+	_ = json.Unmarshal(raw, &got)
+	if timeline := got["tasks"].([]any)[0].(map[string]any)["timeline"].([]any); len(timeline) != 2 {
+		t.Fatalf("duplicate appended, len = %d", len(timeline))
+	}
+}
+
+func TestHandleAgentBoardAppendEventRejectsBadInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-board.json")
+	raw, _ := json.Marshal(map[string]any{"tasks": []any{
+		map[string]any{"id": "YHX-TODO-780", "timeline": []any{}},
+	}})
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := boardServer(t, path)
+	cases := []struct {
+		name   string
+		taskID string
+		body   string
+		code   int
+	}{
+		{"empty text", "YHX-TODO-780", `{"text":"   "}`, http.StatusBadRequest},
+		{"unknown task", "YHX-TODO-999", `{"text":"hi"}`, http.StatusNotFound},
+		{"bad json", "YHX-TODO-780", `{`, http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/events", strings.NewReader(tc.body))
+			req.SetPathValue("id", tc.taskID)
+			w := httptest.NewRecorder()
+			s.handleAgentBoardAppendEvent(w, req)
+			if w.Code != tc.code {
+				t.Fatalf("code = %d, want %d, body=%s", w.Code, tc.code, w.Body.String())
+			}
+		})
+	}
+}

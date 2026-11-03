@@ -152,6 +152,10 @@ type Server struct {
 	boardLastPath string
 	boardLastMod  time.Time
 	boardLastSize int64
+	// boardWriteMu serializes in-process timeline appends. The board file is
+	// still shared with external tools; this only removes races between
+	// concurrent browser tabs served by this process.
+	boardWriteMu sync.Mutex
 
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
@@ -208,6 +212,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/main-agent-prompt", s.auth(s.handleMainAgentPrompt))
 	s.mux.Handle("GET /api/agent-board", s.auth(s.handleAgentBoard))
 	s.mux.Handle("GET /api/agent-board/events", s.auth(s.handleAgentBoardEvents))
+	s.mux.Handle("POST /api/agent-board/tasks/{id}/events", s.auth(s.handleAgentBoardAppendEvent))
 	s.mux.Handle("GET /api/sessions", s.auth(s.handleListSessions))
 	s.mux.Handle("POST /api/sessions", s.auth(s.handleCreateSession))
 	s.mux.Handle("GET /api/sessions/{id}", s.auth(s.handleGetSession))
