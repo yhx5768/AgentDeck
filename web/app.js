@@ -2561,21 +2561,18 @@ function renderBoard() {
   const data = state.agentBoard;
   const columns = $('#board-columns');
   const empty = $('#board-empty');
-  const source = $('#board-source');
   const updated = $('#board-updated');
   const filter = $('#board-project-filter');
   if (!data) return;
 
   if (data.source === 'missing') {
-    source.textContent = '快照缺失';
     updated.textContent = data.error || '';
     columns.innerHTML = '';
-    empty.textContent = '看板快照还没有生成；请先运行 work/tools/agent_board_snapshot.py。';
+    empty.textContent = '本地看板 store 还没有生成；请先运行 work/tools/agent_board_local_store.py。';
     empty.classList.remove('hidden');
     return;
   }
 
-  source.textContent = '本地任务 store（实时）';
   updated.textContent = data.generated_at ? `最后更新 ${data.generated_at}` : '';
 
   const projects = data.projects || [];
