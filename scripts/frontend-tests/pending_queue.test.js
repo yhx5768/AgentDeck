@@ -35,7 +35,7 @@ function grabFn(name) {
 }
 
 const setup = `
-const state = { current: { id: 's1' }, pendingBySid: {} };
+const state = { current: { id: 's1' }, pendingBySid: {}, boardMockBusy: false };
 let pendingSeq = 0;
 let postMessageImpl = async () => {};
 const sent = [];
@@ -59,7 +59,7 @@ window.__x = {
   state, sent, sentEvents, errors,
   pendingItems, enqueuePending, holdPending, flushPending, retryPending, cancelPending,
   setPost(fn) { postMessageImpl = fn; },
-  reset() { state.pendingBySid = {}; state.current = { id: 's1' }; sent.length = 0; sentEvents.length = 0; errors.length = 0; postMessageImpl = async () => {}; },
+  reset() { state.pendingBySid = {}; state.current = { id: 's1' }; state.boardMockBusy = false; sent.length = 0; sentEvents.length = 0; errors.length = 0; postMessageImpl = async () => {}; },
 };
 `;
 
@@ -152,6 +152,20 @@ test('每条消息自带的任务上下文不被后来的卡片覆盖，成功�
     { taskId: 'A', text: '请处理 A' },
     { taskId: 'B', text: '请处理 B' },
   ]);
+});
+
+test('模拟忙碌开关开启时只保留队列，不 POST；关闭后继续发送', async () => {
+  x.reset();
+  x.setPost(async (payload) => { x.sent.push(payload.text); });
+  x.state.boardMockBusy = true;
+  x.holdPending('a', [], []);
+  await x.flushPending();
+  assert.strictEqual(x.sent.length, 0);
+  assert.strictEqual(x.pendingItems('s1').length, 1);
+  x.state.boardMockBusy = false;
+  await x.flushPending();
+  assert.deepStrictEqual(plain(x.sent), ['a']);
+  assert.strictEqual(x.pendingItems('s1').length, 0);
 });
 
 test('CSS 契约：队列列表可滚动、有逐条状态和失败重试', () => {

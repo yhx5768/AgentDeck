@@ -1292,6 +1292,16 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   color: var(--faint);
   line-height: 1.8;
 }
+.pending-bubble .pb-task {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.8;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: var(--r-sm);
+  padding: 0 5px;
+}
 .pending-bubble .pb-text {
   flex: 1;
   min-width: 0;
@@ -4420,6 +4430,15 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
   color: var(--dim);
   font-size: 10.5px;
 }
+.board-mock-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--orange);
+  font-weight: 600;
+  cursor: pointer;
+}
+.board-mock-busy input { accent-color: var(--orange); }
 .board-composer-link {
   border: 0;
   background: transparent;

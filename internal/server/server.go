@@ -483,9 +483,10 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	home, _ := os.UserHomeDir()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"default_cwd": s.cfg().DefaultCwd,
-		"data_dir":    s.cfg().DataDir,
-		"home":        home,
+		"default_cwd":           s.cfg().DefaultCwd,
+		"data_dir":              s.cfg().DataDir,
+		"home":                  home,
+		"agent_board_mock_busy": s.cfg().AgentBoardMockBusy,
 	})
 }
 

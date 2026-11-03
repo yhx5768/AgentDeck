@@ -216,9 +216,13 @@ type Config struct {
 	// AgentBoardPath points at the JSON snapshot served by GET /api/agent-board.
 	// Empty means <data_dir>/agent-board.local.json. The file is generated outside
 	// cc-webui (iCafe cache + local routing table); the UI never talks to iCafe.
-	AgentBoardPath string        `yaml:"agent_board_path"`
-	Browser        BrowserConfig `yaml:"browser" json:"browser"`
-	CLIs           []CLI         `yaml:"clis"`
+	AgentBoardPath string `yaml:"agent_board_path"`
+	// AgentBoardMockBusy turns the board drawer composer into a queue test
+	// harness: the UI keeps messages in the local pending queue instead of
+	// posting them. Test previews set this; production leaves it false.
+	AgentBoardMockBusy bool          `yaml:"agent_board_mock_busy"`
+	Browser            BrowserConfig `yaml:"browser" json:"browser"`
+	CLIs               []CLI         `yaml:"clis"`
 	Providers      []Provider    `yaml:"providers"`
 
 	// DiscoveredProviders are runtime entries for engines whose providers live

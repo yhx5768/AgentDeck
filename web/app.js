@@ -551,6 +551,8 @@ const state = {
   current: null,      // current session object
   es: null,
   pendingBySid: {},   // sessionId -> 待发送队列 [{id,text,images,files,status,error,at}]；本轮结束后逐条提交
+  boardMockBusyAvailable: false, // 测试实例：显示「模拟忙碌」开关
+  boardMockBusy: false,          // 开启时只进本地队列，不 POST /messages
   seenSeq: new Set(), // seqs already rendered on this connection
   toolBlocks: {},     // tool_use_id -> details element
   toolTimers: {},     // tool_use_id -> {timer, start} live elapsed ticker
@@ -2934,7 +2936,7 @@ async function boardSendToMain() {
     ? `${boardTaskContext(boardDrawerTask)}\n${text}`
     : text;
   try {
-    if (isRunning() || pendingItems(state.current.id).length) {
+    if (isRunning() || state.boardMockBusy || pendingItems(state.current.id).length) {
       holdPending(message, [], [], {
         taskId: boardDrawerTask && boardDrawerTask.id,
         bodyText: text,
@@ -2977,6 +2979,13 @@ async function boardSendToMain() {
   });
   const gotoChat = $('#board-composer-goto-chat');
   if (gotoChat) gotoChat.addEventListener('click', () => switchChatTab('chat'));
+  const mockBusy = $('#board-mock-busy');
+  if (mockBusy) {
+    mockBusy.addEventListener('change', () => {
+      state.boardMockBusy = mockBusy.checked;
+      if (!state.boardMockBusy && !isRunning()) flushPending();
+    });
+  }
 })();
 
 // 任务抽屉宽度：拖拽/键盘调整，localStorage 持久化。默认 620px，
@@ -6339,7 +6348,7 @@ async function sendMessage() {
   // order diverges from the actual (post-turn) order. Hold the message and
   // auto-submit when the running turn ends. If a queue already exists (e.g.
   // the head failed), append instead of jumping the queue.
-  if (isRunning() || pendingItems(state.current.id).length) {
+  if (isRunning() || state.boardMockBusy || pendingItems(state.current.id).length) {
     holdPending(text, images, files);
     return;
   }
@@ -6365,6 +6374,14 @@ function bumpSessionActivity(id) {
 
 // POST a message and optimistically render its user bubble.
 async function postMessage(payload) {
+  if (state.boardMockBusy) {
+    // 测试实例兜底：任何路径都不真正 POST，只入本地队列。
+    holdPending(payload.text, payload.images, payload.files, {
+      taskId: payload.taskId,
+      bodyText: payload.bodyText,
+    });
+    return;
+  }
   appendOptimisticUser(payload.text, payload.images, payload.files);
   const sid = state.current.id;
   try {
@@ -6432,6 +6449,11 @@ function holdPending(text, images, files, meta) {
 // is submitted per idle transition; the rest stay queued for the next one.
 async function flushPending() {
   if (!state.current) return;
+  if (state.boardMockBusy) {
+    // 测试实例：开关开启时只保留队列，绝不 POST。
+    renderPendingBubble();
+    return;
+  }
   const sid = state.current.id;
   const q = pendingItems(sid);
   if (!q.length) { clearPendingBubble(); return; }
@@ -6493,7 +6515,16 @@ function boardQueueStatus() {
   }
   const failed = q.some((item) => item.status === 'error');
   if (failed) boardComposerStatus(`队列 ${q.length} 条 · 有发送失败`, 'error');
+  else if (state.boardMockBusy) boardComposerStatus(`模拟忙碌 · 队列 ${q.length} 条`, 'queued');
   else boardComposerStatus(`已排队 · 队列 ${q.length} 条`, 'queued');
+}
+
+function renderBoardMockBusyToggle() {
+  const wrap = $('#board-mock-busy-wrap');
+  if (!wrap) return;
+  wrap.classList.toggle('hidden', !state.boardMockBusyAvailable);
+  const box = $('#board-mock-busy');
+  if (box) box.checked = !!state.boardMockBusy;
 }
 
 function renderPendingBubble() {
@@ -6532,6 +6563,12 @@ function renderPendingBubble() {
     const idx = document.createElement('span');
     idx.className = 'pb-index';
     idx.textContent = String(index + 1);
+    const task = document.createElement('span');
+    if (item.taskId) {
+      task.className = 'pb-task';
+      task.textContent = item.taskId;
+      task.title = item.taskId;
+    }
     const text = document.createElement('span');
     text.className = 'pb-text';
     const label = item.text
@@ -6543,7 +6580,9 @@ function renderPendingBubble() {
     badge.textContent = item.status === 'sending' ? '发送中'
       : item.status === 'error' ? '失败' : '排队';
     if (item.status === 'error' && item.error) badge.title = item.error;
-    row.append(idx, text, badge);
+    row.append(idx);
+    if (item.taskId) row.append(task);
+    row.append(text, badge);
     if (item.status === 'error') {
       const retry = document.createElement('button');
       retry.className = 'pb-retry';
@@ -8693,6 +8732,9 @@ function openNewGroupDialog(cwd) {
   state.profilesSig = JSON.stringify([state.clis, state.providers]);
   const cfg = await api('/api/config');
   state.home = cfg.home || '';
+  state.boardMockBusyAvailable = !!cfg.agent_board_mock_busy;
+  state.boardMockBusy = state.boardMockBusyAvailable;
+  renderBoardMockBusyToggle();
   await loadSessions();
   renderIcons();
   updateMobileInputHint();
