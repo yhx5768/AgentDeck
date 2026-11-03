@@ -4469,6 +4469,8 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 }
 .board-drawer-tabs {
   display: flex;
+  flex: none;
+  min-height: 36px;
   gap: 2px;
   margin: 4px 0 var(--sp-4);
   border-bottom: 1px solid var(--border);
