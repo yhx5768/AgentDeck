@@ -2625,10 +2625,23 @@ func (s *Server) backupClaudeHistory(sess *store.Session) (string, error) {
 func (s *Server) serveStatic() http.Handler {
 	fileServer := http.FileServerFS(s.static)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			if !s.tokenOK(r) {
 				http.Redirect(w, r, "/login.html", http.StatusFound)
 				return
+			}
+			// ?token= 只覆盖第一跳；把 query token 落成 cookie，后面的
+			// style.css / app.js / API 才不会因为没带 token 被 302 到登录页。
+			if q := r.URL.Query().Get("token"); q != "" &&
+				subtle.ConstantTimeCompare([]byte(q), []byte(s.cfg().GatewayToken)) == 1 {
+				http.SetCookie(w, &http.Cookie{
+					Name:     cookieName,
+					Value:    q,
+					Path:     "/",
+					HttpOnly: true,
+					SameSite: http.SameSiteLaxMode,
+					MaxAge:   30 * 24 * 3600,
+				})
 			}
 			http.ServeFileFS(w, r, s.static, "index.html")
 			return

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"cc-webui/internal/config"
 )
@@ -76,5 +77,34 @@ func TestHandleAgentBoardRejectsBadJSON(t *testing.T) {
 	s.handleAgentBoard(w, httptest.NewRequest(http.MethodGet, "/api/agent-board", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("code = %d", w.Code)
+	}
+}
+
+func TestServeStaticQueryTokenSetsCookie(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{DataDir: dir, GatewayToken: "preview-token"}
+	s := &Server{
+		cm: config.NewManager(filepath.Join(dir, "config.yaml"), cfg),
+		static: fstest.MapFS{
+			"index.html": {Data: []byte("<!doctype html><link rel=stylesheet href=/style.css>")},
+			"style.css":  {Data: []byte("body{color:red}")},
+		},
+	}
+	w := httptest.NewRecorder()
+	s.serveStatic().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/?token=preview-token", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("index code = %d", w.Code)
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].Name != cookieName || cookies[0].Value != "preview-token" {
+		t.Fatalf("cookies = %+v", cookies)
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/style.css", nil)
+	req.AddCookie(cookies[0])
+	s.serveStatic().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("style.css code = %d", w.Code)
 	}
 }
