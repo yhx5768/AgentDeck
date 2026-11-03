@@ -2549,6 +2549,78 @@ function boardOpenDrawer(task) {
   $('#board-drawer').classList.add('open');
 }
 
+// 任务抽屉宽度：拖拽/键盘调整，localStorage 持久化。默认 620px，
+// 桌面 360–900px；窄屏 CSS 强制 100vw，resizer 隐藏。
+(() => {
+  const KEY = 'cc-webui:board-drawer-width';
+  const MIN = 360;
+  const MAX = 900;
+  const drawer = $('#board-drawer');
+  const resizer = $('#board-drawer-resizer');
+  if (!drawer || !resizer) return;
+  let width = 620;
+  try {
+    const stored = parseInt(localStorage.getItem(KEY) || '', 10);
+    if (Number.isFinite(stored)) width = stored;
+  } catch (_) {}
+  const clamp = (value) => {
+    const max = Math.max(MIN, Math.min(MAX, window.innerWidth));
+    return Math.max(MIN, Math.min(max, Math.round(value)));
+  };
+  const apply = (value, save = false) => {
+    width = clamp(value);
+    drawer.style.width = width + 'px';
+    resizer.setAttribute('aria-valuenow', String(width));
+    resizer.setAttribute('aria-valuemax', String(Math.min(MAX, window.innerWidth)));
+    if (save) {
+      try { localStorage.setItem(KEY, String(width)); } catch (_) {}
+    }
+    return width;
+  };
+  apply(width);
+  let dragging = false;
+  const onMove = (ev) => {
+    if (!dragging) return;
+    apply(window.innerWidth - ev.clientX);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove('board-drawer-resizing');
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    document.removeEventListener('pointercancel', onUp);
+    apply(width, true);
+  };
+  resizer.addEventListener('pointerdown', (ev) => {
+    if (window.matchMedia('(max-width: 700px)').matches) return;
+    ev.preventDefault();
+    dragging = true;
+    document.body.classList.add('board-drawer-resizing');
+    try { resizer.setPointerCapture(ev.pointerId); } catch (_) {}
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+  });
+  resizer.addEventListener('keydown', (ev) => {
+    const current = parseInt(resizer.getAttribute('aria-valuenow') || String(width), 10);
+    const step = ev.shiftKey ? 60 : 20;
+    let next = null;
+    if (ev.key === 'ArrowLeft') next = current + step;       // 拉左边缘向左 = 变宽
+    else if (ev.key === 'ArrowRight') next = current - step; // 向右 = 变窄
+    else if (ev.key === 'Home') next = MIN;
+    else if (ev.key === 'End') next = MAX;
+    if (next == null) return;
+    ev.preventDefault();
+    apply(next, true);
+  });
+  window.addEventListener('resize', () => {
+    if (!window.matchMedia('(max-width: 700px)').matches) {
+      apply(parseInt(drawer.style.width, 10) || width);
+    }
+  });
+})();
+
 function boardStale(data) {
   const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/.exec(data.generated_at || '');
   if (!m) return false;

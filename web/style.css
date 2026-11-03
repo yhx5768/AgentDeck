@@ -4201,8 +4201,9 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   top: 0;
   right: 0;
   bottom: 0;
-  width: 390px;
-  max-width: 100vw;
+  width: var(--board-drawer-width, 620px);
+  min-width: 360px;
+  max-width: min(900px, 100vw);
   background: var(--bg);
   border-left: 1px solid var(--border);
   box-shadow: -10px 0 30px rgba(0, 0, 0, .18);
@@ -4221,6 +4222,32 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   opacity: 1;
   pointer-events: auto;
 }
+.board-drawer-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  z-index: 2;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.board-drawer-resizer::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 150ms var(--ease);
+}
+.board-drawer-resizer:hover::after,
+.board-drawer-resizer:focus-visible::after { background: var(--accent); }
+.board-drawer-resizer:focus-visible { outline: none; }
+body.board-drawer-resizing { user-select: none; cursor: col-resize; }
+body.board-drawer-resizing * { cursor: col-resize !important; }
 .board-drawer-head {
   display: flex;
   align-items: flex-start;
@@ -4265,7 +4292,14 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 }
 .board-drawer-event-text { color: var(--fg); margin-top: 2px; word-break: break-word; }
 @media (max-width: 700px) {
-  .board-drawer { width: 100vw; border-left: none; padding: var(--sp-4); }
+  .board-drawer {
+    width: 100vw !important;
+    min-width: 0 !important;
+    max-width: 100vw;
+    border-left: none;
+    padding: var(--sp-4);
+  }
+  .board-drawer-resizer { display: none; }
 }
 
 .board-readonly {
