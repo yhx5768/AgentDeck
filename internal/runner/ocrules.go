@@ -93,16 +93,16 @@ func (m *Manager) ensureOpencodeRule() string {
 	return dir
 }
 
-// ensureOpencodeRuleFor is ensureOpencodeRule plus a browser MCP entry when
-// the session has browser tools. OpenCode's serve process reads its config at
-// startup and shares one process across sessions, so a browser-enabled session
-// gets its own config directory and its own serve process (see acquire).
+// ensureOpencodeRuleFor is ensureOpencodeRule plus per-session MCP entries
+// (browser and/or board). OpenCode's serve process reads its config at startup
+// and shares one process across sessions, so a session with MCP tools gets its
+// own config directory and its own serve process (see acquire).
 func (m *Manager) ensureOpencodeRuleFor(sessionID string) string {
 	if sessionID == "" {
 		return m.ensureOpencodeRule()
 	}
-	info, ok := m.browserMCPInfo(sessionID)
-	if !ok {
+	servers := m.sessionMCPServers(sessionID)
+	if len(servers) == 0 {
 		return m.ensureOpencodeRule()
 	}
 	base, err := opencodeConfigDir()
@@ -126,18 +126,21 @@ func (m *Manager) ensureOpencodeRuleFor(sessionID string) string {
 			log.Printf("写 %s 失败: %v", hintPath, err)
 		}
 	}
-	config["mcp"] = map[string]any{
-		"servers": map[string]any{
-			"browser": map[string]any{
-				"type":        "local",
-				"command":     append([]string{info.Command}, info.Args...),
-				"environment": info.Env,
-			},
-		},
+	mcpServers := map[string]any{}
+	for name, info := range servers {
+		entry := map[string]any{
+			"type":    "local",
+			"command": append([]string{info.Command}, info.Args...),
+		}
+		if len(info.Env) > 0 {
+			entry["environment"] = info.Env
+		}
+		mcpServers[name] = entry
 	}
+	config["mcp"] = map[string]any{"servers": mcpServers}
 	raw, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		log.Printf("opencode browser mcp: marshal: %v", err)
+		log.Printf("opencode mcp: marshal: %v", err)
 		return m.ensureOpencodeRule()
 	}
 	dir := filepath.Join(base, "sessions", safeSessionName(sessionID))

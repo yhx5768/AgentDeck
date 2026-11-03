@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,10 +25,17 @@ type Manager struct {
 
 // NewManager wraps a boot config loaded from path.
 func NewManager(path string, boot *Config) *Manager {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	m := &Manager{path: path}
 	m.cur.Store(boot)
 	return m
 }
+
+// Path returns the absolute config path, so child processes spawned outside
+// the server's working directory can load the same credentials.
+func (m *Manager) Path() string { return m.path }
 
 // Get returns the current config.
 func (m *Manager) Get() *Config { return m.cur.Load() }

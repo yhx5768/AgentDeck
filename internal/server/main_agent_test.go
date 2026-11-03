@@ -120,7 +120,7 @@ func TestMainAgentPromptEndpoint(t *testing.T) {
 	if body.MaxBytes != maxRolePromptBytes {
 		t.Fatalf("max_bytes = %d, want %d", body.MaxBytes, maxRolePromptBytes)
 	}
-	for _, want := range []string{"1. 归属", "2. 派工", "3. 查询", "4. 状态", "5. 回报", "6. 收尾", "7. 禁用", "mainAgent", "Worker 规则"} {
+	for _, want := range []string{"1. 归属", "2. 派工", "3. 查询", "4. 状态", "5. 回报", "6. 收尾", "7. 禁用", "mainAgent", "Worker 规则", "board MCP"} {
 		if !strings.Contains(body.Prompt, want) {
 			t.Errorf("default prompt lost %q", want)
 		}

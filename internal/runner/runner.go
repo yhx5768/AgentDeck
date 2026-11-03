@@ -1510,7 +1510,8 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 	wantInstructions := (hintOn || strings.TrimSpace(sess.RolePrompt) != "") &&
 		!hasConfigOverride(cli.Args, "instructions")
 	_, wantBrowser := m.browserMCPInfo(sess.ID)
-	if (sess.EffortOverride != "" || wantInstructions || wantBrowser) && cli.ModelProvider != "" {
+	_, wantBoard := m.boardMCPInfo(sess.ID)
+	if (sess.EffortOverride != "" || wantInstructions || wantBrowser || wantBoard) && cli.ModelProvider != "" {
 		args = append(args, "-c", "model_provider="+cli.ModelProvider)
 	}
 	if sess.EffortOverride != "" {
@@ -1519,7 +1520,7 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 	if wantInstructions {
 		args = append(args, "-c", codexInstructions(hintOn, sess.RolePrompt))
 	}
-	if wantBrowser {
+	if wantBrowser || wantBoard {
 		args, _ = m.appendBrowserMCPCodex(args, sess.ID)
 	}
 	for _, f := range msg.Files {
