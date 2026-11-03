@@ -474,7 +474,11 @@ func (s *Store) upsertTaskJSON(task map[string]any) error {
 		string(externalJSON), jsonString(task, "progress"), boolInt(jsonBool(task, "progress_locked")),
 		jsonString(task, "last_event"), jsonString(task, "report_file"), 0, "{}", created,
 		defaultString(jsonString(task, "updated_at"), created))
-	return err
+	if err != nil {
+		return err
+	}
+	return s.upsertWorkerLocked(jsonString(task, "worker"), jsonString(task, "session"),
+		jsonString(task, "cwd"), defaultString(jsonString(task, "updated_at"), created))
 }
 
 func defaultString(value, fallback string) string {
@@ -499,6 +503,20 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func (s *Store) upsertWorkerLocked(worker, session, cwd, at string) error {
+	worker = strings.TrimSpace(worker)
+	if worker == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`INSERT INTO workers(peer_name,session_id,cwd,updated_at,metadata)
+		VALUES(?,?,?,?, '{}') ON CONFLICT(peer_name) DO UPDATE SET
+		session_id=CASE WHEN excluded.session_id<>'' THEN excluded.session_id ELSE workers.session_id END,
+		cwd=CASE WHEN excluded.cwd<>'' THEN excluded.cwd ELSE workers.cwd END,
+		updated_at=CASE WHEN excluded.updated_at<>'' THEN excluded.updated_at ELSE workers.updated_at END`,
+		worker, session, cwd, at)
+	return err
 }
 
 func (s *Store) upsertLinks(task map[string]any) error {
@@ -572,16 +590,12 @@ func (s *Store) mergeRoutingRow(row routingRow) error {
 		"id": id, "icafe_id": card, "url": url,
 		"session": routingValue(row["session_id"]), "report_file": routingValue(row["report_file"]),
 	})
+	if err := s.upsertWorkerLocked(worker, routingValue(row["session_id"]),
+		routingValue(row["cwd"]), updated); err != nil {
+		return err
+	}
 	report := routingValue(row["last_report"])
 	if report != "" {
-		if worker != "" {
-			_, _ = s.db.Exec(`INSERT INTO workers(peer_name,session_id,cwd,updated_at,metadata)
-				VALUES(?,?,?,?, '{}') ON CONFLICT(peer_name) DO UPDATE SET
-				session_id=CASE WHEN excluded.session_id<>'' THEN excluded.session_id ELSE workers.session_id END,
-				cwd=CASE WHEN excluded.cwd<>'' THEN excluded.cwd ELSE workers.cwd END,
-				updated_at=excluded.updated_at`,
-				worker, routingValue(row["session_id"]), routingValue(row["cwd"]), updated)
-		}
 		_, _ = s.insertEventTx(id, updated, "最近回报", "worker", report, "", "local", 0)
 	}
 	return nil
@@ -650,12 +664,7 @@ func (s *Store) BindWorker(taskID, worker, session, cwd string) error {
 		worker, session, cwd, at, taskID); err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(`INSERT INTO workers(peer_name,session_id,cwd,updated_at,metadata) VALUES(?,?,?,?, '{}')
-		ON CONFLICT(peer_name) DO UPDATE SET
-		session_id=CASE WHEN excluded.session_id<>'' THEN excluded.session_id ELSE workers.session_id END,
-		cwd=CASE WHEN excluded.cwd<>'' THEN excluded.cwd ELSE workers.cwd END,
-		updated_at=excluded.updated_at`,
-		worker, session, cwd, at); err != nil {
+	if err := s.upsertWorkerLocked(worker, session, cwd, at); err != nil {
 		return err
 	}
 	_, _ = s.insertEventTx(taskID, at, "派工", "mainAgent",
@@ -850,6 +859,9 @@ func (s *Store) CreateTask(input map[string]any) (map[string]any, error) {
 		"id": id, "icafe_id": displayID, "url": external["url"],
 		"session": session, "report_file": reportFile,
 	})
+	if err := s.upsertWorkerLocked(assignee, session, cwd, at); err != nil {
+		return nil, err
+	}
 	return s.GetTask(id)
 }
 
@@ -922,13 +934,8 @@ func (s *Store) UpdateTask(id string, patch map[string]any) (map[string]any, err
 	if status != row.status {
 		_, _ = s.insertEventTx(id, at, "状态", "mainAgent", row.status+" → "+status, "", "local", 0)
 	}
-	if assignee != "" && (assignee != row.assignee || sessionID != row.session) {
-		if _, err := s.db.Exec(`INSERT INTO workers(peer_name,session_id,cwd,updated_at,metadata)
-			VALUES(?,?,?,?, '{}') ON CONFLICT(peer_name) DO UPDATE SET
-			session_id=CASE WHEN excluded.session_id<>'' THEN excluded.session_id ELSE workers.session_id END,
-			cwd=CASE WHEN excluded.cwd<>'' THEN excluded.cwd ELSE workers.cwd END,
-			updated_at=excluded.updated_at`,
-			assignee, sessionID, cwd, at); err != nil {
+	if assignee != "" && (assignee != row.assignee || sessionID != row.session || cwd != row.cwd) {
+		if err := s.upsertWorkerLocked(assignee, sessionID, cwd, at); err != nil {
 			return nil, err
 		}
 	}
@@ -944,5 +951,12 @@ func (s *Store) ExportJSON(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, encoded, 0o644)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, encoded, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

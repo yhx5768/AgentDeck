@@ -99,6 +99,14 @@ func TestMigrateOnceAndSnapshot(t *testing.T) {
 	if second.Migrated || second.Reason != "already-migrated" {
 		t.Fatalf("second = %+v", second)
 	}
+	workers, err := st.Workers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workers) != 1 || workers[0]["peer_name"] != "AgentDeck-卡片自动化" ||
+		workers[0]["session"] != "sess-1" || workers[0]["cwd"] != "/work" {
+		t.Fatalf("workers = %+v", workers)
+	}
 }
 
 func TestMigrateOnceDoesNotOverwriteNewerDB(t *testing.T) {
@@ -289,6 +297,21 @@ func TestBackupAndReopen(t *testing.T) {
 	backup := filepath.Join(dir, "backup.db")
 	if err := st.Backup(backup); err != nil {
 		t.Fatal(err)
+	}
+	exported := filepath.Join(dir, "export.json")
+	if err := st.ExportJSON(exported); err != nil {
+		t.Fatal(err)
+	}
+	var store map[string]any
+	raw, err := os.ReadFile(exported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &store); err != nil {
+		t.Fatal(err)
+	}
+	if store["source"] != "sqlite" || len(store["tasks"].([]any)) != 1 {
+		t.Fatalf("export = %+v", store)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
