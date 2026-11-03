@@ -185,6 +185,16 @@ type BrowserConfig struct {
 	Quality     int      `yaml:"quality" json:"quality,omitempty"`
 	AllowLocal  bool     `yaml:"allow_local" json:"allow_local,omitempty"`
 	AllowHosts  []string `yaml:"allow_hosts" json:"allow_hosts,omitempty"`
+	// TrustedOrigins lists extra origins (scheme://host[:port]) allowed to
+	// post browser input. This is for deployments behind a reverse proxy that
+	// does not preserve Host or set X-Forwarded-Host/Proto. Prefer fixing the
+	// proxy; keep this empty otherwise.
+	TrustedOrigins []string `yaml:"trusted_origins" json:"trusted_origins,omitempty"`
+	// TrustForwardedHeaders makes the browser input check trust
+	// X-Forwarded-Host/Proto from a loopback peer. Enable only when the local
+	// proxy overwrites those headers; nginx's default configuration forwards
+	// client-supplied values, which would make this spoofable.
+	TrustForwardedHeaders bool `yaml:"trust_forwarded_headers" json:"trust_forwarded_headers,omitempty"`
 }
 
 // BrowserOn reports the config-file default. The live switch is owned by the

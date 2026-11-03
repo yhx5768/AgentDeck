@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -21,12 +22,112 @@ func loopbackRequest(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func sameOrigin(r *http.Request) bool {
+func sameOrigin(r *http.Request, trusted []string, trustForwarded bool) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
 		return true
 	}
-	return strings.EqualFold(origin, "http://"+r.Host) || strings.EqualFold(origin, "https://"+r.Host)
+	u, err := url.Parse(origin)
+	if err != nil || u.User != nil || u.Host == "" || u.Hostname() == "" ||
+		(u.Scheme != "http" && u.Scheme != "https") ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	// Direct access: the browser's Origin is the same scheme+host it used to
+	// reach us. The scheme is not checked here because TLS may terminate at a
+	// reverse proxy; the Host still pins the request to this deployment.
+	if originHostMatches(u, r.Host) {
+		return true
+	}
+	// Explicitly trusted origins cover proxies that rewrite Host and do not
+	// forward the original one.
+	for _, allowed := range trusted {
+		if originMatchesAllowed(u, allowed) {
+			return true
+		}
+	}
+	// Behind a local proxy the request Host may be rewritten to
+	// 127.0.0.1:PORT, so the public host only survives in X-Forwarded-*.
+	// This is opt-in because a proxy that does not overwrite those headers
+	// (nginx's default) forwards client-supplied values.
+	if !trustForwarded || !loopbackRequest(r) {
+		return false
+	}
+	forwardedHost := firstForwarded(r.Header.Get("X-Forwarded-Host"))
+	if forwardedHost == "" || !originHostMatches(u, forwardedHost) {
+		return false
+	}
+	forwardedProto := firstForwarded(r.Header.Get("X-Forwarded-Proto"))
+	if forwardedProto == "" {
+		return true
+	}
+	return strings.EqualFold(forwardedProto, u.Scheme)
+}
+
+// originMatchesAllowed compares an Origin against a configured
+// scheme://host[:port] entry. Path/query/fragment are not meaningful for an
+// origin, so only an empty path or "/" is accepted in the configuration.
+func originMatchesAllowed(u *url.URL, allowed string) bool {
+	v, err := url.Parse(strings.TrimSpace(allowed))
+	if err != nil || v.User != nil || v.Hostname() == "" ||
+		(v.Scheme != "http" && v.Scheme != "https") ||
+		(v.Path != "" && v.Path != "/") || v.RawQuery != "" || v.Fragment != "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, v.Scheme) && sameHostPort(u, v)
+}
+
+// firstForwarded returns the first value of a comma-separated forwarding
+// header. Proxies append hosts/protos from left to right; the first entry is
+// the one the browser used.
+func firstForwarded(v string) string {
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
+}
+
+// originHostMatches reports whether the Origin URL and a Host header value
+// name the same host and port. Empty ports are compared against the Origin
+// scheme's default so https://example.com and example.com:443 are equal.
+func originHostMatches(u *url.URL, host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	parsed, err := url.Parse("//" + host)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil {
+		return false
+	}
+	return sameHostPort(u, parsed)
+}
+
+func sameHostPort(a, b *url.URL) bool {
+	if !strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	aPort := a.Port()
+	if aPort == "" {
+		aPort = defaultPort(a.Scheme)
+	}
+	bPort := b.Port()
+	if bPort == "" {
+		// A bare Host header has no scheme; its empty port means the default
+		// port of the Origin's scheme (https://x and x:443 are the same).
+		scheme := b.Scheme
+		if scheme == "" {
+			scheme = a.Scheme
+		}
+		bPort = defaultPort(scheme)
+	}
+	return aPort == bPort
+}
+
+func defaultPort(scheme string) string {
+	if strings.EqualFold(scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 func (s *Server) handleBrowserStatus(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +237,7 @@ func (s *Server) handleBrowserInput(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "浏览器管理器未初始化")
 		return
 	}
-	if !sameOrigin(r) {
+	if !sameOrigin(r, s.cfg().Browser.TrustedOrigins, s.cfg().Browser.TrustForwardedHeaders) {
 		writeErr(w, http.StatusForbidden, "cross-origin browser input refused")
 		return
 	}

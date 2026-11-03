@@ -24,13 +24,21 @@
   }
 
   async function browserFetch(path, opts = {}) {
-    const res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...opts,
-    });
-    let body = {};
-    try { body = await res.json(); } catch (_) {}
-    return { ok: res.ok, status: res.status, body };
+    try {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+      });
+      let body = {};
+      try { body = await res.json(); } catch (_) {}
+      return { ok: res.ok, status: res.status, body };
+    } catch (err) {
+      return {
+        ok: false,
+        status: 0,
+        body: { error: `网络错误：${err && err.message ? err.message : err}` },
+      };
+    }
   }
 
   function setStatusText(text) {
@@ -133,23 +141,40 @@
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      if (res.status === 409) setStatusText(res.body.error || '输入被拒绝；先点「接管」。');
+      const detail = (res.body && res.body.error) || '';
+      if (res.status === 403) {
+        setStatusText(`浏览器输入被拒绝：${detail || '同源校验未通过'}（反向代理需转发原始 Host/Proto）`);
+      } else {
+        setStatusText(detail || `浏览器输入失败（HTTP ${res.status || '网络错误'}）`);
+      }
       return null;
     }
     if (res.body && res.body.status) setControlState(res.body.status.control);
     return res.body;
   }
 
+  let controlBusy = false;
+
   async function takeControl() {
-    if (control === 'human') return;
-    const res = await sendInput({ type: 'take' });
-    if (res) setControlState('human');
+    if (control === 'human' || controlBusy) return;
+    controlBusy = true;
+    try {
+      const res = await sendInput({ type: 'take' });
+      if (res) setControlState('human');
+    } finally {
+      controlBusy = false;
+    }
   }
 
   async function releaseControl() {
-    if (control !== 'human') return;
-    const res = await sendInput({ type: 'release' });
-    if (res) setControlState('agent');
+    if (control !== 'human' || controlBusy) return;
+    controlBusy = true;
+    try {
+      const res = await sendInput({ type: 'release' });
+      if (res) setControlState('agent');
+    } finally {
+      controlBusy = false;
+    }
   }
 
   async function ensureHuman() {

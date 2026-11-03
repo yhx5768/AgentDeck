@@ -29,7 +29,7 @@
   - 始终拒绝 AgentDeck 自己的 listen 端口。
   - snapshot 不返回 password 字段的值（显示 `[value masked]`）。
   - MCP 配置和 settings 文件 0600；日志不打印 token。
-  - 输入接口要求同源；内部 MCP 接口只接受 loopback + Bearer token。
+  - 输入接口要求同源；内部 MCP 接口只接受 loopback + Bearer token。反代场景可用显式 `browser.trusted_origins`，或确认反代覆盖 `X-Forwarded-*` 后开启 `browser.trust_forwarded_headers`。
 
 ## 截图
 
@@ -55,9 +55,17 @@ browser:
   quality: 60
   allow_local: false
   allow_hosts: []
+  trusted_origins: []
+  trust_forwarded_headers: false
 ```
 
 运行时开关由设置页写 `<data_dir>/browser/settings.json`，优先于 `browser.enabled`。
+
+`browser.trusted_origins` 只在反向代理改写了 Host、又没透传 `X-Forwarded-Host`/`X-Forwarded-Proto` 时使用；优先修反代。输入接口默认接受三种来源：
+
+1. `Origin` 与请求 `Host` 同源；
+2. `Origin` 命中 `browser.trusted_origins`；
+3. 显式开启 `browser.trust_forwarded_headers` 后，请求来自 loopback（本机反代），且 `Origin` 与 `X-Forwarded-Host`/`X-Forwarded-Proto` 一致。该开关默认关闭，因为 nginx 默认会把客户端自带的 `X-Forwarded-*` 原样转发，开启前必须确认反代会覆盖这些头。
 
 ## 使用
 
