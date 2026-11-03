@@ -61,6 +61,11 @@ type Message struct {
 	Text   string         `json:"text"`
 	Images []Image        `json:"images,omitempty"`
 	Files  []UploadedFile `json:"files,omitempty"`
+	// Source records where the turn came from: user (composer/API), agent-send
+	// (agentdeck.py send), or agent-send-explicit. It rides on the persisted
+	// user event so the UI and dedupe logic can distinguish a real person
+	// typing from an agent CLI injecting a notification.
+	Source string `json:"source,omitempty"`
 }
 
 // turnText composes the text actually sent to the CLI for a user turn: the
@@ -440,7 +445,11 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	if cli := m.cm.Get().CLIByName(sess.CLI); cli != nil && cli.IsOpenCode() {
 		echoText = msg.Text
 	}
-	if _, err := m.st.AppendEvent(sessionID, "user", map[string]string{"text": echoText}); err != nil {
+	event := map[string]string{"text": echoText}
+	if msg.Source != "" {
+		event["source"] = msg.Source
+	}
+	if _, err := m.st.AppendEvent(sessionID, "user", event); err != nil {
 		return err
 	}
 	// A prompt just arrived, so this session just had activity: bump UpdatedAt

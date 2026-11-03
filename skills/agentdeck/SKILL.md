@@ -80,7 +80,7 @@ opencode / mcode / qoder / codex 由各自 CLI 在运行时给出，`--fresh` �
 | `new --cwd P [--name N] [--cli C] [--provider P] [--model M] [--effort E] [--permission-mode PM] [--resident] [--peer-name NAME] [--role-prompt TEXT\|--role-prompt-file F] [--main-agent]` | 建会话，stdout 打印 session id |
 | `get ID` | 会话详情（含 `resume_command`、goal、resident 状态、role_prompt、main_agent） |
 | `set ID [--name/--cli/--provider/--model/--effort/--permission-mode/--cwd/--peer-name/--role-prompt/--role-prompt-file/--main-agent/--archived/--resident/--unread/--todo/--sort-order]` | 只改显式给出的字段 |
-| `send ID TEXT` | 发消息（不等结果） |
+| `send ID TEXT` | 发消息（不等结果）；默认禁止发给主 Agent（避免与 SendMessage 重复），确需时加 `--allow-main-agent` |
 | `reply ID TEXT [--timeout S]` | 发消息并等本轮结束，stdout 输出回复 |
 | `run ... TEXT` | 建会话 + 发首条消息 + 等结果 |
 | `wait ID [--timeout S]` | 等会话空闲 |

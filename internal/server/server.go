@@ -1206,6 +1206,14 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// agentSendBlocked prevents the duplicate-notification path: a worker that
+// calls agentdeck.py send to a mainAgent session while also using SendMessage
+// injects both a user turn and a peer bubble. Real user messages and explicit
+// API clients use source=user and are never blocked.
+func agentSendBlocked(sess *store.Session, source string) bool {
+	return sess != nil && sess.MainAgent && source == "agent-send"
+}
+
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess := s.st.Get(id)
@@ -1217,9 +1225,19 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		Text   string                `json:"text"`
 		Images []runner.Image        `json:"images,omitempty"`
 		Files  []runner.UploadedFile `json:"files,omitempty"`
+		Source string                `json:"source,omitempty"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	source := strings.TrimSpace(body.Source)
+	if source == "" {
+		source = "user"
+	}
+	if agentSendBlocked(sess, source) {
+		writeErr(w, http.StatusConflict,
+			"agentdeck send 不能直接给主 Agent 发消息（会与 SendMessage 重复）；请改用 SendMessage")
 		return
 	}
 	if strings.TrimSpace(body.Text) == "" && len(body.Images) == 0 && len(body.Files) == 0 {
@@ -1255,7 +1273,9 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "select a workspace before sending messages")
 		return
 	}
-	if err := s.mgr.Enqueue(id, runner.Message{Text: body.Text, Images: body.Images, Files: body.Files}); err != nil {
+	if err := s.mgr.Enqueue(id, runner.Message{
+		Text: body.Text, Images: body.Images, Files: body.Files, Source: source,
+	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

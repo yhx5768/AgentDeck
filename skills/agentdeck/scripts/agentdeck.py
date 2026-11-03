@@ -792,9 +792,25 @@ def _read_text(a) -> str:
     return text
 
 
+def send_source(allow_main_agent: bool) -> str:
+    """agentdeck send 的来源标记；显式允许时用可绕过主 Agent 去重门禁的值。"""
+    return "agent-send-explicit" if allow_main_agent else "agent-send"
+
+
+def main_agent_send_blocked(sess: dict, allow_main_agent: bool) -> bool:
+    """默认禁止 worker 用 agentdeck send 给主 Agent 发消息，避免与 SendMessage 重复。"""
+    return bool(sess.get("main_agent")) and not allow_main_agent
+
+
 def cmd_send(ctx: Ctx, a) -> int:
+    allow_main = bool(getattr(a, "allow_main_agent", False))
+    if not allow_main:
+        sess = api(ctx, "GET", f"/api/sessions/{urllib.parse.quote(a.id)}")
+        if main_agent_send_blocked(sess, allow_main):
+            die("目标会话是主 Agent：请用 SendMessage 发回报；确需 agentdeck send 请加 --allow-main-agent")
     text = _read_text(a)
     body = _message_body(ctx, a.id, text, a.file, a.image)
+    body["source"] = send_source(allow_main)
     if not body["text"].strip() and not body.get("files") and not body.get("images"):
         die("空消息")
     api(ctx, "POST", f"/api/sessions/{urllib.parse.quote(a.id)}/messages", body)
@@ -1456,6 +1472,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--text", help="消息文本（与位置参数二选一）")
     sp.add_argument("--file", action="append", help="作为附件上传的文件（可重复）")
     sp.add_argument("--image", action="append", help="内嵌图片（可重复；mcode/codex 不支持）")
+    sp.add_argument("--allow-main-agent", action="store_true",
+                    help="允许给主 Agent 会话发消息（默认禁止，避免与 SendMessage 重复）")
 
     sp = add("upload", "上传文件到会话，打印落盘路径", cmd_upload)
     sp.add_argument("id")
