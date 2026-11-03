@@ -348,7 +348,11 @@ func (s *Store) Migrate(jsonPath, routingPath string) (int, int, error) {
 
 func (s *Store) migrateLocked(jsonPath, routingPath string) (int, int, error) {
 	tasks, events := 0, 0
-	if raw, err := os.ReadFile(jsonPath); err == nil {
+	raw, readErr := os.ReadFile(jsonPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return 0, 0, readErr
+	}
+	if readErr == nil {
 		var store map[string]any
 		if err := json.Unmarshal(raw, &store); err != nil {
 			return 0, 0, err
@@ -385,7 +389,11 @@ func (s *Store) migrateLocked(jsonPath, routingPath string) (int, int, error) {
 	}
 	if routingPath != "" {
 		rows, err := parseRoutingTable(routingPath)
-		if err == nil {
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return tasks, events, err
+			}
+		} else {
 			for _, row := range rows {
 				if err := s.mergeRoutingRow(row); err != nil {
 					return tasks, events, err
