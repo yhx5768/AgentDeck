@@ -74,8 +74,16 @@ function applySession(sess) { window.__applySession(sess); }
 function renderSessionList() {}
 function updateResidentUI() {}
 function openSession(id) { window.__openSession(id); }
+function ensureMainAgentBoard() {}
 ${fn('nameInitial')}
 ${fn('mainAgentSessions')}
+${fn('runningMainAgentWorkers')}
+${fn('mainAgentWorkerVisibleCount')}
+${fn('workerHue')}
+${fn('workerTipText')}
+${fn('workerInitial')}
+${fn('renderWorkerCluster')}
+${fn('mainAgentInnerWidth')}
 ${fn('renderMainAgents')}
 ${fn('mainAgentToggleBody')}
 ${fn('mainAgentNeedsOverwriteConfirm')}
@@ -92,7 +100,9 @@ ${fn('fillRolePromptDefault')}
 ${fn('clearRolePromptDialog')}
 window.__x = {
   mainAgentToggleBody, mainAgentNeedsOverwriteConfirm, updateMainAgentUI,
-  renderMainAgents, mainAgentSessions, rolePromptBytes, rolePromptMaxBytes,
+  renderMainAgents, mainAgentSessions, runningMainAgentWorkers,
+  mainAgentWorkerVisibleCount, renderWorkerCluster, workerTipText,
+  rolePromptBytes, rolePromptMaxBytes,
   ensureMainAgentPrompt, updateRolePromptCounter, updateRolePromptButton,
   openRolePromptDialog, saveRolePrompt, fillRolePromptDefault, clearRolePromptDialog,
 };
@@ -101,7 +111,11 @@ window.__x = {
 const dom = new JSDOM(HTML, { runScripts: 'outside-only', url: 'http://localhost/' });
 const w = dom.window;
 
-const state = { sessions: [], current: null, mainAgentPrompt: null, mainAgentMaxBytes: 32768 };
+const state = {
+  sessions: [], current: null, mainAgentPrompt: null, mainAgentMaxBytes: 32768,
+  agentBoard: { tasks: [] }, mainAgentBoardAt: Date.now(), maWorkerIds: [],
+  maWorkerMeta: {}, maRenderSig: '', previewWorkers: false,
+};
 const calls = { api: [], patches: [], applied: [], opened: [], alerts: [], confirms: [] };
 let failNext = false;
 let confirmReturn = true;
@@ -241,6 +255,83 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
   calls.opened.length = 0;
   items[0].onclick();
   check('点击头像切换会话', calls.opened[0] === 'c', JSON.stringify(calls.opened));
+
+  console.log('主 Agent 旁的 running worker');
+
+  const strip = $('#main-agents');
+  Object.defineProperty(strip, 'clientWidth', { configurable: true, value: 250 });
+  state.maRenderSig = '';
+  state.maWorkerIds = [];
+  state.maWorkerMeta = {};
+  state.current = { id: 'main' };
+  const workers = Array.from({ length: 10 }, (_, i) => ({
+    id: `worker-${i + 1}`, name: `worker-${i + 1}`, peer_name: `worker-${i + 1}`,
+    main_agent: false, status: { running: true, queued: 0 }, updated_at: now,
+  }));
+  state.sessions = [
+    { id: 'main', name: '主 Agent', main_agent: true, resident: true, status: {} },
+    ...workers,
+    { id: 'ordinary', name: '普通 running', main_agent: false, status: { running: true, queued: 0 } },
+  ];
+  state.agentBoard = {
+    tasks: workers.map((w, i) => ({
+      id: `T-${i + 1}`, title: `任务 ${i + 1}`, status: '进行中', worker: w.peer_name,
+      session: w.id, updated_at: now,
+    })).concat([{
+      id: 'T-1-newer', title: '最新任务', status: '进行中', worker: 'worker-1',
+      session: 'worker-1', updated_at: '2026-11-03T22:01:00Z',
+    }]),
+  };
+  X.renderMainAgents();
+  check('可见 worker 按 250px 计算为 8 个', strip.querySelectorAll('.ma-worker:not(.ma-worker-leaving)').length === 8,
+    String(strip.querySelectorAll('.ma-worker').length));
+  check('剩余显示 +2', strip.querySelector('.ma-worker-more').textContent === '+2');
+  check('总数徽标显示 10', strip.querySelector('.ma-total').textContent === '10');
+  check('总数徽标在左下角', !!strip.querySelector('.ma-avatar .ma-total'));
+  check('tooltip 带 worker 名和任务', strip.querySelector('.ma-worker').title.includes('worker-1') &&
+    strip.querySelector('.ma-worker').title.includes('最新任务'), strip.querySelector('.ma-worker').title);
+  check('同 worker 多任务去重取最新', strip.querySelectorAll('.ma-worker').length === 8);
+  const workerTitles = [...strip.querySelectorAll('.ma-worker')].map((el) => el.title).join('\n');
+  check('普通 running 会话不计入', !workerTitles.includes('普通 running'), workerTitles);
+
+  calls.opened.length = 0;
+  strip.querySelector('.ma-worker').onclick({ stopPropagation() {} });
+  check('点击 worker 打开会话', calls.opened[0] === 'worker-1', JSON.stringify(calls.opened));
+
+  const countFn = X.mainAgentWorkerVisibleCount;
+  check('动态数量 250px → 8', countFn(250, false) === 8, String(countFn(250, false)));
+  check('动态数量 200px → 6', countFn(200, false) === 6, String(countFn(200, false)));
+  check('动态数量过窄 → 最少 2', countFn(80, false) === 2, String(countFn(80, false)));
+
+  // 全部结束后：总数徽标隐藏，退场鬼影 180ms 后移除
+  state.sessions = [
+    { id: 'main', name: '主 Agent', main_agent: true, resident: true, status: {} },
+    { id: 'worker-1', name: 'worker-1', main_agent: false, status: { running: false, queued: 0 } },
+  ];
+  state.agentBoard = { tasks: [] };
+  state.maRenderSig = '';
+  X.renderMainAgents();
+  check('0 running → 总数徽标隐藏', !strip.querySelector('.ma-total'));
+  await new Promise((r) => setTimeout(r, 220));
+  check('0 running → worker 组退场', !strip.querySelector('.ma-workers'));
+
+  // 普通会话没有任务绑定 → 不显示任何 worker
+  state.sessions = [
+    { id: 'main', name: '主 Agent', main_agent: true, resident: true, status: {} },
+    { id: 'ordinary', name: '普通 running', main_agent: false, status: { running: true, queued: 0 } },
+  ];
+  state.agentBoard = { tasks: [] };
+  state.maRenderSig = '';
+  state.maWorkerIds = [];
+  X.renderMainAgents();
+  check('无任务绑定 → 不显示 worker', !strip.querySelector('.ma-workers'));
+  check('无任务绑定 → 不显示徽标', !strip.querySelector('.ma-total'));
+
+  const css = fs.readFileSync(path.join(WEB, 'style.css'), 'utf8');
+  check('CSS: worker 组负 margin', css.includes('margin-left: calc(-1 * var(--ma-gap) - var(--ma-overlap-extra))'));
+  check('CSS: +N 同节奏 bob', css.includes('.ma-worker-more') && css.includes('ma-worker-more-bob'));
+  check('CSS: reduced-motion 停动画', /prefers-reduced-motion[\s\S]*?\.ma-worker, \.ma-worker-more \{ animation: none !important; \}/.test(css));
+  check('CSS: 移动端变量', /@media \(max-width: 760px\)[\s\S]*?--ma-overlap-extra: 14px/.test(css));
 
   console.log('角色提示弹窗');
 

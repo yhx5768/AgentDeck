@@ -579,6 +579,12 @@ const state = {
   // 前端只缓存；mainAgentMaxBytes 是同一接口给出的 role_prompt 字节上限。
   mainAgentPrompt: null,
   mainAgentMaxBytes: 32768,
+  mainAgentBoardAt: 0,        // 主 Agent 头像条最近一次拿任务绑定的时间
+  mainAgentBoardLoading: false,
+  maWorkerIds: [],            // 上一次渲染的 running worker session ids（入场/退场 diff）
+  maWorkerMeta: {},           // sessionId -> {name,title}，供退场鬼影使用
+  maRenderSig: '',            // 主 Agent 头像条渲染签名，避免 5s 轮询重启动效
+  previewWorkers: false,      // 测试预览：?preview_workers=N + agent_board_mock_busy
   agentBoard: null,        // GET /api/agent-board snapshot (read-only)
   agentBoardLoading: false,
   boardSelectedId: null,   // 抽屉里展示的任务 id
@@ -1047,6 +1053,62 @@ function diffPendingAsks() {
 }
 
 // ---------- sessions list ----------
+// ---------- 测试预览数据 ----------
+// 只有 config 打开 agent_board_mock_busy 且 URL 带 ?preview_workers=N 时才生效。
+// 生产配置默认关闭；它只改前端 state，不写服务端数据。
+const PREVIEW_WORKER_NAMES = [
+  '风险识别-Skill打包', 'AgentDeck-规范调整', 'Verify-生产发布', 'AgentDeck-卡片自动化',
+  '鸿蒙CUID指标', '编译集群管理', 'Verify-跨平台验收', 'AgentDeck-轨迹A2A',
+  'AgentDeck-浏览器能力', '风险识别-EP集成', '主Agent派工-落账脚本', 'Q4规划-风险状态机方案',
+];
+
+function previewWorkerCount() {
+  if (!state.boardMockBusyAvailable) return 0;
+  const raw = new URLSearchParams(location.search).get('preview_workers') || '';
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, PREVIEW_WORKER_NAMES.length) : 0;
+}
+
+function applyPreviewWorkers() {
+  const count = previewWorkerCount();
+  if (!count) {
+    state.previewWorkers = false;
+    return;
+  }
+  const now = '2026-11-03 22:00:00';
+  let main = (state.sessions || []).find((s) => s.main_agent);
+  if (!main) {
+    main = {
+      id: 'preview-main', name: '主 Agent', cwd: state.home || '',
+      main_agent: true, resident: true, status: { running: false, queued: 0 }, updated_at: now,
+    };
+    state.sessions = (state.sessions || []).concat(main);
+  }
+  const workers = (state.sessions || [])
+    .filter((s) => s && s.id && !s.main_agent && !String(s.id).startsWith('preview-'))
+    .slice(0, count);
+  for (const w of workers) {
+    w.status = { running: true, queued: 0 };
+    w.updated_at = now;
+  }
+  state.agentBoard = {
+    source: 'preview',
+    counts: { 进行中: workers.length },
+    projects: ['AgentDeck'],
+    tasks: workers.map((w, i) => ({
+      id: `PREVIEW-${i + 1}`,
+      title: `预览任务 ${i + 1} · ${w.name || w.peer_name || 'worker'}`,
+      status: '进行中',
+      project: 'AgentDeck',
+      worker: w.peer_name || w.name,
+      session: w.id,
+      updated_at: now,
+    })),
+  };
+  state.mainAgentBoardAt = Date.now() + 3600 * 1000;
+  state.previewWorkers = true;
+}
+
 async function loadSessions() {
   const [active2, archived] = await Promise.all([
     api('/api/sessions'),
@@ -1054,6 +1116,7 @@ async function loadSessions() {
   ]);
   state.sessions = active2;
   state.archived = archived;
+  applyPreviewWorkers();
   diffRunningSessions(active2);
   diffPendingAsks();
   renderSessionList();
@@ -1396,13 +1459,161 @@ function mainAgentSessions() {
     });
 }
 
+// 主 Agent 头像旁运行的 worker：只算“任务绑定 + 非 mainAgent + 正在 running”
+// 的会话。普通 running 会话没有任务绑定，不会混进来。
+function runningMainAgentWorkers() {
+  const tasks = (state.agentBoard && state.agentBoard.tasks) || [];
+  const sessions = state.sessions || [];
+  const byId = new Map();
+  const byPeer = new Map();
+  for (const s of sessions) {
+    byId.set(s.id, s);
+    if (s.peer_name) byPeer.set(s.peer_name, s);
+  }
+  const found = new Map();
+  for (const task of tasks) {
+    if (!task || task.status === '已完成' || task.status === '已取消') continue;
+    if (!task.session && !task.worker) continue;
+    let sess = task.session ? byId.get(task.session) : null;
+    if (!sess && task.worker) {
+      sess = byPeer.get(task.worker) || sessions.find((s) => s.name === task.worker) || null;
+    }
+    if (!sess || sess.main_agent) continue;
+    if (!(sess.status && sess.status.running)) continue;
+    if (task.worker && sess.peer_name && task.worker !== sess.peer_name && sess.name !== task.worker) continue;
+    const key = sess.id || task.worker;
+    const prev = found.get(key);
+    if (!prev || String(task.updated_at || '') > String(prev.task.updated_at || '')) {
+      found.set(key, {
+        sessionId: sess.id,
+        name: sess.name || sess.peer_name || task.worker || 'worker',
+        task,
+      });
+    }
+  }
+  return [...found.values()];
+}
+
+// 侧栏可用宽度 → 可见 worker 数。公式与设计 v5 一致：首个 worker 吃掉
+// 组间 gap 并叠到主头像上，后续每个 worker 只占“头像宽 - 6px”。
+function mainAgentWorkerVisibleCount(availableWidth, mobile) {
+  if (typeof mobile !== 'boolean') mobile = (window.innerWidth || 1024) <= 760;
+  const cfg = mobile
+    ? { item: 48, mainAvatar: 36, avatar: 22, firstOverlap: 8, stepOverlap: 6, gap: 1, tail: 8, max: 12 }
+    : { item: 56, mainAvatar: 40, avatar: 26, firstOverlap: 12, stepOverlap: 6, gap: 2, tail: 8, max: 12 };
+  const inset = (cfg.item - cfg.mainAvatar) / 2;
+  const clusterStart = cfg.item - inset - cfg.firstOverlap;
+  const available = Math.max(0, (Number(availableWidth) || 0) - clusterStart - cfg.tail);
+  const widthFor = (n) => n * cfg.avatar - Math.max(0, n - 1) * cfg.stepOverlap + cfg.gap + cfg.avatar;
+  let n = 0;
+  while (n < cfg.max && widthFor(n + 1) <= available) n++;
+  return Math.max(2, n);
+}
+
+function workerHue(name) {
+  let hue = 0;
+  for (const ch of String(name || '')) hue = (hue * 31 + ch.codePointAt(0)) % 360;
+  return hue;
+}
+
+function workerTipText(worker) {
+  return `${worker.name || 'worker'} · ${worker.task.title || worker.task.id || '未命名任务'}`;
+}
+
+function workerInitial(worker) {
+  return nameInitial(worker.name || worker.task.worker || 'worker');
+}
+
+function renderWorkerCluster(workers, visible) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ma-workers';
+  const prevIds = new Set(state.maWorkerIds || []);
+  const shown = workers.slice(0, visible);
+  for (let i = 0; i < shown.length; i++) {
+    const worker = shown[i];
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ma-worker' + (prevIds.has(worker.sessionId) ? '' : ' entering');
+    btn.style.setProperty('--worker-hue', workerHue(worker.name));
+    btn.style.setProperty('--worker-i', i);
+    btn.title = workerTipText(worker);
+    btn.setAttribute('aria-label', workerTipText(worker));
+    btn.textContent = workerInitial(worker);
+    btn.onclick = (e) => { e.stopPropagation(); openSession(worker.sessionId); };
+    wrap.appendChild(btn);
+  }
+  const hidden = workers.slice(visible);
+  if (hidden.length) {
+    const more = document.createElement('span');
+    more.className = 'ma-worker-more';
+    more.style.setProperty('--worker-i', shown.length);
+    more.textContent = `+${hidden.length}`;
+    more.title = hidden.map(workerTipText).join('\n');
+    wrap.appendChild(more);
+  }
+  // 退场的 worker 用一个 160ms 的鬼影占位，随后移除；不参与点击。
+  const currentIds = new Set(workers.map((w) => w.sessionId));
+  const leaving = (state.maWorkerIds || []).filter((id) => !currentIds.has(id));
+  for (const id of leaving) {
+    const meta = (state.maWorkerMeta && state.maWorkerMeta[id]) || { name: 'worker', title: '' };
+    const ghost = document.createElement('span');
+    ghost.className = 'ma-worker ma-worker-leaving';
+    ghost.style.setProperty('--worker-hue', workerHue(meta.name));
+    ghost.textContent = nameInitial(meta.name);
+    ghost.title = `${meta.name} · ${meta.title || '已结束'}`;
+    wrap.appendChild(ghost);
+    setTimeout(() => {
+      ghost.remove();
+      if (!wrap.childElementCount) wrap.remove();
+    }, 180);
+  }
+  state.maWorkerMeta = {};
+  for (const worker of workers) {
+    state.maWorkerMeta[worker.sessionId] = { name: worker.name, title: worker.task.title || worker.task.id || '' };
+  }
+  state.maWorkerIds = workers.map((w) => w.sessionId);
+  return wrap;
+}
+
+function mainAgentInnerWidth(el) {
+  const style = getComputedStyle(el);
+  const left = parseFloat(style.paddingLeft) || 0;
+  const right = parseFloat(style.paddingRight) || 0;
+  return Math.max(0, (el.clientWidth || 360) - left - right);
+}
+
 function renderMainAgents() {
   const el = $('#main-agents');
   if (!el) return;
   const list = mainAgentSessions();
-  el.innerHTML = '';
   el.classList.toggle('hidden', !list.length);
-  if (!list.length) return;
+  if (!list.length) {
+    el.innerHTML = '';
+    state.maRenderSig = '';
+    state.maWorkerIds = [];
+    return;
+  }
+  const workers = runningMainAgentWorkers();
+  const mobile = (window.innerWidth || 1024) <= 760;
+  const itemWidth = mobile ? 48 : 56;
+  const reserved = Math.max(0, list.length - 1) * (itemWidth + 16);
+  const width = Math.max(0, mainAgentInnerWidth(el) - reserved);
+  const visible = workers.length ? Math.min(workers.length, mainAgentWorkerVisibleCount(width, mobile)) : 0;
+  const sig = [
+    state.current && state.current.id,
+    width,
+    visible,
+    list.map((s) => `${s.id}:${s.name}:${s.resident ? 1 : 0}:${s.unread ? 1 : 0}:${s.status && s.status.running ? 1 : 0}`).join('|'),
+    workers.map((w) => `${w.sessionId}:${w.task.id}:${w.task.updated_at || ''}:${w.task.title || ''}`).join('|'),
+  ].join(';');
+  ensureMainAgentBoard();
+  if (sig === state.maRenderSig && el.childElementCount) return;
+  state.maRenderSig = sig;
+  el.innerHTML = '';
+  const anchorId = (state.current && list.some((s) => s.id === state.current.id))
+    ? state.current.id : list[0].id;
+  let cluster = null;
+  if (workers.length || (state.maWorkerIds || []).length) cluster = renderWorkerCluster(workers, visible);
   for (const s of list) {
     const st = s.status || {};
     const item = document.createElement('button');
@@ -1414,6 +1625,13 @@ function renderMainAgents() {
     if (s.resident) av.classList.add('resident');
     if (st.running) av.classList.add('running');
     av.textContent = nameInitial(s.name);
+    if (workers.length) {
+      const total = document.createElement('span');
+      total.className = 'ma-total';
+      total.textContent = workers.length;
+      total.title = `${workers.length} 个 worker 运行中`;
+      av.appendChild(total);
+    }
     if (s.unread) {
       const badge = document.createElement('span');
       badge.className = 'ma-badge';
@@ -1426,8 +1644,34 @@ function renderMainAgents() {
     item.append(av, label);
     item.onclick = () => openSession(s.id);
     el.appendChild(item);
+    if (s.id === anchorId && cluster) el.appendChild(cluster);
   }
 }
+
+async function ensureMainAgentBoard() {
+  if (state.previewWorkers || !mainAgentSessions().length) return;
+  if (state.mainAgentBoardLoading) return;
+  if (state.agentBoard && Date.now() - (state.mainAgentBoardAt || 0) < 10000) return;
+  state.mainAgentBoardLoading = true;
+  try {
+    state.agentBoard = await api('/api/agent-board');
+    state.mainAgentBoardAt = Date.now();
+    renderMainAgents();
+  } catch (_) {
+    state.mainAgentBoardAt = Date.now();
+  } finally {
+    state.mainAgentBoardLoading = false;
+  }
+}
+
+let maResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(maResizeTimer);
+  maResizeTimer = setTimeout(() => {
+    state.maRenderSig = '';
+    renderMainAgents();
+  }, 150);
+});
 
 // 头像里放名字首字（中文按码点取，避免代理对切半）。
 function nameInitial(name) {
@@ -3171,7 +3415,9 @@ async function boardShow(force = false) {
   $('#board-columns').innerHTML = '';
   try {
     state.agentBoard = await api('/api/agent-board');
+    state.mainAgentBoardAt = Date.now();
     renderBoard();
+    renderMainAgents();
   } catch (err) {
     empty.textContent = '读取看板失败：' + err.message;
     empty.classList.remove('hidden');

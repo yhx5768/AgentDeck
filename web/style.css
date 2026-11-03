@@ -359,9 +359,11 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 /* ---------- 主 Agent 置顶头像条（侧栏 #session-list 上方） ---------- */
 /* 有 main_agent 会话时才渲染；横向滚动，不抢工作区栏的宽度。 */
 .main-agents {
+  --ma-gap: var(--sp-4);
+  --ma-overlap-extra: 20px;
   display: flex; align-items: flex-start; justify-content: center;
   justify-content: safe center;
-  gap: var(--sp-4);
+  gap: var(--ma-gap);
   padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
@@ -376,6 +378,7 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   background: none; border: none; padding: 0;
   color: var(--dim);
   cursor: pointer;
+  position: relative; z-index: 3;
 }
 .ma-avatar {
   position: relative;
@@ -419,6 +422,88 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ma-item.active .ma-name { color: var(--fg); font-weight: 600; }
+
+/* running worker 小头像：主 Agent 头像右侧堆叠，首个负 margin 叠上去；
+   数量由 JS 按侧栏可用宽度计算，剩余收进 +N。 */
+.ma-workers {
+  display: flex; align-items: flex-start; gap: 2px; flex: none;
+  padding-top: 5px;
+  margin-left: calc(-1 * var(--ma-gap) - var(--ma-overlap-extra));
+  margin-right: 12px;
+  position: relative; z-index: 2;
+}
+.ma-worker {
+  --worker-hue: 210;
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-full);
+  background: hsl(var(--worker-hue) 75% 92%);
+  color: hsl(var(--worker-hue) 55% 28%);
+  border: 1.5px solid hsl(var(--worker-hue) 60% 78%);
+  font-size: 10px; font-weight: 700; line-height: 1;
+  flex: none; padding: 0; cursor: pointer;
+  position: relative;
+  animation: ma-worker-bob 1.4s cubic-bezier(.45, 0, .55, 1) infinite;
+  animation-delay: calc(var(--worker-i, 0) * -160ms);
+}
+.ma-worker + .ma-worker { margin-left: -6px; }
+.ma-worker:hover { box-shadow: 0 4px 10px rgba(0, 0, 0, .18); z-index: 4; }
+.ma-worker.entering { animation: ma-worker-bob 1.4s cubic-bezier(.45, 0, .55, 1) infinite, ma-worker-in 180ms cubic-bezier(.2, .8, .2, 1); }
+.ma-worker.leaving { animation: ma-worker-out 160ms ease-in forwards; pointer-events: none; }
+.ma-worker-more {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-full);
+  background: var(--bg3); color: var(--dim);
+  border: 1px solid var(--border);
+  font-size: 10px; font-weight: 700; line-height: 1;
+  flex: none;
+  animation: ma-worker-more-bob 1.4s cubic-bezier(.45, 0, .55, 1) infinite;
+  animation-delay: calc(var(--worker-i, 0) * -160ms);
+}
+.ma-total {
+  position: absolute; left: -4px; bottom: -4px; z-index: 4;
+  min-width: 18px; height: 18px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-full);
+  background: var(--accent); color: var(--bg);
+  border: 2px solid var(--bg2);
+  font-size: 10px; font-weight: 700; line-height: 1;
+  pointer-events: none;
+}
+[data-theme="dark"] .ma-worker {
+  background: hsl(var(--worker-hue) 35% 23%);
+  color: hsl(var(--worker-hue) 70% 78%);
+  border-color: hsl(var(--worker-hue) 40% 42%);
+}
+@keyframes ma-worker-bob {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -3px; }
+}
+@keyframes ma-worker-more-bob {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -2px; }
+}
+@keyframes ma-worker-in {
+  from { opacity: 0; scale: .6; }
+  to { opacity: 1; scale: 1; }
+}
+@keyframes ma-worker-out {
+  to { opacity: 0; scale: .8; }
+}
+@media (max-width: 760px) {
+  .main-agents { --ma-gap: 10px; --ma-overlap-extra: 14px; padding: var(--sp-2) var(--sp-3); }
+  .ma-item { width: 48px; }
+  .ma-avatar { width: 36px; height: 36px; }
+  .ma-name { max-width: 48px; font-size: 10px; }
+  .ma-workers { padding-top: 5px; gap: 1px; margin-right: 8px; }
+  .ma-worker, .ma-worker-more { width: 22px; height: 22px; font-size: 9px; }
+  .ma-worker + .ma-worker { margin-left: -6px; }
+  .ma-total { min-width: 16px; height: 16px; font-size: 9px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ma-worker, .ma-worker-more { animation: none !important; }
+}
 
 /* 工作区栏活动指示：运行中 / 未读完成 计数徽章（配色复用 .dot） */
 .ws-activity { display: flex; align-items: center; gap: var(--sp-1); margin-left: var(--sp-2); }
