@@ -145,6 +145,14 @@ type Server struct {
 	// native codex keep separate rollout trees).
 	codexCaches map[string]*codexhist.StatsCache
 
+	// boardHub fans out local agent-board file changes to SSE subscribers.
+	// The watcher only polls file metadata (1s) and never talks to iCafe.
+	boardHub      *boardHub
+	boardMu       sync.Mutex
+	boardLastPath string
+	boardLastMod  time.Time
+	boardLastSize int64
+
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
 	httpSrv *http.Server
@@ -171,12 +179,14 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 	}
 	s := &Server{
 		cm: cm, st: st, mgr: mgr, static: static, mux: http.NewServeMux(), browser: bm,
+		boardHub:       newBoardHub(),
 		ocCatalog:      map[string]ocCatalogEntry{},
 		ocRefreshing:   map[string]bool{},
 		ocProviders:    map[string][]string{},
 		ocDiscoverKick: make(chan struct{}, 1),
 	}
 	s.routes()
+	go s.watchAgentBoard()
 	return s
 }
 
@@ -197,6 +207,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/config", s.auth(s.handleConfig))
 	s.mux.Handle("GET /api/main-agent-prompt", s.auth(s.handleMainAgentPrompt))
 	s.mux.Handle("GET /api/agent-board", s.auth(s.handleAgentBoard))
+	s.mux.Handle("GET /api/agent-board/events", s.auth(s.handleAgentBoardEvents))
 	s.mux.Handle("GET /api/sessions", s.auth(s.handleListSessions))
 	s.mux.Handle("POST /api/sessions", s.auth(s.handleCreateSession))
 	s.mux.Handle("GET /api/sessions/{id}", s.auth(s.handleGetSession))

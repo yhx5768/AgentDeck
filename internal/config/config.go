@@ -214,7 +214,7 @@ type Config struct {
 	DataDir      string `yaml:"data_dir"`
 	DefaultCwd   string `yaml:"default_cwd"`
 	// AgentBoardPath points at the JSON snapshot served by GET /api/agent-board.
-	// Empty means <data_dir>/agent-board.json. The file is generated outside
+	// Empty means <data_dir>/agent-board.local.json. The file is generated outside
 	// cc-webui (iCafe cache + local routing table); the UI never talks to iCafe.
 	AgentBoardPath string        `yaml:"agent_board_path"`
 	Browser        BrowserConfig `yaml:"browser" json:"browser"`

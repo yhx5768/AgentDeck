@@ -581,6 +581,7 @@ const state = {
   agentBoardLoading: false,
   boardSelectedId: null,   // 抽屉里展示的任务 id
   boardCollapsed: new Set(), // 已折叠的状态列
+  boardEs: null,           // /api/agent-board/events SSE
   drafts: {},         // sessionId -> {text, attachments}
   attached: [],       // 待发送附件：[{kind:'image',media_type,data} | {kind:'file',name,size,path}]
   nsAttached: [],     // images staged in the new-session composer
@@ -2378,9 +2379,26 @@ function switchChatTab(tab) {
   $('#traj-view').classList.toggle('hidden', !isTraj);
   $('#board-view').classList.toggle('hidden', !isBoard);
   $('#composer').classList.toggle('hidden', isTraj || isBoard);
-  if (!isBoard) boardCloseDrawer();
+  if (!isBoard) { boardCloseDrawer(); boardDisconnect(); }
   if (isTraj) trajShow();
-  if (isBoard) boardShow();
+  if (isBoard) { boardConnect(); boardShow(); }
+}
+
+// 本地 store 变化时后端发 refresh 事件；前端重取快照。EventSource 带 cookie，
+// 不需要 query token。浏览器断线会自动重连。
+function boardConnect() {
+  if (state.boardEs) return;
+  const es = new EventSource('/api/agent-board/events');
+  const refresh = () => boardShow(true);
+  es.addEventListener('ready', refresh);
+  es.addEventListener('board', refresh);
+  state.boardEs = es;
+}
+
+function boardDisconnect() {
+  if (!state.boardEs) return;
+  state.boardEs.close();
+  state.boardEs = null;
 }
 
 // 看板只对 main_agent 会话显示；取消标记时如果正停在看板，切回对话。
@@ -2557,11 +2575,8 @@ function renderBoard() {
     return;
   }
 
-  source.textContent = 'iCafe 缓存 + 本地路由表';
-  const stale = boardStale(data);
-  updated.textContent = data.generated_at ? `更新于 ${data.generated_at}` : '';
-  updated.classList.toggle('board-stale', stale);
-  if (stale) updated.textContent += '（可能已过期）';
+  source.textContent = '本地任务 store（实时）';
+  updated.textContent = data.generated_at ? `最后更新 ${data.generated_at}` : '';
 
   const projects = data.projects || [];
   const current = filter.value;
@@ -2627,6 +2642,11 @@ function renderBoard() {
     }
     column.append(head, body);
     columns.append(column);
+  }
+  // SSE 刷新后如果抽屉还开着，用新任务数据重绘抽屉，保持实时。
+  if (state.boardSelectedId) {
+    const selectedTask = tasks.find((t) => t.id === state.boardSelectedId);
+    if (selectedTask) boardOpenDrawer(selectedTask);
   }
 }
 

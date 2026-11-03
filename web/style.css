@@ -4229,3 +4229,12 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 @media (max-width: 700px) {
   .board-drawer { width: 100vw; border-left: none; padding: var(--sp-4); }
 }
+
+.board-readonly {
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  padding: 1px 7px;
+  font-size: 10px;
+  background: var(--bg2);
+}
