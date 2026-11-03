@@ -579,6 +579,8 @@ const state = {
   mainAgentMaxBytes: 32768,
   agentBoard: null,        // GET /api/agent-board snapshot (read-only)
   agentBoardLoading: false,
+  boardSelectedId: null,   // 抽屉里展示的任务 id
+  boardCollapsed: new Set(), // 已折叠的状态列
   drafts: {},         // sessionId -> {text, attachments}
   attached: [],       // 待发送附件：[{kind:'image',media_type,data} | {kind:'file',name,size,path}]
   nsAttached: [],     // images staged in the new-session composer
@@ -2376,6 +2378,7 @@ function switchChatTab(tab) {
   $('#traj-view').classList.toggle('hidden', !isTraj);
   $('#board-view').classList.toggle('hidden', !isBoard);
   $('#composer').classList.toggle('hidden', isTraj || isBoard);
+  if (!isBoard) boardCloseDrawer();
   if (isTraj) trajShow();
   if (isBoard) boardShow();
 }
@@ -2390,15 +2393,19 @@ function syncMainAgentTabs(s) {
 }
 
 function boardTaskCard(task) {
-  const details = document.createElement('details');
-  details.className = 'board-card';
-  const summary = document.createElement('summary');
+  const card = document.createElement('article');
+  card.className = 'board-card';
+  card.tabIndex = 0;
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', `查看 ${task.id || ''} ${task.title || ''}`);
+  card.dataset.taskId = task.id || '';
+  if (state.boardSelectedId === task.id) card.classList.add('board-card-selected');
 
   const top = document.createElement('div');
   top.className = 'board-card-top';
   const id = document.createElement('span');
   id.className = 'board-card-id';
-  id.textContent = task.id || '';
+  id.textContent = task.icafe_id || task.id || '';
   const project = document.createElement('span');
   project.className = 'board-project';
   project.textContent = task.project || '未分类';
@@ -2416,44 +2423,112 @@ function boardTaskCard(task) {
   worker.textContent = task.worker || '未派工';
   meta.append('worker：', worker, ' · ', task.updated_at || '—');
 
-  summary.append(top, title, meta);
+  card.append(top, title, meta);
   if (task.progress) {
     const progress = document.createElement('div');
     progress.className = 'board-card-progress';
     progress.textContent = task.progress;
     progress.title = task.progress;
-    summary.append(progress);
+    card.append(progress);
   }
-  details.append(summary);
-
-  const detail = document.createElement('div');
-  detail.className = 'board-card-detail';
-  const line = (label, value) => {
-    if (!value) return;
-    const row = document.createElement('div');
-    const b = document.createElement('b');
-    b.textContent = label + '：';
-    row.append(b, String(value));
-    detail.append(row);
+  card.onclick = () => boardOpenDrawer(task);
+  card.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      boardOpenDrawer(task);
+    }
   };
-  line('状态', task.status);
-  line('负责人', task.owner);
-  line('会话', task.session);
-  line('cwd', task.cwd);
-  line('最近事件', task.last_event);
-  line('报告', task.report_file);
-  if (task.url) {
-    const row = document.createElement('div');
+  return card;
+}
+
+function boardDrawerLine(container, label, value, linkHref) {
+  if (!value) return;
+  const row = document.createElement('div');
+  const b = document.createElement('b');
+  b.textContent = label + '：';
+  row.append(b);
+  if (linkHref) {
     const a = document.createElement('a');
-    a.href = task.url;
+    a.href = linkHref;
     a.target = '_blank';
     a.rel = 'noopener';
-    a.textContent = '在 iCafe 打开';
+    a.textContent = String(value);
     row.append(a);
-    detail.append(row);
+  } else {
+    row.append(String(value));
   }
-  details.append(detail);
-  return details;
+  container.append(row);
+}
+
+function boardCloseDrawer() {
+  state.boardSelectedId = null;
+  const drawer = $('#board-drawer');
+  const mask = $('#board-drawer-mask');
+  if (drawer) drawer.classList.add('hidden');
+  if (mask) mask.classList.add('hidden');
+  document.querySelectorAll('.board-card-selected').forEach((el) => {
+    el.classList.remove('board-card-selected');
+  });
+}
+
+function boardOpenDrawer(task) {
+  state.boardSelectedId = task.id || null;
+  document.querySelectorAll('.board-card').forEach((el) => {
+    el.classList.toggle('board-card-selected', el.dataset.taskId === task.id);
+  });
+  const idEl = $('#board-drawer-id');
+  idEl.textContent = task.icafe_id || task.id || '本地任务';
+  const projectEl = $('#board-drawer-project');
+  projectEl.textContent = task.project || '未分类';
+  projectEl.title = task.project || '';
+  $('#board-drawer-title').textContent = task.full_title || task.title || '（无标题）';
+
+  const meta = $('#board-drawer-meta');
+  meta.innerHTML = '';
+  boardDrawerLine(meta, '状态', task.status);
+  boardDrawerLine(meta, '项目', task.project);
+  boardDrawerLine(meta, '负责人', task.owner);
+  boardDrawerLine(meta, 'worker', task.worker);
+  boardDrawerLine(meta, '会话', task.session);
+  boardDrawerLine(meta, 'cwd', task.cwd);
+  boardDrawerLine(meta, '更新时间', task.updated_at);
+  boardDrawerLine(meta, '最近事件', task.last_event);
+  boardDrawerLine(meta, '报告', task.report_file);
+  // 只有真正关联 iCafe 的任务才给入口；本地任务没有 icafe_id。
+  if (task.icafe_id && task.url) {
+    boardDrawerLine(meta, 'iCafe', '在 iCafe 打开', task.url);
+  }
+
+  const timeline = $('#board-drawer-timeline');
+  timeline.innerHTML = '';
+  let events = Array.isArray(task.timeline) ? task.timeline : [];
+  if (!events.length && task.progress) {
+    events = [{ at: task.updated_at || '', kind: '最近进度', text: task.progress }];
+  }
+  if (!events.length) {
+    const none = document.createElement('div');
+    none.className = 'board-card-meta';
+    none.textContent = '暂无时间线';
+    timeline.append(none);
+  } else {
+    events.forEach((event) => {
+      const row = document.createElement('div');
+      row.className = 'board-drawer-event';
+      const at = document.createElement('span');
+      at.className = 'board-drawer-event-at';
+      at.textContent = event.at || '';
+      const kind = document.createElement('span');
+      kind.className = 'board-drawer-event-kind';
+      kind.textContent = event.kind || '事件';
+      const text = document.createElement('div');
+      text.className = 'board-drawer-event-text';
+      text.textContent = event.text || '';
+      row.append(at, kind, text);
+      timeline.append(row);
+    });
+  }
+  $('#board-drawer-mask').classList.remove('hidden');
+  $('#board-drawer').classList.remove('hidden');
 }
 
 function boardStale(data) {
@@ -2505,6 +2580,9 @@ function renderBoard() {
   });
 
   columns.innerHTML = '';
+  if (state.boardSelectedId && !tasks.some((t) => t.id === state.boardSelectedId)) {
+    boardCloseDrawer();
+  }
   if (!tasks.length) {
     empty.textContent = selected ? `项目「${selected}」下没有任务。` : '暂无任务。';
     empty.classList.remove('hidden');
@@ -2513,16 +2591,30 @@ function renderBoard() {
   empty.classList.add('hidden');
   for (const [status, list] of groups) {
     if (!order.includes(status) && !list.length) continue;
+    const collapsed = state.boardCollapsed.has(status);
     const column = document.createElement('section');
-    column.className = 'board-column';
+    column.className = 'board-column' + (collapsed ? ' collapsed' : '');
     const head = document.createElement('div');
     head.className = 'board-column-head';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'board-column-toggle';
+    toggle.title = collapsed ? '展开列' : '折叠列';
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.textContent = collapsed ? '›' : '‹';
+    toggle.onclick = (e) => {
+      e.stopPropagation();
+      if (collapsed) state.boardCollapsed.delete(status);
+      else state.boardCollapsed.add(status);
+      renderBoard();
+    };
     const name = document.createElement('span');
+    name.className = 'board-column-title';
     name.textContent = status;
     const count = document.createElement('span');
     count.className = 'board-column-count';
     count.textContent = String(list.length);
-    head.append(name, count);
+    head.append(toggle, name, count);
     const body = document.createElement('div');
     body.className = 'board-column-body';
     if (!list.length) {
@@ -2560,8 +2652,15 @@ async function boardShow(force = false) {
   }
 }
 
-$('#board-refresh').onclick = () => boardShow(true);
+$('#board-refresh').onclick = () => { boardCloseDrawer(); boardShow(true); };
 $('#board-project-filter').onchange = () => renderBoard();
+$('#board-drawer-close').onclick = () => boardCloseDrawer();
+$('#board-drawer-mask').onclick = () => boardCloseDrawer();
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#board-drawer').classList.contains('hidden')) {
+    boardCloseDrawer();
+  }
+});
 document.querySelectorAll('.chat-tab').forEach((b) => {
   b.onclick = () => switchChatTab(b.dataset.tab);
 });

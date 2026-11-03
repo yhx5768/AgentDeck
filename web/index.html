@@ -179,6 +179,20 @@
         </div>
         <div id="board-empty" class="board-empty hidden"></div>
         <div id="board-columns" class="board-columns"></div>
+        <div id="board-drawer-mask" class="board-drawer-mask hidden"></div>
+        <aside id="board-drawer" class="board-drawer hidden" aria-label="任务详情">
+          <div class="board-drawer-head">
+            <div class="board-drawer-kicker">
+              <span id="board-drawer-id"></span>
+              <span id="board-drawer-project" class="board-project"></span>
+            </div>
+            <button id="board-drawer-close" class="icon-btn" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+          </div>
+          <h3 id="board-drawer-title" class="board-drawer-title"></h3>
+          <div id="board-drawer-meta" class="board-drawer-meta"></div>
+          <div class="board-drawer-section-title">任务流</div>
+          <div id="board-drawer-timeline" class="board-drawer-timeline"></div>
+        </aside>
       </div>
 
       <footer id="composer">
