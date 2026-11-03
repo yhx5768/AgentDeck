@@ -2683,6 +2683,23 @@ function boardMuted(text) {
   return el;
 }
 
+function boardEventAvatar(kind) {
+  const map = {
+    '用户消息': ['你', 'ev-user'],
+    '主 Agent 回复': ['主', 'ev-agent'],
+    '最近回报': ['报', 'ev-report'],
+    '路由事件': ['路', 'ev-route'],
+    '建卡': ['建', 'ev-create'],
+    '最近进度': ['进', 'ev-report'],
+  };
+  const [label, cls] = map[kind] || ['事', 'ev-other'];
+  const avatar = document.createElement('span');
+  avatar.className = 'board-drawer-event-avatar ' + cls;
+  avatar.setAttribute('aria-hidden', 'true');
+  avatar.textContent = label;
+  return avatar;
+}
+
 function boardRenderTimeline(task) {
   const timeline = $('#board-drawer-timeline');
   const filters = $('#board-drawer-filters');
@@ -2732,7 +2749,7 @@ function boardRenderTimeline(task) {
     const text = document.createElement('div');
     text.className = 'board-drawer-event-text';
     text.textContent = event.text || '';
-    row.append(at, kind, text);
+    row.append(boardEventAvatar(event.kind), at, kind, text);
     timeline.append(row);
   });
 }

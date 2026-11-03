@@ -4372,20 +4372,57 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .board-composer-link:hover { text-decoration: underline; }
 .board-drawer-event {
   position: relative;
-  padding-left: 14px;
+  padding-left: 38px;
   font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--dim);
 }
-.board-drawer-event::before {
-  content: "";
+.board-drawer-event::before { display: none; }
+.board-drawer-event-avatar {
   position: absolute;
   left: 0;
-  top: 6px;
-  width: 7px;
-  height: 7px;
+  top: 2px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
-  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+.ev-user {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  border-color: color-mix(in srgb, var(--green) 42%, transparent);
+}
+.ev-agent {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+}
+.ev-report {
+  color: var(--orange);
+  background: color-mix(in srgb, var(--orange) 14%, transparent);
+  border-color: color-mix(in srgb, var(--orange) 42%, transparent);
+}
+.ev-route {
+  color: var(--dim);
+  background: var(--bg2);
+  border-color: var(--border);
+}
+.ev-create {
+  color: var(--thinking);
+  background: color-mix(in srgb, var(--thinking) 14%, transparent);
+  border-color: color-mix(in srgb, var(--thinking) 42%, transparent);
+}
+.ev-other {
+  color: var(--dim);
+  background: var(--bg2);
+  border-color: var(--border);
 }
 .board-drawer-event-at { color: var(--dim); font-size: var(--fs-xs); margin-right: 6px; font-variant-numeric: tabular-nums; }
 .board-drawer-event-kind {
