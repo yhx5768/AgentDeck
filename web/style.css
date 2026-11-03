@@ -4129,12 +4129,13 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 .board-card-tags { margin: 0 0 5px; }
 .board-drawer-tags { margin: 0 0 var(--sp-3); }
 .board-tag {
-  color: var(--accent);
-  background: var(--accent-dim);
-  border-radius: var(--r-full);
-  padding: 0 7px;
+  color: var(--thinking);
+  background: color-mix(in srgb, var(--thinking) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--thinking) 45%, transparent);
+  border-radius: var(--r-sm);
+  padding: 0 6px;
   font-size: 10px;
-  line-height: 1.7;
+  line-height: 1.6;
   white-space: nowrap;
 }
 .board-card-progress {
