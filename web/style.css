@@ -3073,6 +3073,19 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 .traj-kind-tool .traj-dot { background: var(--orange); }
 .traj-kind-result .traj-dot { background: var(--dim); }
 .traj-error .traj-dot { background: var(--red); }
+/* A2A（会话间消息）：入站 peer 与出站 SendMessage 共用紫色系高亮，
+   左侧色条 + 淡底，方便在台账里一眼扫到；方向由行首「A2A 收 / A2A 发」区分 */
+.traj-rec.traj-a2a > .traj-rec-head {
+  background: color-mix(in srgb, var(--thinking) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--thinking);
+}
+.traj-rec.traj-a2a > .traj-rec-head:hover { background: color-mix(in srgb, var(--thinking) 13%, transparent); }
+.traj-rec.traj-a2a:not(.traj-error) .traj-dot { background: var(--thinking); }
+.traj-rec.traj-a2a .traj-kind { color: var(--thinking); }
+.traj-rec.traj-a2a.selected > .traj-rec-head {
+  background: color-mix(in srgb, var(--thinking) 15%, transparent);
+  box-shadow: inset 2px 0 0 var(--thinking);
+}
 .traj-kind {
   color: var(--dim);
   font-size: var(--fs-xs);
@@ -3127,6 +3140,7 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 .traj-dh-role.r-user .traj-dot { background: var(--accent); }
 .traj-dh-role.r-assistant .traj-dot { background: var(--green); }
 .traj-dh-role.r-tool .traj-dot { background: var(--orange); }
+.traj-dh-role.r-a2a .traj-dot { background: var(--thinking); }
 #traj-detail-tabs {
   flex: none;
   display: flex;

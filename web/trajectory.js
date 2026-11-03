@@ -4,8 +4,12 @@
  * 数据源：state.historyBuf —— 回放事件 + live 事件（stream_event 除外，
  * 见 app.js connectEvents）。投影是增量的：traj.built 记录已处理前缀长度。
  *
- * 记录类型：system / user / assistant / tool / result / status。
- * turn 边界由 kind=user 事件划定；首个 user 之前的事件归入「系统初始化」。
+ * 记录类型：system / user / assistant / tool / result / status / peer。
+ * 角色筛选在 user / assistant / tool 之外单列 a2a：入站 peer 消息与出站
+ * SendMessage 工具调用都归入 A2A 角色（筛选按钮位于助手和工具之间），行内
+ * 用紫色系高亮，方便在主对话之外单独看会话间通信。
+ * turn 边界由 kind=user 事件划定（入站 peer 消息也算新一轮）；首个 user
+ * 之前的事件归入「系统初始化」。
  * assistant 记录按 message.id 去重更新（partial_messages 下同一消息会推
  * 多个快照事件）；tool 记录按 tool_use id 与 tool_result 配对。
  */
@@ -21,7 +25,7 @@ const traj = {
   query: '',
   collapsed: new Set(),   // 手动折叠的 turn.n
   expandAll: true,        // 全局折叠开关（false = 全部折叠）
-  kindFilter: new Set(['user', 'assistant', 'tool']),  // 启用显示的角色
+  kindFilter: new Set(['user', 'assistant', 'a2a', 'tool']),  // 启用显示的角色
   selectedId: null,       // 当前在右侧详情面板选中的 record id
   detailTab: 'summary',   // 当前详情面板的 tab
 };
@@ -41,6 +45,18 @@ function trajNormUsage(u) {
 function trajFirstLine(text, max = 100) {
   const line = String(text || '').split('\n').map((s) => s.trim()).find(Boolean) || '';
   return line.length > max ? line.slice(0, max) + '…' : line;
+}
+
+// A2A（会话间消息）方向：in = 收到其他会话的 peer 消息，out = 调用 SendMessage
+// 发给其他会话。两种记录在台账里归到同一个 A2A 角色，但高亮样式区分方向。
+function trajA2ADir(r) {
+  if (r.kind === 'peer') return 'in';
+  if (r.kind === 'tool' && String(r.toolName || '').toLowerCase() === 'sendmessage') return 'out';
+  return '';
+}
+
+function trajRecordRole(r) {
+  return trajA2ADir(r) ? 'a2a' : r.kind;
 }
 
 function trajCurrentTurn() {
@@ -155,9 +171,13 @@ function trajProject(ev) {
         rec.toolIds.add(b.id);
         let t = traj.byCallId[b.id];
         if (!t) {
+          const toolName = b.name || 'tool';
+          const isA2ASend = toolName.toLowerCase() === 'sendmessage';
+          const tsum = toolSummary(b.input);
           t = trajAddRecord(trajCurrentTurn(), {
-            kind: 'tool', ts, callId: b.id, toolName: b.name || 'tool', toolInput: b.input,
-            summary: (b.name || 'tool') + (toolSummary(b.input) ? '  ' + toolSummary(b.input) : ''),
+            kind: 'tool', ts, callId: b.id, toolName, toolInput: b.input,
+            // A2A 发送的摘要本身就是「⇢ 收件人 · 预览」，不再重复工具名
+            summary: isA2ASend ? (tsum || toolName) : toolName + (tsum ? '  ' + tsum : ''),
           });
           traj.byCallId[b.id] = t;
         } else {
@@ -214,20 +234,32 @@ function trajReset() {
   traj.query = '';
   traj.collapsed = new Set();
   traj.expandAll = true;
-  traj.kindFilter = new Set(['user', 'assistant', 'tool']);
+  traj.kindFilter = new Set(['user', 'assistant', 'a2a', 'tool']);
   traj.selectedId = null;
   traj.detailTab = 'summary';
   const list = $('#traj-list');
   if (list) list.innerHTML = '';
   const inp = $('#traj-search-input');
   if (inp) inp.value = '';
+  // 筛选按钮的 active 态跟随重置后的 kindFilter（切会话时不会留下上个会话的筛选）
+  document.querySelectorAll('.traj-filter-btn').forEach((btn) => {
+    btn.classList.toggle('active', traj.kindFilter.has(btn.dataset.kind));
+  });
   trajCloseDetail();
   trajUpdateStats();
 }
 
 // ---------- 渲染 ----------
 
-const TRAJ_KIND_LABEL = { system: '系统', user: '用户', assistant: '助手', tool: '工具', result: '结果', status: '状态' };
+const TRAJ_KIND_LABEL = { system: '系统', user: '用户', assistant: '助手', tool: '工具', result: '结果', status: '状态', peer: 'A2A' };
+
+// A2A 记录按方向显示：收到其他会话消息 / 发出 SendMessage。其余走 kind 标签。
+function trajKindLabel(r) {
+  const dir = trajA2ADir(r);
+  if (dir === 'in') return 'A2A 收';
+  if (dir === 'out') return 'A2A 发';
+  return TRAJ_KIND_LABEL[r.kind] || r.kind;
+}
 
 function trajFmtTok(n) {
   if (!n) return '0';
@@ -288,7 +320,7 @@ function trajIsCollapsed(turn) {
 function trajRecordSearchText(r) {
   if (r._search == null) {
     r._search = [
-      r.summary, r.text, r.thinking, r.toolName,
+      r.summary, r.text, r.thinking, r.toolName, r.body,
       r.toolInput ? JSON.stringify(r.toolInput) : '', r.toolResult,
     ].filter(Boolean).join('\n').toLowerCase();
   }
@@ -297,7 +329,8 @@ function trajRecordSearchText(r) {
 
 function trajBuildRecordEl(r) {
   const el = document.createElement('div');
-  el.className = `traj-rec traj-kind-${r.kind}${r.isError ? ' traj-error' : ''}`;
+  const a2aDir = trajA2ADir(r);
+  el.className = `traj-rec traj-kind-${r.kind}${a2aDir ? ` traj-a2a traj-a2a-${a2aDir}` : ''}${r.isError ? ' traj-error' : ''}`;
   el.dataset.rid = r.id;
   el.dataset.kind = r.kind;
 
@@ -313,7 +346,7 @@ function trajBuildRecordEl(r) {
     `<span class="traj-kind"></span>` +
     `<span class="traj-summary"></span>` +
     `<span class="traj-rec-meta">${meta.join(' · ')}</span>`;
-  head.querySelector('.traj-kind').textContent = TRAJ_KIND_LABEL[r.kind] || r.kind;
+  head.querySelector('.traj-kind').textContent = trajKindLabel(r);
   head.querySelector('.traj-summary').textContent = r.summary || '';
   head.title = r.summary || '';
   head.onclick = () => trajSelectRecord(r);
@@ -376,7 +409,8 @@ function trajRenderDetailHeader(r) {
   const { turn, step } = trajLocateRecord(r);
   const turnLabel = turn ? (turn.n === 0 ? '系统初始化' : `第 ${turn.n} 轮`) : '';
   const stepLabel = step ? `第 ${step} 步` : '';
-  const role = TRAJ_KIND_LABEL[r.kind] || r.kind;
+  const role = trajRecordRole(r);
+  const roleLabel = trajKindLabel(r);
   const metaLines = [];
   if (r.durMs != null && r.durMs > 0) metaLines.push(`耗时 ${fmtDuration(r.durMs)}`);
   if (r.usage) metaLines.push(trajUsageText(r.usage));
@@ -386,7 +420,7 @@ function trajRenderDetailHeader(r) {
   if (r.toolName) metaLines.push(`工具 ${r.toolName}`);
   hdr.innerHTML =
     `<div class="traj-dh-title">${turnLabel} · ${stepLabel}</div>` +
-    `<div class="traj-dh-role r-${r.kind}"><span class="traj-dot"></span>${role}</div>` +
+    `<div class="traj-dh-role r-${role}"><span class="traj-dot"></span>${roleLabel}</div>` +
     (metaLines.length ? `<div class="traj-dh-meta">${metaLines.map((t) => `<div>${t}</div>`).join('')}</div>` : '');
 }
 
@@ -430,6 +464,21 @@ function trajDetailSummary(r) {
       det.appendChild(sec);
     }
   } else if (r.kind === 'tool') {
+    // 出站 A2A：正文按 md 展示（与对话流的发送卡片同一语义），投递回执在下面
+    if (trajA2ADir(r) === 'out' && r.toolInput && typeof r.toolInput.message === 'string') {
+      const to = String(r.toolInput.to || '');
+      const sec = document.createElement('div');
+      sec.className = 'traj-sec traj-peer';
+      const label = document.createElement('div');
+      label.className = 'traj-sec-label';
+      label.textContent = to ? `发送给 ${to}` : '发送';
+      sec.appendChild(label);
+      const mdEl = document.createElement('div');
+      mdEl.className = 'traj-md';
+      mdEl.innerHTML = md(r.toolInput.message, { artifacts: false });
+      sec.appendChild(mdEl);
+      det.appendChild(sec);
+    }
     if (r.toolResult) trajAddSec(det, r.isError ? '结果（错误）' : '结果', r.toolResult, r.isError ? 'traj-err' : '');
   } else if (r.kind === 'user') {
     trajAddSec(det, '内容', r.text);
@@ -607,7 +656,7 @@ function trajApplyFilter(scope) {
     let anyHit = false;
     let anyVisible = false;
     for (const r of turn.records) {
-      const kindHidden = !traj.kindFilter.has(r.kind);
+      const kindHidden = !traj.kindFilter.has(trajRecordRole(r));
       const el = turn.bodyEl.querySelector(`[data-rid="${r.id}"]`);
       if (!el) continue;
       el.classList.toggle('kind-hidden', kindHidden);
