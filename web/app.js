@@ -2496,6 +2496,299 @@ function boardDrawerLine(container, label, value, linkHref) {
   container.append(row);
 }
 
+let boardDrawerPane = 'overview';
+let boardDrawerPaneTaskId = null;
+let boardTimelineFilter = 'all';
+
+function boardShowPane(name) {
+  boardDrawerPane = name;
+  document.querySelectorAll('.board-drawer-tab').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.boardPane === name);
+  });
+  ['overview', 'timeline', 'links', 'raw'].forEach((pane) => {
+    const el = $('#board-pane-' + pane);
+    if (el) el.classList.toggle('hidden', pane !== name);
+  });
+}
+
+function boardCopyText(text, button) {
+  if (!text) return;
+  const done = () => {
+    if (!button) return;
+    const old = button.textContent;
+    button.textContent = '已复制';
+    setTimeout(() => { button.textContent = old; }, 1200);
+  };
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(String(text)).then(done).catch(() => {});
+  } else {
+    done();
+  }
+}
+
+function boardCopyButton(text, label = '复制') {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'board-copy-btn';
+  button.textContent = label;
+  button.onclick = (e) => {
+    e.stopPropagation();
+    boardCopyText(text, button);
+  };
+  return button;
+}
+
+function boardPaneRow(label, value, copyValue) {
+  const row = document.createElement('div');
+  row.className = 'board-pane-row';
+  const key = document.createElement('span');
+  key.className = 'board-pane-key';
+  key.textContent = label;
+  const val = document.createElement('span');
+  val.className = 'board-pane-value' + (copyValue ? ' mono' : '');
+  val.textContent = value || '—';
+  val.title = value || '';
+  row.append(key, val);
+  if (copyValue) row.append(boardCopyButton(copyValue));
+  return row;
+}
+
+function boardTaskEvents(task) {
+  let events = Array.isArray(task.timeline) ? task.timeline.slice() : [];
+  if (!events.length && task.progress) {
+    events = [{ at: task.updated_at || '', kind: '最近进度', text: task.progress }];
+  }
+  return events;
+}
+
+function boardTaskAge(events) {
+  const stamps = events.map((e) => e.at).filter(Boolean).sort();
+  if (!stamps.length) return '—';
+  const start = new Date(stamps[0].replace(' ', 'T'));
+  if (Number.isNaN(start.getTime())) return '—';
+  const mins = Math.max(0, Math.round((Date.now() - start.getTime()) / 60000));
+  if (mins < 60) return mins + ' 分钟';
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return hours + ' 小时';
+  return Math.floor(hours / 24) + ' 天';
+}
+
+function boardStatusCallout(task) {
+  const status = task.status || '';
+  const map = {
+    '待人工': { cls: 'warn', title: '需要你处理', fallback: '等待用户拍板、补信息或提供权限。' },
+    '待验收': { cls: 'warn', title: '等待你验收', fallback: '确认无误后可将任务置为已完成。' },
+    '进行中': { cls: 'info', title: '正在执行', fallback: 'worker 执行中。' },
+    '已完成': { cls: 'ok', title: '已完成', fallback: '任务已完成。' },
+    '已取消': { cls: 'muted', title: '已取消', fallback: '任务已取消。' },
+    '新建': { cls: 'info', title: '待开始', fallback: '任务尚未派工。' },
+  };
+  const info = map[status] || { cls: 'info', title: status || '任务', fallback: '' };
+  return { ...info, text: task.status_reason || task.progress || info.fallback };
+}
+
+function boardRenderOverview(task) {
+  const callout = $('#board-drawer-callout');
+  if (callout) {
+    const info = boardStatusCallout(task);
+    callout.className = 'board-callout ' + info.cls;
+    callout.innerHTML = '';
+    const title = document.createElement('div');
+    title.className = 'board-callout-title';
+    title.textContent = info.title;
+    const text = document.createElement('div');
+    text.className = 'board-callout-text';
+    text.textContent = info.text;
+    callout.append(title, text);
+  }
+
+  const agent = $('#board-drawer-agent');
+  if (agent) {
+    agent.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'board-agent-head';
+    const avatar = document.createElement('span');
+    avatar.className = 'board-agent-avatar';
+    avatar.textContent = (task.worker || '未').slice(0, 1);
+    const name = document.createElement('span');
+    name.className = 'board-agent-name';
+    name.textContent = task.worker || '未派工';
+    head.append(avatar, name);
+    if (task.session) head.append(boardCopyButton(task.session, '复制会话'));
+    agent.append(head);
+    agent.append(boardPaneRow('会话', task.session || '—', task.session));
+    agent.append(boardPaneRow('工作目录', task.cwd || '—', task.cwd));
+    agent.append(boardPaneRow('更新时间', task.updated_at || '—'));
+    agent.append(boardPaneRow('最近事件', task.last_event || '—'));
+  }
+
+  const artifacts = $('#board-drawer-artifacts');
+  if (artifacts) {
+    artifacts.innerHTML = '';
+    if (task.report_file) {
+      const item = document.createElement('div');
+      item.className = 'board-artifact';
+      const icon = document.createElement('span');
+      icon.className = 'board-artifact-icon';
+      icon.textContent = '文';
+      const main = document.createElement('div');
+      main.className = 'board-artifact-main';
+      const title = document.createElement('div');
+      title.className = 'board-artifact-title';
+      title.textContent = '验证/进展报告';
+      const path = document.createElement('div');
+      path.className = 'board-artifact-path';
+      path.textContent = task.report_file;
+      path.title = task.report_file;
+      main.append(title, path);
+      item.append(icon, main, boardCopyButton(task.report_file, '复制路径'));
+      artifacts.append(item);
+    } else {
+      artifacts.append(boardMuted('暂无产物'));
+    }
+  }
+
+  const meta = $('#board-drawer-meta');
+  if (meta) {
+    meta.innerHTML = '';
+    boardDrawerLine(meta, '状态', task.status);
+    boardDrawerLine(meta, '项目', task.project);
+    boardDrawerLine(meta, '负责人', task.owner || '未指派');
+  }
+
+  const stats = $('#board-drawer-stats');
+  if (stats) {
+    const events = boardTaskEvents(task);
+    const replies = events.filter((e) => e.kind === '主 Agent 回复').length;
+    const users = events.filter((e) => e.kind === '用户消息').length;
+    stats.innerHTML = '';
+    [['事件', events.length], ['主 Agent 回复', replies], ['用户消息', users],
+     ['存续', boardTaskAge(events)]].forEach(([label, value]) => {
+      const box = document.createElement('div');
+      box.className = 'board-stat';
+      const num = document.createElement('b');
+      num.textContent = String(value);
+      const name = document.createElement('span');
+      name.textContent = label;
+      box.append(num, name);
+      stats.append(box);
+    });
+  }
+}
+
+function boardMuted(text) {
+  const el = document.createElement('div');
+  el.className = 'board-pane-muted';
+  el.textContent = text;
+  return el;
+}
+
+function boardRenderTimeline(task) {
+  const timeline = $('#board-drawer-timeline');
+  const filters = $('#board-drawer-filters');
+  if (!timeline || !filters) return;
+  const events = boardTaskEvents(task);
+  const count = $('#board-drawer-timeline-count');
+  if (count) count.textContent = String(events.length);
+  if (!events.length) {
+    filters.innerHTML = '';
+    timeline.innerHTML = '';
+    timeline.append(boardMuted('暂无时间线'));
+    return;
+  }
+  const order = ['主 Agent 回复', '用户消息', '最近回报', '路由事件', '建卡', '最近进度'];
+  const present = order.filter((kind) => events.some((e) => e.kind === kind));
+  const extra = events.map((e) => e.kind).filter((k) => k && !order.includes(k));
+  const kinds = present.concat([...new Set(extra)]);
+  filters.innerHTML = '';
+  const all = { key: 'all', label: '全部', count: events.length };
+  const entries = [all].concat(kinds.map((kind) => ({
+    key: kind, label: kind, count: events.filter((e) => e.kind === kind).length,
+  })));
+  entries.forEach((entry) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'board-filter-chip' + (boardTimelineFilter === entry.key ? ' active' : '');
+    chip.textContent = `${entry.label} ${entry.count}`;
+    chip.onclick = () => {
+      boardTimelineFilter = entry.key;
+      boardRenderTimeline(task);
+    };
+    filters.append(chip);
+  });
+
+  timeline.innerHTML = '';
+  events.forEach((event) => {
+    if (boardTimelineFilter !== 'all' && event.kind !== boardTimelineFilter) return;
+    const isUser = event.kind === '用户消息';
+    const row = document.createElement('div');
+    row.className = 'board-drawer-event' + (isUser ? ' board-event-user' : '');
+    const at = document.createElement('span');
+    at.className = 'board-drawer-event-at';
+    at.textContent = event.at || '';
+    const kind = document.createElement('span');
+    kind.className = 'board-drawer-event-kind' + (isUser ? ' kind-user' : '');
+    kind.textContent = event.kind || '事件';
+    const text = document.createElement('div');
+    text.className = 'board-drawer-event-text';
+    text.textContent = event.text || '';
+    row.append(at, kind, text);
+    timeline.append(row);
+  });
+}
+
+function boardRenderLinks(task) {
+  const links = $('#board-drawer-links');
+  if (!links) return;
+  links.innerHTML = '';
+  let count = 0;
+  const addItem = (title, value, kind, href) => {
+    if (!value) return;
+    count += 1;
+    const item = document.createElement('div');
+    item.className = 'board-link-item';
+    const icon = document.createElement('span');
+    icon.className = 'board-link-icon';
+    icon.textContent = kind;
+    const main = document.createElement('div');
+    main.className = 'board-link-main';
+    const name = document.createElement('div');
+    name.className = 'board-link-title';
+    name.textContent = title;
+    const sub = document.createElement('div');
+    sub.className = 'board-link-sub';
+    sub.textContent = value;
+    sub.title = value;
+    main.append(name, sub);
+    item.append(icon, main);
+    if (href) {
+      const a = document.createElement('a');
+      a.className = 'board-link-open';
+      a.href = href;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = '打开';
+      item.append(a);
+    } else {
+      item.append(boardCopyButton(value));
+    }
+    links.append(item);
+  };
+  addItem('任务 id', task.id, 'ID');
+  addItem('验证/进展报告', task.report_file, '文');
+  addItem('iCafe 卡片', task.icafe_id, '卡', task.url || '');
+  addItem('会话 id', task.session, '会');
+  addItem('工作目录', task.cwd, '目录');
+  if (!count) links.append(boardMuted('暂无可关联内容'));
+  const countEl = $('#board-drawer-links-count');
+  if (countEl) countEl.textContent = String(count);
+}
+
+function boardRenderRaw(task) {
+  const raw = $('#board-drawer-raw');
+  if (raw) raw.textContent = JSON.stringify(task, null, 2);
+}
+
 function boardCloseDrawer() {
   state.boardSelectedId = null;
   const drawer = $('#board-drawer');
@@ -2529,51 +2822,17 @@ function boardOpenDrawer(task) {
     $('#board-drawer-title').after(drawerTags);
   }
 
-  const meta = $('#board-drawer-meta');
-  meta.innerHTML = '';
-  boardDrawerLine(meta, '状态', task.status);
-  boardDrawerLine(meta, '项目', task.project);
-  boardDrawerLine(meta, '负责人', task.owner);
-  boardDrawerLine(meta, 'worker', task.worker);
-  boardDrawerLine(meta, '会话', task.session);
-  boardDrawerLine(meta, 'cwd', task.cwd);
-  boardDrawerLine(meta, '更新时间', task.updated_at);
-  boardDrawerLine(meta, '最近事件', task.last_event);
-  boardDrawerLine(meta, '报告', task.report_file);
-  // 只有真正关联 iCafe 的任务才给入口；本地任务没有 icafe_id。
-  if (task.icafe_id && task.url) {
-    boardDrawerLine(meta, 'iCafe', '在 iCafe 打开', task.url);
+  const changed = boardDrawerPaneTaskId !== (task.id || '');
+  if (changed) {
+    boardDrawerPaneTaskId = task.id || '';
+    boardDrawerPane = 'overview';
+    boardTimelineFilter = 'all';
   }
-
-  const timeline = $('#board-drawer-timeline');
-  timeline.innerHTML = '';
-  let events = Array.isArray(task.timeline) ? task.timeline : [];
-  if (!events.length && task.progress) {
-    events = [{ at: task.updated_at || '', kind: '最近进度', text: task.progress }];
-  }
-  if (!events.length) {
-    const none = document.createElement('div');
-    none.className = 'board-card-meta';
-    none.textContent = '暂无时间线';
-    timeline.append(none);
-  } else {
-    events.forEach((event) => {
-      const isUser = event.kind === '用户消息';
-      const row = document.createElement('div');
-      row.className = 'board-drawer-event' + (isUser ? ' board-event-user' : '');
-      const at = document.createElement('span');
-      at.className = 'board-drawer-event-at';
-      at.textContent = event.at || '';
-      const kind = document.createElement('span');
-      kind.className = 'board-drawer-event-kind' + (isUser ? ' kind-user' : '');
-      kind.textContent = event.kind || '事件';
-      const text = document.createElement('div');
-      text.className = 'board-drawer-event-text';
-      text.textContent = event.text || '';
-      row.append(at, kind, text);
-      timeline.append(row);
-    });
-  }
+  boardRenderOverview(task);
+  boardRenderTimeline(task);
+  boardRenderLinks(task);
+  boardRenderRaw(task);
+  boardShowPane(boardDrawerPane);
   $('#board-drawer-mask').classList.add('open');
   $('#board-drawer').classList.add('open');
 }
@@ -2681,6 +2940,9 @@ async function boardSendToMain() {
 (() => {
   const input = $('#board-composer-input');
   const send = $('#board-composer-send');
+  document.querySelectorAll('.board-drawer-tab').forEach((btn) => {
+    btn.addEventListener('click', () => boardShowPane(btn.dataset.boardPane));
+  });
   if (!input || !send) return;
   send.addEventListener('click', boardSendToMain);
   input.addEventListener('keydown', (e) => {

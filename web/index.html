@@ -193,9 +193,41 @@
             <button id="board-drawer-close" class="icon-btn" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
           </div>
           <h3 id="board-drawer-title" class="board-drawer-title"></h3>
-          <div id="board-drawer-meta" class="board-drawer-meta"></div>
-          <div class="board-drawer-section-title">任务流</div>
-          <div id="board-drawer-timeline" class="board-drawer-timeline"></div>
+          <div id="board-drawer-tabs" class="board-drawer-tabs" role="tablist">
+            <button class="board-drawer-tab active" data-board-pane="overview" role="tab">概览</button>
+            <button class="board-drawer-tab" data-board-pane="timeline" role="tab">任务流 <span id="board-drawer-timeline-count" class="board-drawer-tab-count"></span></button>
+            <button class="board-drawer-tab" data-board-pane="links" role="tab">关联 <span id="board-drawer-links-count" class="board-drawer-tab-count"></span></button>
+            <button class="board-drawer-tab" data-board-pane="raw" role="tab">原始数据</button>
+          </div>
+          <section id="board-pane-overview" class="board-drawer-pane">
+            <div id="board-drawer-callout" class="board-callout"></div>
+            <div class="board-pane-section">
+              <div class="board-pane-title">执行主体</div>
+              <div id="board-drawer-agent" class="board-pane-card"></div>
+            </div>
+            <div class="board-pane-section">
+              <div class="board-pane-title">产物与证据</div>
+              <div id="board-drawer-artifacts" class="board-pane-card"></div>
+            </div>
+            <div class="board-pane-section">
+              <div class="board-pane-title">基础信息</div>
+              <div id="board-drawer-meta" class="board-drawer-meta"></div>
+            </div>
+            <div class="board-pane-section">
+              <div class="board-pane-title">任务概况</div>
+              <div id="board-drawer-stats" class="board-stats"></div>
+            </div>
+          </section>
+          <section id="board-pane-timeline" class="board-drawer-pane hidden">
+            <div id="board-drawer-filters" class="board-drawer-filters"></div>
+            <div id="board-drawer-timeline" class="board-drawer-timeline"></div>
+          </section>
+          <section id="board-pane-links" class="board-drawer-pane hidden">
+            <div id="board-drawer-links" class="board-drawer-links"></div>
+          </section>
+          <section id="board-pane-raw" class="board-drawer-pane hidden">
+            <pre id="board-drawer-raw" class="board-drawer-raw"></pre>
+          </section>
           <div id="board-drawer-composer" class="board-drawer-composer">
             <div id="board-composer-status" class="board-composer-status hidden" role="status" aria-live="polite"></div>
             <div class="board-composer-box">
