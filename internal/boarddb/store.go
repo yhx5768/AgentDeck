@@ -759,7 +759,10 @@ func (s *Store) taskEvents(taskID string) ([]map[string]any, error) {
 }
 
 func (s *Store) Snapshot() (map[string]any, error) {
-	rows, err := s.db.Query(taskSelect + " ORDER BY updated_at DESC")
+	// Archived tasks are hidden from the board (and its counts) — the read-only
+	// UI has no "show archived" toggle, so surfacing them only inflates the
+	// columns and status counts.
+	rows, err := s.db.Query(taskSelect + " WHERE archived=0 ORDER BY updated_at DESC")
 	if err != nil {
 		return nil, err
 	}

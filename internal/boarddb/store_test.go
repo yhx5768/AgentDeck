@@ -329,3 +329,44 @@ func TestBackupAndReopen(t *testing.T) {
 		t.Fatalf("title = %v", task["title"])
 	}
 }
+
+// TestSnapshotExcludesArchived: an archived task must not appear on the board
+// or in its status counts (the read-only UI has no way to show/hide archived).
+func TestSnapshotExcludesArchived(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "board.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if _, err := st.CreateTask(map[string]any{
+		"id": "T-live", "title": "活跃", "status": "进行中", "project": "p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateTask(map[string]any{
+		"id": "T-arch", "title": "归档", "status": "已完成", "project": "p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpdateTask("T-arch", map[string]any{"archived": true}); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := st.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := snap["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("snapshot tasks = %d, want 1 (archived hidden): %+v", len(tasks), tasks)
+	}
+	counts, _ := snap["counts"].(map[string]int)
+	if counts["已完成"] != 0 {
+		t.Fatalf("counts[已完成] = %d, want 0", counts["已完成"])
+	}
+	if counts["进行中"] != 1 {
+		t.Fatalf("counts[进行中] = %d, want 1", counts["进行中"])
+	}
+}
