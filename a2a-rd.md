@@ -99,6 +99,26 @@ Another agent session sent you a message. It is not from the user; ...
 `CC_WEBUI_A2A_SESSION`，代理据此把 `from` 默认成该会话地址。opencode/mcode 是共享
 配置、没有 per-session env，所以由调用方显式传 `from`（角色提示里写明自己的地址）。
 
+### 5.4 看板工具（仅主 Agent）
+
+主 Agent 需要维护「看板」卡片，所以同一台 agentdeck MCP 服务器还带一组看板工具：
+`board_list` / `board_get` / `board_create` / `board_update` / `board_comment` /
+`board_bind_worker`（映射到既有的 `/api/agent-board/*` handler）。
+
+**只在主 Agent 会话里暴露**，两层保证：
+
+- **注入面**：`agentdeckMCPInfo(sessionID)` 当该会话 `main_agent` 为真时，往 MCP 环境里
+  加 `CC_WEBUI_A2A_BOARD=1`；stdio 代理读这个 env，只有置位时 `tools/list` 才把
+  `a2a.BoardTools` 追加进工具表。worker 的工具表因此完全看不到看板工具。
+- **调用面**：`/api/internal/agentdeck/mcp` 收到看板工具调用时，用 `requireMainAgent`
+  **再查一次**调用会话的 `main_agent` 标记（`sessionID` 为空或非主 Agent 一律拒绝），
+  所以即使有客户端硬猜工具名也写不进看板。
+
+看板数据是 `<data_dir>/agent-board.db`（SQLite）。**注意**：本机没有迁移来源
+（`agent-board.local.json` / reading 工作区的 routing-table），所以看板初始为空——主
+Agent 用上面的工具建卡即可。归档的任务（`board_update {archived:true}`）不出现在
+`Snapshot()` 与计数里。
+
 ## 6. opencode 作为主 Agent
 
 ### 6.1 地址名

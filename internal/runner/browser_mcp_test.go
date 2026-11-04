@@ -152,6 +152,43 @@ func TestAgentdeckMCPInfo(t *testing.T) {
 	}
 }
 
+func TestAgentdeckMCPInfoBoardFlag(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	st, err := store.Open(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := config.NewManager("", &config.Config{Listen: "127.0.0.1:8321", GatewayToken: "tok", DataDir: dir})
+	m := NewManager(cm, st)
+	if err := st.Upsert(&store.Session{ID: "main", MainAgent: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Upsert(&store.Session{ID: "worker"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Board tools ride the agentdeck server, gated by this env.
+	if env := mustAgentdeckEnv(t, m, "main"); env["CC_WEBUI_A2A_BOARD"] != "1" {
+		t.Fatalf("main agent must get the board flag: %#v", env)
+	}
+	if env := mustAgentdeckEnv(t, m, "worker"); env["CC_WEBUI_A2A_BOARD"] != "" {
+		t.Fatalf("worker must not get the board flag: %#v", env)
+	}
+	if env := mustAgentdeckEnv(t, m, ""); env["CC_WEBUI_A2A_BOARD"] != "" {
+		t.Fatalf("shared config must not get the board flag: %#v", env)
+	}
+}
+
+func mustAgentdeckEnv(t *testing.T, m *Manager, sessionID string) map[string]string {
+	t.Helper()
+	info, ok := m.agentdeckMCPInfo(sessionID)
+	if !ok {
+		t.Fatalf("agentdeckMCPInfo(%q) not ok", sessionID)
+	}
+	return info.Env
+}
+
 func TestAgentdeckMCPDisabled(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

@@ -79,6 +79,88 @@ var Tools = []Tool{
 	},
 }
 
+// BoardTools are the main-agent board tools. They are appended to Tools only
+// when the spawning session is the workspace main agent (env
+// CC_WEBUI_A2A_BOARD=1), so a worker's tool list stays lean and a worker can
+// never write the board even if it guesses a tool name — the server re-checks
+// the caller's main_agent flag on every call.
+var BoardTools = []Tool{
+	{
+		Name:        "board_list",
+		Description: "List the main-agent board tasks (cards): id, title, status, project, worker, tags, progress and last event. Optionally filter by project or status.",
+		InputSchema: obj(map[string]any{
+			"project": str("Only tasks in this project."),
+			"status":  str("Only tasks with this status."),
+		}),
+	},
+	{
+		Name:        "board_get",
+		Description: "Fetch one board task with its full event timeline.",
+		InputSchema: obj(map[string]any{"id": str("Task id.")}, "id"),
+	},
+	{
+		Name:        "board_create",
+		Description: "Create a board task (a card). Title is required; id defaults to a timestamp id. Returns the created task.",
+		InputSchema: obj(map[string]any{
+			"title":       str("Task title (required)."),
+			"id":          str("Explicit task id (optional; default T-<timestamp>)."),
+			"project":     str("Project / workspace name."),
+			"status":      str("Initial status; defaults to 新建."),
+			"worker":      str("Bound worker address name."),
+			"description": str("Longer description."),
+			"owner":       str("Owner."),
+			"progress":    str("Progress text."),
+			"cwd":         str("Workspace directory."),
+			"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags."},
+			"priority":    map[string]any{"type": "integer", "description": "Priority (1 high … 3 low; default 2)."},
+		}, "title"),
+	},
+	{
+		Name:        "board_update",
+		Description: "Update a board task's fields. Use this to move a card's status, set progress, or archive it.",
+		InputSchema: obj(map[string]any{
+			"id":            str("Task id (required)."),
+			"status":        str("New status (新建 / 进行中 / 待人工 / 待验收 / 已完成 / 已取消)."),
+			"progress":      str("Progress text."),
+			"last_event":    str("One-line summary of the latest event."),
+			"status_reason": str("Reason for the current status."),
+			"worker":        str("Bound worker address name."),
+			"archived":      map[string]any{"type": "boolean", "description": "Archive (hide from the board)."},
+		}, "id"),
+	},
+	{
+		Name:        "board_comment",
+		Description: "Append one event/comment line to a task's timeline (dispatch, report, decision, done, cancel, reassign). Idempotent on (kind, text, at).",
+		InputSchema: obj(map[string]any{
+			"id":     str("Task id (required)."),
+			"text":   str("Comment text (required)."),
+			"kind":   str("Event kind; defaults to 用户消息."),
+			"at":     str("Timestamp 'YYYY-MM-DD HH:MM:SS'; defaults to now."),
+			"source": str("Source label; defaults to drawer."),
+		}, "id", "text"),
+	},
+	{
+		Name:        "board_bind_worker",
+		Description: "Bind a worker (session / address name) to a board task.",
+		InputSchema: obj(map[string]any{
+			"id":      str("Task id (required)."),
+			"worker":  str("Worker address name (required)."),
+			"session": str("Worker session id."),
+			"cwd":     str("Worker workspace directory."),
+		}, "id", "worker"),
+	},
+}
+
+// IsBoardTool reports whether name is one of the main-agent-only board tools.
+func IsBoardTool(name string) bool {
+	for _, t := range BoardTools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Content is one MCP content block.
 type Content struct {
 	Type string `json:"type"`
@@ -133,7 +215,13 @@ func RunMCPProxy() {
 		case "ping":
 			writeRPC(out, req.ID, map[string]any{}, nil)
 		case "tools/list":
-			writeRPC(out, req.ID, map[string]any{"tools": Tools}, nil)
+			tools := Tools
+			if os.Getenv("CC_WEBUI_A2A_BOARD") != "" {
+				// Main-agent-only board tools ride the same server; the env is set
+				// only when the spawning session is the workspace main agent.
+				tools = append(append(make([]Tool, 0, len(Tools)+len(BoardTools)), Tools...), BoardTools...)
+			}
+			writeRPC(out, req.ID, map[string]any{"tools": tools}, nil)
 		case "tools/call":
 			result, err := postMCP(client, addr, token, session, req.Params)
 			if err != nil {

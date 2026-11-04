@@ -137,7 +137,7 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
   - **禁用面**（服务端 400 / 前端隐藏）：resident **进程**、rewind/checkpoint、fork。**A2A（peer 消息）可用**——地址名引擎中立、投递走 `/api/a2a/send` 排一轮；codex/ducx 的 agentdeck MCP 走 `-c mcp_servers.agentdeck.*`（见 `a2a-rd.md`）。工作区变更不迁移 transcript（rollout 按 home 存，不在工作区）。
   - **`codex debug models --bundled` 的副作用**：输出 ~650 KB；只解析需要的几个字段。CLI 太老不支持该子命令时目录接口报错，前端退回 config 的静态 models（`modelKnown` 也跳过校验，让 CLI 自己报错）。
 
-- **opencode 的 agentdeck MCP 与角色提示**（见 `a2a-rd.md`）：都只写进**per-session** 隔离配置（共享 base 不碰 `mcp`）。`opencodeConfigScope(sess)` 在 `MainAgent` / `peer_name` / `Resident` / 非空 `role_prompt` / browser 时返回 session id → 该会话走 `ensureOpencodeRuleFor(sid)` 并独占一个 serve（serveKey 带 `scope=<sid>`）。per-session `opencode.json` 里：`instructions`（HTML hint + `ROLE_PROMPT.md`）、`mcp.servers.agentdeck`（+ `browser`）。`send_message` 的 `from` 由 MCP 代理从 `CC_WEBUI_A2A_SESSION` 默认成该会话地址。**别把 `mcp` 写进共享 base**——同名键后者覆盖，会盖掉用户自己的 mcp（有测试 `TestEnsureOpencodeRuleConfigIsMinimal` 钉住 base）。
+- **opencode 的 agentdeck MCP 与角色提示**（见 `a2a-rd.md`）：都只写进**per-session** 隔离配置（共享 base 不碰 `mcp`）。`opencodeConfigScope(sess)` 在 `MainAgent` / `peer_name` / `Resident` / 非空 `role_prompt` / browser 时返回 session id → 该会话走 `ensureOpencodeRuleFor(sid)` 并独占一个 serve（serveKey 带 `scope=<sid>`）。per-session `opencode.json` 里：`instructions`（HTML hint + `ROLE_PROMPT.md`）、`mcp.servers.agentdeck`（+ `browser`）。`send_message` 的 `from` 由 MCP 代理从 `CC_WEBUI_A2A_SESSION` 默认成该会话地址。**别把 `mcp` 写进共享 base**——同名键后者覆盖，会盖掉用户自己的 mcp（有测试 `TestEnsureOpencodeRuleConfigIsMinimal` 钉住 base）。**看板工具（`board_*`）只在主 Agent 暴露**：`agentdeckMCPInfo` 对该会话加 env `CC_WEBUI_A2A_BOARD=1`，代理据此把 `a2a.BoardTools` 追加进 `tools/list`，服务端再按 `main_agent` 复核（见 §15）。
 - **OpenCode 2（破坏性重写）走独立实现，按二进制版本自动分派**：v2 的 server API / CLI / 事件词汇全是另一套（`/api/session`、Basic auth、`session.execution.*`），安装器又覆盖同一个路径，所以 `internal/opencodever` 跑 `<path> --version` 识别（按 path+mtime 缓存，config 可用 `opencode_api: auto|v1|v2` 强制），`internal/opencodev2` 是完整第二套：读取层（`session list/export`、`api model.list`，一律带 `--standalone`，不碰用户的共享后台服务）+ 实况层（`opencode serve` + Basic auth，密码从 serve stdout 的 `server password …` 解析）。分派点在 `server/opencode_v2.go`（回放/导入/列表/预览/模型目录）与 `runner`（`runOpenCodeTurnV2`、`RewindOpenCode`）。
   - **v2 事件词汇**：轮次边界是 `session.execution.succeeded|failed|interrupted`（不是 v1 的 `session.status` idle）；文本/思考分开命名（`session.text.*` / `session.reasoning.*`），v1 那个「reasoning delta 和正文长得一样」的坑不存在；工具是 `session.tool.called/success/failed`；token 在 `session.step.ended`；权限是 `permission.asked`（session 作用域，`{decision: once|always|reject}`）；提问换成 **form**（`form.created` / form.reply，`{answer:{key:value}}`），v2 没有 question 工具。
   - **v2 回放**：`session export <sid> --standalone` 的 message 是 projected 形状（assistant `content[]` 分 text/reasoning/tool，带 `tokens` 与每 part/工具时间戳），`opencodev2.ToEvents` 转成与 v1 完全相同的 canonical 事件；user 文本是裸 text（不再有 v1 的回显双引号）。读取层枚举用 `api session.list --standalone`（一次拿全项目，不再需要 v1 的 `opencode db` SELECT）。
@@ -263,11 +263,21 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **UI**：机器人面板（`#btn-resident` / `#resident-pop`）里加「作为主 Agent」开关——打开写 `main_agent:true` + 默认提示（已有自定义内容时先 `confirm` 覆盖），关闭只清 `main_agent`，仅当 role_prompt 仍等于默认提示时才清空；地址名不是 `mainAgent` 时只提示并给一个**用户显式点击**的改名按钮（改名会重启常驻，不能静默做），已有其他 main_agent 时也提示（允许多个）。**面板对所有引擎开放**（`setEngineUI` 不再按引擎隐藏 📡）：地址名 / 主 Agent 引擎中立，只有「常驻进程」开关行（`#resident-toggle-row`）按引擎显隐，非 claude 的状态行显示地址名、hint 讲 A2A（`scripts/frontend-tests/resident_panel.test.js` 钉住）。侧栏 `#main-agents` 头像条（`renderMainAgents`，由 `renderSessionList` 驱动）：无 main_agent 时整条隐藏，多个全显示（常驻优先），头像含首字/未读角标/常驻绿圈/运行光晕，点击 `openSession`。composer 左侧 `#btn-role-prompt` 打开 `#modal-role-prompt`：文字字节计数（32768 上限）、保存/清空/「填入主 Agent 默认」（只填 textarea，不自动写库）；role prompt 编辑器对所有引擎开放，opencode 在弹窗里注明不注入。
 - AgentDeck skill：`new`/`set`/`run` 的 `--role-prompt` / `--role-prompt-file` 与 `--main-agent`（只打标记，不自动填提示），`get` 回显。用法约定：主 Agent 建 worker 时设置，worker 不改自己的角色提示。
 
+### 15. 看板（主 Agent 的任务卡）
+
+`data/agent-board.db`（SQLite，`internal/boarddb`）是主 Agent 的任务看板：一张卡 = 一个任务，状态走固定 `status_order`（新建 / 进行中 / 待人工 / 待验收 / 已完成 / 已取消），每张卡带 timeline（建卡 / 状态 / 评论等事件）。
+
+- **前端**（`web/app.js` 的 `board*` 函数 + `index.html` 的 `#board-view`）是**只读**视图，只在 `main_agent` 会话显示（`syncMainAgentTabs`）：按 `status_order` 分列、项目筛选、点卡开抽屉（overview/timeline/links/raw）。数据来自 `GET /api/agent-board`（快照），SSE `/api/agent-board/events` 变化即重取；`scripts/frontend-tests/board.test.js` 钉住渲染契约。
+- **写入口只有 `/api/agent-board/*`**（create / update / bind / append / backup）。主 Agent 用 **agentdeck MCP 的 `board_*` 工具**（`board_list` / `board_get` / `board_create` / `board_update` / `board_comment` / `board_bind_worker`，映射到这些 handler）；**只在 `main_agent` 会话暴露**——注入面 `agentdeckMCPInfo` 加 env `CC_WEBUI_A2A_BOARD=1` 让代理把 `a2a.BoardTools` 追加进 `tools/list`，服务端再用 `requireMainAgent` 复核（见 `a2a-rd.md` §5.4）。
+- **归档**：`board_update {archived:true}` 后任务不出现在 `Snapshot()` 与 counts（`boarddb.Snapshot` 过滤 `archived=0`），因为只读 UI 没有「显示归档」开关。
+- **迁移**：DB 首次创建时从 `<data_dir>/agent-board.local.json` + `defaultAgentBoardRoutingTable`（reading 工作区的 `routing-table.md`）导入一次；两个来源在本机都不存在 → 看板初始为空，靠主 Agent 建卡。**没有周期性同步**，写入只发生在 HTTP handler。
+- **别把它当权限**：`main_agent` 只是标记；服务端只对**看板工具**按它拦截（`requireMainAgent`），其余 `/api/*` 任何本地会话都能调。
+
 ## 后端包职责（`internal/`）
 
 | 包 | 职责 | 关键点 |
 |---|---|---|
-| `a2a` | 引擎中立的跨会话消息（A2A）：信封格式、agentdeck MCP 工具面 + stdio 代理 | 叶子包（只用标准库）；`Envelope`/`Parse`（`<cross-session-message>` 信封）、`Source`、`Tools`、`RunMCPProxy`（转发到回环 `/api/internal/agentdeck/mcp`）；见 `a2a-rd.md` |
+| `a2a` | 引擎中立的跨会话消息（A2A）：信封格式、agentdeck MCP 工具面 + stdio 代理 | 叶子包（只用标准库）；`Envelope`/`Parse`（`<cross-session-message>` 信封）、`Source`、`Tools`、`BoardTools`/`IsBoardTool`（仅主 Agent 的看板工具）、`RunMCPProxy`（转发到回环 `/api/internal/agentdeck/mcp`，按 env `CC_WEBUI_A2A_BOARD` 决定是否带上 `BoardTools`）；见 `a2a-rd.md` |
 | `config` | 配置加载、三层 env 合并、热加载 | `CLI.EffectiveEnv`；env 字段 `json:"-"` 不下发前端；空 token 自动生成；`Manager.Get` 读当前配置、`Watch` 轮询重载；`DiscoveredProviders`/`AllProviders`/`SetDiscoveredProviders`（运行时发现 provider，跨热加载保留，见 section 8）；`AgentdeckMCPEnabled`（`agentdeck_mcp`，nil = 开） |
 | `store` | sessions 元数据 + 事件日志持久化 | `Session`/`Event`；`AppendEvent`/`UpdateEvent`/`ReplaceEvents`/`Upsert`；事件懒加载进内存 |
 | `runner` | 引擎进程管理：队列、流解析、事件广播、停止、rewind、常驻进程 | `runTurn` 按 cli kind 分派 `runStreamJSONTurn`（claude + qoder 共用，argv 拼法由 `streamJSONDialect` 表达）/`runOpenCodeTurn`（**serve 面**：共享 `opencode serve` 进程 + SSE 事件流驱动，权限卡/提问卡在 `octurn.go` 里把 opencode 的 permission/question 事件映射到既有的卡面与 pending 注册表）/`runMcodeTurn`/`runCodexTurn`；`runResidentTurn` 长驻 stdin 写入；`Enqueue`（落盘 user 事件：text + source + `images` 文件名，图片本体由 server 落盘，见 §1）；`turnText`（附件路径 mention 拼装——存储事件、stdin 载荷、`captureCheckpoint` 匹配文本三处共用，改格式必须同步）；`captureCheckpoint`（claude 专用）；`RewindFiles`；`LockForRewind`/`UnlockFromRewind`；`EnsureResident`/`TeardownResident`/`RestoreResidents`/`ApplyPeerName`；pub/sub |
@@ -354,7 +364,7 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
 
 ## AgentDeck skill（`skills/agentdeck`）
 
-> **首选是 MCP，不是 skill**（见 `a2a-rd.md`）：cc-webui 现在把 agentdeck 的 MCP 服务器（`list_sessions` / `send_message` / `new_session` / `get_session` / `stop_session`）注入**所有五个引擎**的工具表（开关 `agentdeck_mcp`，缺省开）。模型直接调工具即可，不必读文档、拼 Bash、解析 stdout；出站 A2A 也因此能作为一等 tool_use 归入轨迹的 A2A 角色。下面的 skill/`agentdeck.py` 保留给**人**和脚本用（命令行全集、`doctor`、`--json`），以及无 MCP 的场景。
+> **首选是 MCP，不是 skill**（见 `a2a-rd.md`）：cc-webui 现在把 agentdeck 的 MCP 服务器（`list_sessions` / `send_message` / `new_session` / `get_session` / `stop_session`）注入**所有五个引擎**的工具表（开关 `agentdeck_mcp`，缺省开），并给**主 Agent** 额外注入看板工具（`board_list` / `board_get` / `board_create` / `board_update` / `board_comment` / `board_bind_worker`，见 §15）。模型直接调工具即可，不必读文档、拼 Bash、解析 stdout；出站 A2A 也因此能作为一等 tool_use 归入轨迹的 A2A 角色。下面的 skill/`agentdeck.py` 保留给**人**和脚本用（命令行全集、`doctor`、`--json`），以及无 MCP 的场景。
 
 给**本机其他 Agent**（Claude Code / opencode / mcode / codex…）用的一份 skill：让它们能直接驱动 AgentDeck 的 HTTP API——建会话（命名、选 cli/provider/model/effort/常驻）、发消息、等结果、改档、停止、归档、删除、分叉、回滚、群聊编排。建出来的会话走的是正常的 `store.Upsert` 路径，前端 5s 轮询 `/api/sessions` 就看见了，不需要任何额外通知机制。
 

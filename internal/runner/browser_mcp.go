@@ -91,6 +91,14 @@ func (m *Manager) agentdeckMCPInfo(sessionID string) (mcpServerConfig, bool) {
 	}
 	if sessionID != "" {
 		env["CC_WEBUI_A2A_SESSION"] = sessionID
+		// Board tools are main-agent only: the flag makes the proxy advertise
+		// them, and the server re-checks the caller's main_agent flag on every
+		// call. A worker's tool list therefore never carries the board tools.
+		if m.st != nil {
+			if sess := m.st.Get(sessionID); sess != nil && sess.MainAgent {
+				env["CC_WEBUI_A2A_BOARD"] = "1"
+			}
+		}
 	}
 	return mcpServerConfig{
 		Command: exe,

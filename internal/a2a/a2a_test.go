@@ -26,6 +26,19 @@ func TestParseRejectsPlainUserText(t *testing.T) {
 	}
 }
 
+func TestIsBoardTool(t *testing.T) {
+	for _, name := range []string{"board_list", "board_get", "board_create", "board_update", "board_comment", "board_bind_worker"} {
+		if !IsBoardTool(name) {
+			t.Fatalf("IsBoardTool(%q) = false", name)
+		}
+	}
+	for _, name := range []string{"list_sessions", "send_message", "board", ""} {
+		if IsBoardTool(name) {
+			t.Fatalf("IsBoardTool(%q) = true", name)
+		}
+	}
+}
+
 func TestParseToleratesSingleQuotes(t *testing.T) {
 	text := "preamble\n<cross-session-message from='worker-1'>\nhello\n</cross-session-message>\n"
 	from, body, ok := Parse(text)

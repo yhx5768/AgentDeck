@@ -91,6 +91,14 @@ func (s *Server) agentdeckToolCall(sessionID, name string, args map[string]any) 
 	if args == nil {
 		args = map[string]any{}
 	}
+	// Board tools are main-agent only — re-checked here so a worker (or any
+	// client that guesses a tool name) can never write the board.
+	if a2a.IsBoardTool(name) {
+		if err := s.requireMainAgent(sessionID); err != nil {
+			return "", err
+		}
+		return s.agentdeckBoardCall(name, args)
+	}
 	switch name {
 	case "list_sessions":
 		return s.a2aListSessionsJSON()
@@ -132,6 +140,120 @@ func (s *Server) agentdeckToolCall(sessionID, name string, args map[string]any) 
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+// requireMainAgent rejects board-tool calls from anything but the workspace
+// main agent (defence in depth: the proxy only advertises board tools to main
+// agents, but a caller could still guess a tool name).
+func (s *Server) requireMainAgent(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("看板工具仅主 Agent 可用")
+	}
+	if sess := s.st.Get(sessionID); sess == nil || !sess.MainAgent {
+		return fmt.Errorf("看板工具仅主 Agent 可用")
+	}
+	return nil
+}
+
+// agentdeckBoardCall dispatches the main-agent board tools onto the existing
+// board HTTP handlers, so validation/persistence stay single-sourced.
+func (s *Server) agentdeckBoardCall(name string, args map[string]any) (string, error) {
+	strArg := func(k string) string { v, _ := args[k].(string); return strings.TrimSpace(v) }
+	switch name {
+	case "board_list":
+		code, body := s.callHandler(s.handleAgentBoardDB, http.MethodGet, "/api/agent-board", nil, nil)
+		if code >= 400 {
+			return resultText(code, body, "")
+		}
+		return filterBoardTasks(body, strArg("project"), strArg("status"))
+	case "board_get":
+		id := strArg("id")
+		if id == "" {
+			return "", fmt.Errorf("board_get requires 'id'")
+		}
+		code, body := s.callHandler(s.handleAgentBoardGetTask, http.MethodGet, "/api/agent-board/tasks/"+id, nil, map[string]string{"id": id})
+		return resultText(code, body, "")
+	case "board_create":
+		if strArg("title") == "" {
+			return "", fmt.Errorf("board_create requires 'title'")
+		}
+		code, body := s.callHandler(s.handleAgentBoardCreateTask, http.MethodPost, "/api/agent-board/tasks", args, nil)
+		return resultText(code, body, "")
+	case "board_update":
+		id := strArg("id")
+		if id == "" {
+			return "", fmt.Errorf("board_update requires 'id'")
+		}
+		patch := map[string]any{}
+		for k, v := range args {
+			if k != "id" {
+				patch[k] = v
+			}
+		}
+		if len(patch) == 0 {
+			return "", fmt.Errorf("board_update requires at least one field to change")
+		}
+		code, body := s.callHandler(s.handleAgentBoardUpdateTask, http.MethodPatch, "/api/agent-board/tasks/"+id, patch, map[string]string{"id": id})
+		return resultText(code, body, "")
+	case "board_comment":
+		id, text := strArg("id"), strArg("text")
+		if id == "" || text == "" {
+			return "", fmt.Errorf("board_comment requires 'id' and 'text'")
+		}
+		body := map[string]any{"text": text}
+		for _, k := range []string{"kind", "at", "source"} {
+			if v, ok := args[k]; ok {
+				body[k] = v
+			}
+		}
+		code, resp := s.callHandler(s.handleAgentBoardAppendEventDB, http.MethodPost, "/api/agent-board/tasks/"+id+"/events", body, map[string]string{"id": id})
+		return resultText(code, resp, "")
+	case "board_bind_worker":
+		id := strArg("id")
+		if id == "" || strArg("worker") == "" {
+			return "", fmt.Errorf("board_bind_worker requires 'id' and 'worker'")
+		}
+		body := map[string]any{}
+		for _, k := range []string{"worker", "session", "cwd"} {
+			if v, ok := args[k]; ok {
+				body[k] = v
+			}
+		}
+		code, resp := s.callHandler(s.handleAgentBoardBindWorker, http.MethodPost, "/api/agent-board/tasks/"+id+"/worker", body, map[string]string{"id": id})
+		return resultText(code, resp, "")
+	default:
+		return "", fmt.Errorf("unknown board tool: %s", name)
+	}
+}
+
+// filterBoardTasks returns the snapshot's tasks (optionally narrowed by project
+// and/or status) as a JSON array.
+func filterBoardTasks(snapshot []byte, project, status string) (string, error) {
+	var snap struct {
+		Tasks []map[string]any `json:"tasks"`
+	}
+	if err := json.Unmarshal(snapshot, &snap); err != nil {
+		return "", err
+	}
+	out := make([]map[string]any, 0, len(snap.Tasks))
+	for _, t := range snap.Tasks {
+		if project != "" {
+			if p, _ := t["project"].(string); p != project {
+				continue
+			}
+		}
+		if status != "" {
+			if st, _ := t["status"].(string); st != status {
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 // resultText turns an in-process handler response into the model-facing string:

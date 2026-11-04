@@ -56,6 +56,8 @@ default_cwd: "~"
 # agentdeck_mcp：把 cc-webui 的 agentdeck MCP 服务器（list_sessions /
 # send_message / new_session / get_session / stop_session）注入每个引擎的工具表，
 # 任何引擎的 agent 都能驱动 AgentDeck 并按地址名给其他会话发消息（A2A）。
+# 另外给「主 Agent」会话（main_agent）额外注入看板工具（board_list / board_get /
+# board_create / board_update / board_comment / board_bind_worker），worker 拿不到。
 # 缺省（不写）= 开。各引擎的注入方式：
 #   claude / qoder —— 每轮生成 --mcp-config 文件；
 #   codex / ducx  —— -c mcp_servers.agentdeck.*，经 0700 wrapper 读 0600 env；
