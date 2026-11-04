@@ -196,7 +196,7 @@ func (m *Manager) EnsureResident(sessionID string) error {
 	// input + a live-session registry naming each process); no other engine has
 	// an equivalent. Kept in sync with the server-side 400 in handlePatchSession.
 	if cli := m.cfg().CLIByName(sess.CLI); cli != nil && !cli.IsClaude() {
-		return fmt.Errorf("%s 引擎不支持常驻/peer 消息", cli.Kind)
+		return fmt.Errorf("%s 引擎不支持常驻进程", cli.Kind)
 	}
 	_, err := m.ensureProc(sessionID, sess)
 	return err
@@ -289,7 +289,7 @@ func (m *Manager) buildResidentArgs(sess *store.Session, cli *config.CLI, model 
 		args = append(args, "--effort", sess.EffortOverride)
 	}
 	args = append(args, cli.Args...)
-	args = m.appendBrowserMCP(args, sess.ID)
+	args = m.appendMCP(args, sess.ID)
 	return m.appendSystemPrompt(args, cli, sess.RolePrompt)
 }
 

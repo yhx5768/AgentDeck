@@ -181,12 +181,12 @@ const serveIdleTimeout = 30 * time.Minute
 
 // acquire returns a running serve for this env signature, starting one if
 // needed. The returned release func must be called when the turn ends.
-func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *config.Provider, model, workDir string, browserSession ...string) (*ocPoolHandle, func(), error) {
-	browser := ""
-	if len(browserSession) > 0 {
-		browser = browserSession[0]
+func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *config.Provider, model, workDir string, configScope ...string) (*ocPoolHandle, func(), error) {
+	scope := ""
+	if len(configScope) > 0 {
+		scope = configScope[0]
 	}
-	key := serveKey(cli, prov, model, browser)
+	key := serveKey(cli, prov, model, scope)
 
 	p.mu.Lock()
 	// Sweep idle servers first so a long-lived process does not linger.
@@ -217,7 +217,7 @@ func (p *opencodeServePool) acquire(ctx context.Context, cli *config.CLI, prov *
 	//
 	// Failures here degrade output quality (the model writes an .html file the
 	// user has to open by hand) but never fail the turn over a file in $HOME.
-	if dir := p.m.ensureOpencodeRuleFor(browser); dir != "" {
+	if dir := p.m.ensureOpencodeRuleFor(scope); dir != "" {
 		envMap["OPENCODE_CONFIG_DIR"] = dir
 	}
 
@@ -357,7 +357,10 @@ func credentialEnv(k string) bool {
 //
 // The env segment is deliberately limited to credentialEnv — see its doc for
 // why a blacklist here was a real bug.
-func serveKey(cli *config.CLI, prov *config.Provider, model string, browserSession ...string) string {
+// serveKey decides which `opencode serve` processes are shared. The optional
+// configScope is non-empty when the session needs its own config directory
+// (browser tools, or an A2A identity), which forces a per-session serve.
+func serveKey(cli *config.CLI, prov *config.Provider, model string, configScope ...string) string {
 	env := buildEnvMap(cli.EffectiveEnv(prov, model))
 	var parts []string
 	for k, v := range env {
@@ -372,8 +375,8 @@ func serveKey(cli *config.CLI, prov *config.Provider, model string, browserSessi
 	key := cli.Path + "\x00" + cli.Name + "\x00" + strings.Join(cli.Args, "\x00") +
 		"\x00" + prov.Name + "\x00" + model + "\x00v" + strconv.Itoa(int(ver)) +
 		"\x00" + strings.Join(parts, "\x00")
-	if len(browserSession) > 0 && browserSession[0] != "" {
-		key += "\x00browser=" + browserSession[0]
+	if len(configScope) > 0 && configScope[0] != "" {
+		key += "\x00scope=" + configScope[0]
 	}
 	return key
 }

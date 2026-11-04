@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"cc-webui/internal/store"
 )
 
 // opencode 的 HTML 渲染约定走它自己的 Rules / instructions 机制，把一段文字
@@ -60,103 +62,154 @@ func opencodeConfigDir() (string, error) {
 // keeps an identical run from churning mtimes on a directory the user may well
 // be looking at while debugging.
 func (m *Manager) ensureOpencodeRule() string {
-	if m.cm != nil && !m.cm.Get().HTMLHintEnabled() {
-		return ""
-	}
-	dir, err := opencodeConfigDir()
-	if err != nil {
-		log.Printf("opencode 隔离配置目录不可用（opencode 会话将不注入 HTML 渲染约定）: %v", err)
-		return ""
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("opencode 隔离配置目录创建失败 %s: %v", dir, err)
-		return ""
-	}
-
-	hintPath := filepath.Join(dir, "HTML_RENDER_HINT.md")
-	hint := strings.TrimSpace(htmlRenderHint) + "\n"
-	if err := writeIfChanged(hintPath, []byte(hint)); err != nil {
-		log.Printf("写 %s 失败: %v", hintPath, err)
-		return ""
-	}
-
-	// Only one key, and it points at a path inside our own directory, so the
-	// user's provider / mcp / theme settings keep merging in normally.
-	cfg := fmt.Sprintf(
-		"{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"instructions\": [%q]\n}\n",
-		hintPath)
-	cfgPath := filepath.Join(dir, "opencode.json")
-	if err := writeIfChanged(cfgPath, []byte(cfg)); err != nil {
-		log.Printf("写 %s 失败: %v", cfgPath, err)
-		return ""
-	}
-	return dir
+	return m.writeOpencodeConfig("")
 }
 
-// ensureOpencodeRuleFor is ensureOpencodeRule plus a browser MCP entry when
-// the session has browser tools. OpenCode's serve process reads its config at
-// startup and shares one process across sessions, so a browser-enabled session
-// gets its own config directory and its own serve process (see acquire).
+// ensureOpencodeRuleFor is the per-session variant: it also carries the browser
+// MCP server (whose env is session-scoped) when the session has browser tools.
+// OpenCode's serve process reads its config at startup and shares one process
+// across sessions, so a session that needs a per-session config gets its own
+// config directory and its own serve process (see acquire).
 func (m *Manager) ensureOpencodeRuleFor(sessionID string) string {
 	if sessionID == "" {
 		return m.ensureOpencodeRule()
 	}
-	info, ok := m.browserMCPInfo(sessionID)
-	if !ok {
-		return m.ensureOpencodeRule()
+	return m.writeOpencodeConfig(sessionID)
+}
+
+// opencodeConfigScope returns the per-session config key for a session, or ""
+// when the shared base config suffices. A session needs its own config when it
+// uses browser tools (session-scoped env) or coordinates over A2A (its
+// agentdeck identity is session-scoped); both force a per-session serve.
+func (m *Manager) opencodeConfigScope(sess *store.Session) string {
+	if sess == nil {
+		return ""
 	}
+	if m.browserEnabled != nil && m.browserEnabled() {
+		return sess.ID
+	}
+	if sess.MainAgent || sess.PeerName != "" || sess.Resident || strings.TrimSpace(sess.RolePrompt) != "" {
+		return sess.ID
+	}
+	return ""
+}
+
+// opencodeMCPEntry renders one MCP server in opencode's config shape
+// ({type:"local", command:[...], environment:{...}}).
+func opencodeMCPEntry(info mcpServerConfig) map[string]any {
+	return map[string]any{
+		"type":        "local",
+		"command":     append([]string{info.Command}, info.Args...),
+		"environment": info.Env,
+	}
+}
+
+// writeOpencodeConfig materialises cc-webui's isolated opencode config dir and
+// returns the directory to point OPENCODE_CONFIG_DIR at. sessionID "" builds
+// the shared base config; a non-empty id builds a per-session config (browser
+// MCP + a session-scoped agentdeck identity). Returns "" when there is nothing
+// to write (both the HTML hint and the agentdeck MCP are off), so the caller
+// runs opencode with the user's own configuration.
+func (m *Manager) writeOpencodeConfig(sessionID string) string {
+	hint := m.cm == nil || m.cm.Get().HTMLHintEnabled()
+	ade := m.cm != nil && m.cm.Get().AgentdeckMCPEnabled()
+
+	// A session role prompt has no append flag in opencode either; it rides the
+	// same `instructions` array as the HTML hint, but in the per-session config
+	// (the base config must stay shared across sessions).
+	rolePrompt := ""
+	if sessionID != "" && m.st != nil {
+		if sess := m.st.Get(sessionID); sess != nil {
+			rolePrompt = strings.TrimSpace(sess.RolePrompt)
+		}
+	}
+
+	// MCP servers only go in the per-session config. Declaring "mcp" in the
+	// shared base would replace the user's own mcp section for every opencode
+	// session; a per-session config is only created for sessions that actually
+	// coordinate (or use the browser), which already paid that cost.
+	servers := map[string]any{}
+	if sessionID != "" {
+		if ade {
+			if info, ok := m.agentdeckMCPInfo(sessionID); ok {
+				servers["agentdeck"] = opencodeMCPEntry(info)
+			}
+		}
+		if info, ok := m.browserMCPInfo(sessionID); ok {
+			servers["browser"] = opencodeMCPEntry(info)
+		}
+	}
+	// Nothing to write → do not create the directory at all, so an opted-out
+	// config leaves no trace in $HOME (see TestEnsureOpencodeRuleRespectsSwitch).
+	if !hint && len(servers) == 0 && rolePrompt == "" {
+		return ""
+	}
+
 	base, err := opencodeConfigDir()
 	if err != nil {
 		log.Printf("opencode 隔离配置目录不可用: %v", err)
 		return ""
 	}
+	dir := base
+	if sessionID != "" {
+		dir = filepath.Join(base, "sessions", safeSessionName(sessionID))
+	}
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		log.Printf("opencode 隔离配置目录创建失败 %s: %v", base, err)
 		return ""
 	}
-	config := map[string]any{
-		"$schema": "https://opencode.ai/config.json",
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("opencode 配置目录创建失败 %s: %v", dir, err)
+		return ""
 	}
-	if m.cm == nil || m.cm.Get().HTMLHintEnabled() {
+
+	config := map[string]any{"$schema": "https://opencode.ai/config.json"}
+	var instructions []string
+	if hint {
 		hintPath := filepath.Join(base, "HTML_RENDER_HINT.md")
-		hint := strings.TrimSpace(htmlRenderHint) + "\n"
-		if err := writeIfChanged(hintPath, []byte(hint)); err == nil {
-			config["instructions"] = []string{hintPath}
+		hintText := strings.TrimSpace(htmlRenderHint) + "\n"
+		if err := writeIfChanged(hintPath, []byte(hintText)); err == nil {
+			instructions = append(instructions, hintPath)
 		} else {
 			log.Printf("写 %s 失败: %v", hintPath, err)
 		}
 	}
-	config["mcp"] = map[string]any{
-		"servers": map[string]any{
-			"browser": map[string]any{
-				"type":        "local",
-				"command":     append([]string{info.Command}, info.Args...),
-				"environment": info.Env,
-			},
-		},
+	if rolePrompt != "" {
+		rolePath := filepath.Join(dir, "ROLE_PROMPT.md")
+		if err := writeIfChangedMode(rolePath, []byte(rolePrompt+"\n"), 0o600); err == nil {
+			instructions = append(instructions, rolePath)
+		} else {
+			log.Printf("写 %s 失败: %v", rolePath, err)
+		}
 	}
+	if len(instructions) > 0 {
+		config["instructions"] = instructions
+	}
+	if len(servers) > 0 {
+		config["mcp"] = map[string]any{"servers": servers}
+	}
+
 	raw, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		log.Printf("opencode browser mcp: marshal: %v", err)
-		return m.ensureOpencodeRule()
-	}
-	dir := filepath.Join(base, "sessions", safeSessionName(sessionID))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("opencode session config dir 创建失败 %s: %v", dir, err)
-		return m.ensureOpencodeRule()
+		log.Printf("opencode config marshal: %v", err)
+		return ""
 	}
 	path := filepath.Join(dir, "opencode.json")
-	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+	if err := writeIfChangedMode(path, append(raw, '\n'), 0o600); err != nil {
 		log.Printf("写 %s 失败: %v", path, err)
-		return m.ensureOpencodeRule()
+		return ""
 	}
 	return dir
 }
 
 // writeIfChanged writes data only when it differs from what is already there.
 func writeIfChanged(path string, data []byte) error {
+	return writeIfChangedMode(path, data, 0o644)
+}
+
+func writeIfChangedMode(path string, data []byte, mode os.FileMode) error {
 	if old, err := os.ReadFile(path); err == nil && string(old) == string(data) {
 		return nil
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, mode)
 }

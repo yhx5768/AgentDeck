@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"cc-webui/internal/a2a"
 	"cc-webui/internal/browser"
 	"cc-webui/internal/config"
 	"cc-webui/internal/runner"
@@ -33,6 +34,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	permHelper := flag.Bool("perm-helper", false, "run as PermissionRequest hook helper (internal, spawned by the CLI)")
 	browserMCP := flag.Bool("browser-mcp", false, "run as the browser MCP stdio server (internal, spawned by the CLI)")
+	agentdeckMCP := flag.Bool("agentdeck-mcp", false, "run as the agentdeck MCP stdio server (internal, spawned by the CLI)")
 	flag.Parse()
 
 	if *permHelper {
@@ -41,6 +43,10 @@ func main() {
 	}
 	if *browserMCP {
 		browser.RunMCPProxy()
+		return
+	}
+	if *agentdeckMCP {
+		a2a.RunMCPProxy()
 		return
 	}
 

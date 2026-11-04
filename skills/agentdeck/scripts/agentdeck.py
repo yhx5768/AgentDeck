@@ -798,8 +798,12 @@ def send_source(allow_main_agent: bool) -> str:
 
 
 def main_agent_send_blocked(sess: dict, allow_main_agent: bool) -> bool:
-    """默认禁止 worker 用 agentdeck send 给主 Agent 发消息，避免与 SendMessage 重复。"""
-    return bool(sess.get("main_agent")) and not allow_main_agent
+    """默认禁止 worker 用 agentdeck send 给 claude 主 Agent 发消息，避免与内置
+    SendMessage 重复。非 claude 引擎没有 SendMessage，agentdeck send 是唯一入站
+    通道，必须放行（与服务端 agentSendBlocked 同口径）。"""
+    if not sess.get("main_agent") or allow_main_agent:
+        return False
+    return (sess.get("engine") or "claude") == "claude"
 
 
 def cmd_send(ctx: Ctx, a) -> int:

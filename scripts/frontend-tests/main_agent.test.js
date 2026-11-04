@@ -278,6 +278,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
       id: `T-${i + 1}`, title: `任务 ${i + 1}`, status: '进行中', worker: w.peer_name,
       session: w.id, updated_at: now,
     })).concat([{
+      // Must be strictly later than `now` so the dedup picks it as the latest;
+      // a hardcoded timestamp drifts into the past as real time advances.
       id: 'T-1-newer', title: '最新任务', status: '进行中', worker: 'worker-1',
       session: 'worker-1', updated_at: '2099-01-01T00:00:00Z',
     }]),
@@ -353,8 +355,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 
   state.current = { id: 's1', name: 'oc', engine: 'opencode', role_prompt: '' };
   await X.openRolePromptDialog();
-  check('opencode 明确提示不注入',
-    $('#role-prompt-note').textContent.includes('暂不支持'), $('#role-prompt-note').textContent);
+  check('opencode 说明走 instructions 注入',
+    $('#role-prompt-note').textContent.includes('instructions'), $('#role-prompt-note').textContent);
 
   $('#role-prompt-text').value = '中文abc';
   X.updateRolePromptCounter();

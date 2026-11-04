@@ -500,7 +500,7 @@
 
 <!-- resident (peer messaging) panel：常驻开关 + 地址名 -->
 <div id="resident-pop" class="popover-panel hidden">
-  <label class="rp-row rp-toggle">
+  <label class="rp-row rp-toggle" id="resident-toggle-row">
     <span>常驻进程（可被其他会话发消息）</span>
     <label class="rp-switch" title="切换常驻"><input type="checkbox" id="resident-toggle"><span class="rp-switch-slider"></span></label>
   </label>
@@ -514,7 +514,7 @@
   </label>
   <div id="main-agent-hint" class="rp-hint-list"></div>
   <div class="rp-status" id="resident-status"></div>
-  <div class="rp-hint">开启后进程保持在线并注册地址名，其他 Claude 会话可用 SendMessage 发消息过来；修改地址名会自动重启常驻进程。</div>
+  <div class="rp-hint" id="resident-hint">开启后进程保持在线并注册地址名，其他 Claude 会话可用 SendMessage 发消息过来；修改地址名会自动重启常驻进程。</div>
 </div>
 
 <!-- 工作区整组迁移 popover：改项目路径 + 一键迁移该工作区下全部会话 -->

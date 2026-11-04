@@ -245,6 +245,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PATCH /api/sessions/{id}", s.auth(s.handlePatchSession))
 	s.mux.Handle("DELETE /api/sessions/{id}", s.auth(s.handleDeleteSession))
 	s.mux.Handle("POST /api/sessions/{id}/messages", s.auth(s.handlePostMessage))
+	s.mux.Handle("POST /api/a2a/send", s.auth(s.handleA2ASend))
 	s.mux.Handle("POST /api/sessions/{id}/uploads", s.auth(s.handleUpload))
 	s.mux.Handle("GET /api/sessions/{id}/uploads/{name}", s.auth(s.handleSessionUpload))
 	s.mux.Handle("POST /api/sessions/{id}/stop", s.auth(s.handleStop))
@@ -261,6 +262,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/sessions/{id}/browser/stream", s.auth(s.handleBrowserStream))
 	s.mux.Handle("POST /api/sessions/{id}/browser/input", s.auth(s.handleBrowserInput))
 	s.mux.HandleFunc("POST /api/internal/browser/mcp", s.handleInternalBrowserMCP)
+	s.mux.HandleFunc("POST /api/internal/agentdeck/mcp", s.handleInternalAgentdeckMCP)
 	s.mux.Handle("GET /api/claude-sessions", s.auth(s.handleClaudeSessions))
 	s.mux.Handle("GET /api/claude-sessions/preview", s.auth(s.handleClaudeSessionPreview))
 	s.mux.Handle("GET /api/opencode-sessions", s.auth(s.handleOpenCodeSessions))
@@ -845,10 +847,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind))
 		return
 	}
-	// Resident/peer messaging is a Claude Code protocol feature; no other engine
-	// may enable it. Mirrors the PATCH guard in handlePatchSession.
-	if (body.Resident || body.PeerName != "") && !cli.IsClaude() {
-		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻/peer 消息")
+	// A resident process is a Claude Code protocol feature; no other engine may
+	// enable it. An address name (peer_name), by contrast, is engine-neutral —
+	// it is how the A2A bus (and Claude's own SendMessage) reaches the session,
+	// so every engine may set one. Mirrors the PATCH guard.
+	if body.Resident && !cli.IsClaude() {
+		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻进程")
 		return
 	}
 	peerName := ""
@@ -1034,10 +1038,10 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Resident/peer messaging is a Claude Code protocol feature; no other engine
-	// may enable it (the cli kind that applies after this patch decides).
-	if (body.Resident != nil || body.PeerName != nil) && cli != nil && !cli.IsClaude() {
-		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻/peer 消息")
+	// A resident process is Claude-only; an address name is engine-neutral (it
+	// is the A2A address). The cli kind that applies after this patch decides.
+	if body.Resident != nil && cli != nil && !cli.IsClaude() {
+		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻进程")
 		return
 	}
 	// Only the engines that keep a plain transcript file inside the workspace
@@ -1101,8 +1105,11 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			log.Printf("session %s: workspace %s -> %s (transcript relocated)", sess.ID, sess.Cwd, effCwd)
 		}
 	}
-	// Peer-name rename writes to the transcript at its final location.
-	if body.PeerName != nil && sess.ClaudeSessionID != "" {
+	// Peer-name rename writes the claude/qoder transcript custom-title (the CLI
+	// resolves SendMessage against it). Other engines keep the address in the
+	// store only — their session id is not a claude transcript file, so writing
+	// one would create a bogus jsonl.
+	if body.PeerName != nil && sess.ClaudeSessionID != "" && (cli == nil || cli.IsClaude() || cli.IsQoder()) {
 		name := peerName
 		if name == "" {
 			name = runner.CleanPeerName(sess.Name)
@@ -1234,14 +1241,6 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// agentSendBlocked prevents the duplicate-notification path: a worker that
-// calls agentdeck.py send to a mainAgent session while also using SendMessage
-// injects both a user turn and a peer bubble. Real user messages and explicit
-// API clients use source=user and are never blocked.
-func agentSendBlocked(sess *store.Session, source string) bool {
-	return sess != nil && sess.MainAgent && source == "agent-send"
-}
-
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess := s.st.Get(id)
@@ -1263,7 +1262,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	if source == "" {
 		source = "user"
 	}
-	if agentSendBlocked(sess, source) {
+	if s.agentSendBlocked(sess, source) {
 		writeErr(w, http.StatusConflict,
 			"agentdeck send 不能直接给主 Agent 发消息（会与 SendMessage 重复）；请改用 SendMessage")
 		return
@@ -1647,9 +1646,16 @@ func isUserTextEvent(e *store.Event) bool {
 		return false
 	}
 	var d struct {
-		Text string `json:"text"`
+		Text   string `json:"text"`
+		Source string `json:"source"`
 	}
 	if json.Unmarshal(e.Data, &d) != nil {
+		return false
+	}
+	// An A2A bus message is also a stored user event, but it renders as a peer
+	// bubble, not the user's own prompt — it must not anchor the replay window
+	// or the pinned prompt.
+	if d.Source == "a2a" {
 		return false
 	}
 	return strings.TrimSpace(d.Text) != ""

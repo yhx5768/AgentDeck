@@ -47,11 +47,20 @@ function trajFirstLine(text, max = 100) {
   return line.length > max ? line.slice(0, max) + '…' : line;
 }
 
-// A2A（会话间消息）方向：in = 收到其他会话的 peer 消息，out = 调用 SendMessage
+// 出站 A2A 的工具名判定。Claude 原生走 SendMessage；其余引擎走 agentdeck MCP
+// 的 send_message（MCP 工具名形如 mcp__agentdeck__send_message，不同引擎前缀
+// 不同，所以按后缀匹配）。判定放在这里，app.js 的对话流渲染也复用同一个函数。
+function isA2ASendTool(name) {
+  const n = String(name || '').toLowerCase();
+  if (!n) return false;
+  return n === 'sendmessage' || n === 'agentdeck_send_message' || n.endsWith('__send_message');
+}
+
+// A2A（会话间消息）方向：in = 收到其他会话的 peer 消息，out = 调用发送工具
 // 发给其他会话。两种记录在台账里归到同一个 A2A 角色，但高亮样式区分方向。
 function trajA2ADir(r) {
   if (r.kind === 'peer') return 'in';
-  if (r.kind === 'tool' && String(r.toolName || '').toLowerCase() === 'sendmessage') return 'out';
+  if (r.kind === 'tool' && isA2ASendTool(r.toolName)) return 'out';
   return '';
 }
 
@@ -88,7 +97,17 @@ function trajTouchRecord(rec) {
 function trajProject(ev) {
   const ts = Date.parse(ev.ts) || 0;
   if (ev.kind === 'user') {
-    const text = (ev.data && ev.data.text) || '';
+    const d = ev.data || {};
+    // A2A 入站（总线投递的跨会话消息）：作为 peer 记录归入 A2A 角色，与 claude
+    // 原生 peer 消息（走 stream 分支）同一套呈现。source 是服务端落库时打的。
+    if (d.source === 'a2a') {
+      const name = d.from || 'peer';
+      const body = d.body || d.text || '';
+      const turn = trajNewTurn(`⇢ 来自 ${name}：${body.split('\n')[0].slice(0, 60)}`, ts, { peer: { name, body } });
+      trajAddRecord(turn, { kind: 'peer', ts, summary: `来自 ${name}`, body, name });
+      return;
+    }
+    const text = d.text || '';
     const turn = trajNewTurn(text, ts);
     trajAddRecord(turn, { kind: 'user', ts, summary: trajFirstLine(text), text });
     return;
@@ -172,7 +191,7 @@ function trajProject(ev) {
         let t = traj.byCallId[b.id];
         if (!t) {
           const toolName = b.name || 'tool';
-          const isA2ASend = toolName.toLowerCase() === 'sendmessage';
+          const isA2ASend = isA2ASendTool(toolName);
           const tsum = toolSummary(b.input);
           t = trajAddRecord(trajCurrentTurn(), {
             kind: 'tool', ts, callId: b.id, toolName, toolInput: b.input,

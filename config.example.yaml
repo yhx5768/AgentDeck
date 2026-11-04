@@ -53,6 +53,18 @@ default_cwd: "~"
 # 设 false 时完全不碰上面那个用户文件（既不创建也不更新）。
 # html_render_hint: false
 
+# agentdeck_mcp：把 cc-webui 的 agentdeck MCP 服务器（list_sessions /
+# send_message / new_session / get_session / stop_session）注入每个引擎的工具表，
+# 任何引擎的 agent 都能驱动 AgentDeck 并按地址名给其他会话发消息（A2A）。
+# 缺省（不写）= 开。各引擎的注入方式：
+#   claude / qoder —— 每轮生成 --mcp-config 文件；
+#   codex / ducx  —— -c mcp_servers.agentdeck.*，经 0700 wrapper 读 0600 env；
+#   opencode      —— 仅对「主 Agent / 有地址名 / 常驻」的会话写 per-session
+#                    配置（避免共享 base 配置里的 mcp 段盖掉用户自己的 mcp）；
+#   mcode         —— 合并进 ~/.minimax/mcp.json 的 mcpServers.agentdeck。
+# 设 false 时移除注入（mcode 的条目会被清理）。
+# agentdeck_mcp: false
+
 # 三层结构：
 #   clis[]      - 一个聊天 CLI 二进制安装（path + args + 权限模式 + 共享 env）
 #                 kind: claude（缺省）= Claude Code 及兼容 CLI（stream-json 协议）

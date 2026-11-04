@@ -2207,7 +2207,7 @@ function updateMainAgentUI() {
     const row = document.createElement('div');
     row.className = 'rp-note rp-warn';
     const text = document.createElement('span');
-    text.textContent = `地址名不是 mainAgent（当前为「${eff || '空'}」），其他 Agent 无法用 SendMessage 找到主 Agent。`;
+    text.textContent = `地址名不是 mainAgent（当前为「${eff || '空'}」），其他 Agent 无法按地址名找到主 Agent。`;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'ghost-btn rp-mini-btn';
@@ -2229,27 +2229,42 @@ function updateMainAgentUI() {
     row.append(text, btn);
     box.appendChild(row);
   }
-  if (!s.resident) {
+  const isClaude = ((s && s.engine) || 'claude') === 'claude';
+  if (isClaude && !s.resident) {
     addLine('当前未开启常驻：打开上面的常驻开关后，其他会话才能发消息过来。', 'rp-warn');
   }
   const others = (state.sessions || []).filter((x) => x.main_agent && x.id !== s.id);
   if (others.length) {
     addLine('另有主 Agent：' + others.map((x) => x.name || x.id).join('、') + '（允许同时标记多个，请确认这是你要的）。');
   }
-  addLine('角色提示对已运行的常驻进程在下次重启后生效。');
+  addLine(isClaude
+    ? '角色提示对已运行的常驻进程在下次重启后生效。'
+    : '角色提示在下一轮生效（opencode 走隔离配置的 instructions）。');
 }
 
 function updateResidentUI() {
   const s = state.current;
   const on = !!(s && s.resident);
-  $('#btn-resident').classList.toggle('active', on);
+  // 常驻进程是 claude 独占；地址名 / 主 Agent 对所有引擎都开放（A2A 总线）。
+  const isClaude = ((s && s.engine) || 'claude') === 'claude';
+  $('#btn-resident').classList.toggle('active', on || !!(s && (s.main_agent || s.peer_name)));
   updateMainAgentUI();
   const pop = $('#resident-pop');
   if (pop.classList.contains('hidden')) return;
+  $('#resident-toggle-row').classList.toggle('hidden', !isClaude);
   $('#resident-toggle').checked = on;
+  const hint = $('#resident-hint');
+  if (hint) {
+    hint.textContent = isClaude
+      ? '开启后进程保持在线并注册地址名，其他 Claude 会话可用 SendMessage 发消息过来；修改地址名会自动重启常驻进程。'
+      : '地址名是其他 Agent 用 agentdeck 的 send_message 找到本会话的地址。本引擎没有常驻进程：收到消息时按普通一轮处理（消息在对话流里显示为 A2A 气泡）。';
+  }
   const st = (s && s.status) || {};
   const el = $('#resident-status');
-  if (!on) {
+  if (!isClaude) {
+    const eff = ((s && (s.peer_name || s.name)) || '').trim();
+    el.textContent = eff ? `地址名 ${eff} · 可被 A2A 消息寻址` : '未设地址名——其他会话无法按名字找到本会话';
+  } else if (!on) {
     el.textContent = '未开启——会话是一次性进程，收不到其他会话的消息';
   } else if (!st.resident) {
     el.textContent = '进程启动中…';
@@ -2471,7 +2486,7 @@ async function openRolePromptDialog() {
   rolePromptError('');
   const engine = s.engine || 'claude';
   $('#role-prompt-note').textContent = engine === 'opencode'
-    ? 'opencode 暂不支持追加 system prompt：这里保存的文本不会注入。'
+    ? 'opencode 走隔离配置的 instructions 注入；改动在该会话的 serve 重启后生效。'
     : '对已运行的常驻会话，改动在下次重启常驻后生效。';
   updateRolePromptCounter();
   openModal('#modal-role-prompt');
@@ -3461,12 +3476,13 @@ function applyWorkspaceGate(cwd) {
   }
 }
 
-// 常驻/peer 消息是 Claude Code 独占的协议面（要 stream-json 输入 + 进程注册表），
-// 其他引擎不提供这个入口（服务端同样 400 拒绝），把控件藏起来。推理等级不再随
-// 引擎一刀切隐藏：opencode 走 --variant、mcode/qoder 走各自的 effort 集合，都由
-// refreshSessionEffort 按模型元数据填充/隐藏（openSession 尾部触发）。
+// 地址名 / 主 Agent 对所有引擎开放（A2A 总线是引擎中立的）；面板里的「常驻进程」
+// 开关才按引擎显隐（claude 独占，见 updateResidentUI）。所以按钮本身一直显示。
+// 推理等级不随引擎一刀切隐藏：opencode 走 --variant、mcode/qoder 走各自的 effort
+// 集合，都由 refreshSessionEffort 按模型元数据填充/隐藏（openSession 尾部触发）。
 function setEngineUI(engine) {
-  $('#btn-resident').classList.toggle('hidden', (engine || 'claude') !== 'claude');
+  const btn = $('#btn-resident');
+  if (btn) btn.classList.remove('hidden');
 }
 
 // 会话菜单随目标会话（而非当前打开的会话）引擎过滤；菜单每次打开前重设。
@@ -4277,6 +4293,8 @@ function updateStatsUI() {
 // 会把 SSE 回放窗口向前扩到最近一条 user 输入（data.text 非空），前端整窗渲染，
 // 所以顶部悬浮条钉的那条输入必然在窗口里。判据与服务端 isUserTextEvent 一致：
 // kind:"user" 且 data.text 非空（tool_result / peer 走 kind:"stream"，不算）。
+// A2A 入站消息也落在 kind:"user" 上，但服务端 isUserTextEvent 排除 source==="a2a"，
+// 否则悬浮条会指向一条 peer 消息。
 
 // Render the replay window (called on replay_end). The server already trimmed
 // it to the latest page extended back to the last user prompt, so render all
@@ -4882,7 +4900,9 @@ function buildToolView(block, details, body) {
     body.appendChild(buildTaskToolView(input || {}));
     return true;
   }
-  if (name === 'sendmessage' && input && typeof input.message === 'string') {
+  // 出站 A2A：claude 原生 SendMessage，或 agentdeck MCP 的 send_message
+  //（mcp__agentdeck__send_message）。两者都渲染成同一张「发件」卡片。
+  if (isA2ASendTool(name) && input && typeof input.message === 'string') {
     return buildPeerSendView(input, details, body);
   }
   if (name === 'bash' && input && typeof input.command === 'string') {
@@ -6075,6 +6095,14 @@ function renderEvent(ev, box) {
     return;
   }
   if (ev.kind === 'user') {
+    // A2A（会话间消息）入站：总线把消息当作一轮 user 事件落库，并带上
+    // source/from/body。渲染成与 claude 原生 peer 消息同形的紫色气泡，
+    // 轨迹视图里也归入 A2A 角色（见 trajectory.js 的 source==='a2a' 分支）。
+    if (d && d.source === 'a2a') {
+      const bubble = addMsg('msg-peer', `⇢ 来自 ${escapeHtml(d.from || '另一个会话')}`, box, ev.ts);
+      bubble.innerHTML = md(d.body || d.text || '');
+      return;
+    }
     // Replace any pending optimistic bubble with the authoritative one.
     const last = box.lastElementChild;
     if (last && last.classList.contains('msg-optimistic')) last.remove();

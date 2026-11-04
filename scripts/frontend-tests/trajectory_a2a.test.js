@@ -115,6 +115,26 @@ const EVENTS = [
     kind: 'stream', ts: '2026-11-03T10:00:03.000Z',
     data: { type: 'user', origin: { kind: 'peer', name: 'mainAgent', body: '请处理这个任务' } },
   },
+  // 引擎中立的 A2A 总线：消息落成一条 stored user 事件，带 source/from/body。
+  {
+    kind: 'user', ts: '2026-11-03T10:00:04.000Z',
+    data: {
+      text: 'Another agent session sent you a message.\n\n<cross-session-message from="worker-2">\n总线回报\n</cross-session-message>\n',
+      source: 'a2a', from: 'worker-2', body: '总线回报',
+    },
+  },
+  {
+    kind: 'stream', ts: '2026-11-03T10:00:05.000Z',
+    data: {
+      type: 'assistant',
+      message: {
+        id: 'm2',
+        content: [
+          { type: 'tool_use', id: 't-mcp', name: 'mcp__agentdeck__send_message', input: { to: 'worker-2', message: '收到' } },
+        ],
+      },
+    },
+  },
 ];
 
 /** 从 index.html 里取轨迹筛选按钮的 data-kind 顺序。 */
@@ -152,6 +172,20 @@ function main() {
   check('SendMessage 结果仍按 tool 记录配对', !!send && send.toolResult === '已送达');
   check('搜索覆盖入站 peer 正文',
     !!peer && X.trajRecordSearchText(peer).includes('请处理这个任务'));
+
+  // 总线投递的 A2A 入站（stored user 事件 + source=a2a）与 claude 原生 peer 同归 A2A。
+  const bus = records.find((r) => r.kind === 'peer' && r.name === 'worker-2');
+  check('总线 A2A 入站归入 A2A/in',
+    !!bus && X.trajA2ADir(bus) === 'in' && X.trajRecordRole(bus) === 'a2a');
+  check('总线 A2A 入站不残留 user 记录',
+    !records.some((r) => r.kind === 'user' && r.text === '总线回报'));
+  check('总线 A2A 入站搜索覆盖正文',
+    !!bus && X.trajRecordSearchText(bus).includes('总线回报'));
+
+  // agentdeck MCP 的 send_message（mcp__agentdeck__send_message）也是出站 A2A。
+  const mcpSend = records.find((r) => r.toolName === 'mcp__agentdeck__send_message');
+  check('MCP send_message 归入 A2A/out',
+    !!mcpSend && X.trajA2ADir(mcpSend) === 'out' && X.trajRecordRole(mcpSend) === 'a2a');
 
   const el = (r) => doc.querySelector(`[data-rid="${r.id}"]`);
   const sendEl = el(send), readEl = el(read), peerEl = el(peer);

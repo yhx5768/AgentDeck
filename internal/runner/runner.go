@@ -68,10 +68,17 @@ type Message struct {
 	// every SSE replay.
 	ImageNames []string `json:"image_names,omitempty"`
 	// Source records where the turn came from: user (composer/API), agent-send
-	// (agentdeck.py send), or agent-send-explicit. It rides on the persisted
-	// user event so the UI and dedupe logic can distinguish a real person
-	// typing from an agent CLI injecting a notification.
+	// (agentdeck.py send), agent-send-explicit, or a2a (the engine-neutral
+	// agent-to-agent bus). It rides on the persisted user event so the UI and
+	// dedupe logic can distinguish a real person typing from an agent CLI
+	// injecting a notification.
 	Source string `json:"source,omitempty"`
+	// From and Body carry an A2A message's decoded pieces. Text holds the
+	// envelope-wrapped form the engine sees (so replay dedup matches the CLI's
+	// own echo); From is the sender's address name and Body is the plain text
+	// the UI renders in the peer bubble. Both ride on the persisted user event.
+	From string `json:"from,omitempty"`
+	Body string `json:"body,omitempty"`
 }
 
 // turnText composes the text actually sent to the CLI for a user turn: the
@@ -458,6 +465,12 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	}
 	if len(msg.ImageNames) > 0 {
 		event["images"] = msg.ImageNames
+	}
+	if msg.From != "" {
+		event["from"] = msg.From
+	}
+	if msg.Body != "" {
+		event["body"] = msg.Body
 	}
 	if _, err := m.st.AppendEvent(sessionID, "user", event); err != nil {
 		return err
@@ -955,7 +968,7 @@ func (m *Manager) buildStreamJSONArgs(sess *store.Session, cli *config.CLI, mode
 		args = append(args, d.effortFlag, sess.EffortOverride)
 	}
 	args = append(args, cli.Args...)
-	args = m.appendBrowserMCP(args, sess.ID)
+	args = m.appendMCP(args, sess.ID)
 	return m.appendSystemPrompt(args, cli, sess.RolePrompt)
 }
 
@@ -1162,7 +1175,7 @@ func (m *Manager) runStreamJSONTurn(sessionID string, msg Message, sess *store.S
 func (m *Manager) runOpenCodeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
 	model := prov.EffectiveModel(sess.ModelOverride)
 
-	h, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, resolvedCwd, m.browserSessionFor(sessionID))
+	h, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, resolvedCwd, m.opencodeConfigScope(sess))
 	if err != nil {
 		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
 		m.setIdle(sessionID, err.Error())
@@ -1365,6 +1378,11 @@ func (m *Manager) buildMcodeArgs(msg Message, sess *store.Session, cli *config.C
 // precede those flags: --file is an array flag and would swallow a trailing
 // positional.
 func (m *Manager) runMcodeTurn(sessionID string, msg Message, sess *store.Session, cli *config.CLI, prov *config.Provider, resolvedCwd string) {
+	// mcode has no per-session MCP config; refresh the shared mcp.json entry
+	// before each run so enabling/disabling the tool takes effect without a
+	// restart. Kept out of buildMcodeArgs so the pure argv tests never touch
+	// the user's ~/.minimax/mcp.json.
+	m.ensureMcodeMCP()
 	args := m.buildMcodeArgs(msg, sess, cli, prov)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1530,7 +1548,7 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 		args = append(args, "-c", codexInstructions(hintOn, sess.RolePrompt))
 	}
 	if wantBrowser {
-		args, _ = m.appendBrowserMCPCodex(args, sess.ID)
+		args, _ = m.appendMCPCodex(args, sess.ID)
 	}
 	for _, f := range msg.Files {
 		if isImageFile(f.Path) {
