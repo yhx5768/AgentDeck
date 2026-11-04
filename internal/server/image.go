@@ -105,6 +105,13 @@ func (s *Server) handleSessionUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dir := filepath.Join(s.cfg().DataDir, "uploads", id)
+	// Resolve the directory too before the containment check: on macOS a temp
+	// data dir lives under /var, whose real path is /private/var, so comparing
+	// the resolved file against the raw dir would see a symlinked-but-identical
+	// path as an escape and 403 every legitimate request.
+	if d, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = d
+	}
 	resolved, err := filepath.EvalSymlinks(filepath.Join(dir, name))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "文件不存在")
