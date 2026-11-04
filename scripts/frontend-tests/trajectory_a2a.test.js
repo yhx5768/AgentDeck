@@ -131,6 +131,8 @@ const EVENTS = [
         id: 'm2',
         content: [
           { type: 'tool_use', id: 't-mcp', name: 'mcp__agentdeck__send_message', input: { to: 'worker-2', message: '收到' } },
+          // opencode 对 MCP 工具的拼法是点号（实测），也必须归 A2A 发。
+          { type: 'tool_use', id: 't-oc', name: 'agentdeck.send_message', input: { to: 'worker-3', message: '收到' } },
         ],
       },
     },
@@ -184,8 +186,11 @@ function main() {
 
   // agentdeck MCP 的 send_message（mcp__agentdeck__send_message）也是出站 A2A。
   const mcpSend = records.find((r) => r.toolName === 'mcp__agentdeck__send_message');
-  check('MCP send_message 归入 A2A/out',
+  check('MCP send_message（claude/mcode 双下划线）归入 A2A/out',
     !!mcpSend && X.trajA2ADir(mcpSend) === 'out' && X.trajRecordRole(mcpSend) === 'a2a');
+  const ocSend = records.find((r) => r.toolName === 'agentdeck.send_message');
+  check('MCP send_message（opencode 点号）归入 A2A/out',
+    !!ocSend && X.trajA2ADir(ocSend) === 'out' && X.trajRecordRole(ocSend) === 'a2a');
 
   const el = (r) => doc.querySelector(`[data-rid="${r.id}"]`);
   const sendEl = el(send), readEl = el(read), peerEl = el(peer);

@@ -48,12 +48,18 @@ function trajFirstLine(text, max = 100) {
 }
 
 // 出站 A2A 的工具名判定。Claude 原生走 SendMessage；其余引擎走 agentdeck MCP
-// 的 send_message（MCP 工具名形如 mcp__agentdeck__send_message，不同引擎前缀
-// 不同，所以按后缀匹配）。判定放在这里，app.js 的对话流渲染也复用同一个函数。
+// 的 send_message，而各引擎对 MCP 工具的拼法不同（实测）：
+//   claude / mcode: mcp__agentdeck__send_message
+//   opencode:       agentdeck.send_message
+//   codex:          agentdeck.send_message / agentdeck__send_message
+// 统一判据 = 名字里同时含 agentdeck 与 send_message（避免误伤无关工具）。
+// 判定放在这里，app.js 的对话流渲染也复用同一个函数。
 function isA2ASendTool(name) {
   const n = String(name || '').toLowerCase();
   if (!n) return false;
-  return n === 'sendmessage' || n === 'agentdeck_send_message' || n.endsWith('__send_message');
+  if (n === 'sendmessage') return true; // claude 原生
+  if (n === 'send_message') return true; // 裸名（codex 的 mcp_tool_call 可能只给 tool）
+  return n.includes('agentdeck') && n.includes('send_message');
 }
 
 // A2A（会话间消息）方向：in = 收到其他会话的 peer 消息，out = 调用发送工具
