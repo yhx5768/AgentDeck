@@ -2635,6 +2635,7 @@ async function openSession(id) {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 180) + 'px';
   renderInputMirror(); // 高度定案后再镜像，镜像高度与 scrollTop 同步才有意义
+  stopTurnTick(); // 换会话时等待计时归零，别把上一个会话的时长带过来
   updateStatusUI(s.status);
   updateResidentUI();
   updateRolePromptButton();
@@ -4450,6 +4451,30 @@ function updateLoadMoreBtn() {
   wrap.classList.remove('hidden');
 }
 
+// 运行态徽标带一个「已等待 mm:ss」。模型在大上下文上要很久才吐第一个 token
+// （实测某会话 prompt ≈65 万 token，首 token 60–300 秒），这段静默期里只有一个
+// 静止的「● 运行中」，跟卡死看不出区别——计时器让「在等模型」变得可读。
+let turnTick = null;
+let turnStartedAt = 0;
+function fmtWait(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? s + 's' : Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+function paintTurnTick() {
+  const badge = $('#status-badge');
+  if (badge && turnStartedAt) badge.textContent = '● 运行中 · ' + fmtWait(Date.now() - turnStartedAt);
+}
+function startTurnTick() {
+  if (!turnStartedAt) turnStartedAt = Date.now();
+  if (turnTick) return;
+  turnTick = setInterval(paintTurnTick, 1000);
+  paintTurnTick();
+}
+function stopTurnTick() {
+  if (turnTick) { clearInterval(turnTick); turnTick = null; }
+  turnStartedAt = 0;
+}
+
 function updateStatusUI(st) {
   const badge = $('#status-badge');
   const stopBtn = $('#btn-stop');
@@ -4463,11 +4488,12 @@ function updateStatusUI(st) {
   // Grey out rewind buttons while a turn is in flight (the API also 409s).
   document.body.classList.toggle('session-running', !!(st && st.running));
   if (st.running) {
-    badge.textContent = '● 运行中';
+    startTurnTick();
     badge.className = 'status-badge running';
     stopBtn.classList.remove('hidden');
     if (spinner) spinner.classList.remove('hidden');
   } else {
+    stopTurnTick();
     badge.textContent = '';
     badge.className = 'status-badge';
     stopBtn.classList.add('hidden');
