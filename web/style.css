@@ -360,7 +360,12 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 /* 有 main_agent 会话时才渲染；横向滚动，不抢工作区栏的宽度。 */
 .main-agents {
   --ma-gap: var(--sp-4);
-  --ma-overlap-extra: 20px;
+  /* worker 组相对主头像的水平位置：margin-left = -(gap + 该值)。
+     主头像 40px 居中在 56px 的 .ma-item 里，两侧各有 8px 内边距，所以
+     overlap = 该值 - 8px：14px → 首个 worker 压住主头像右缘 6px（保留一点
+     堆叠感），8px → 刚好贴住，4px → 留 4px 间隙。别调回 20px：那是 12px
+     重叠，绿点会整片糊在 worker 上。 */
+  --ma-overlap-extra: 14px;
   display: flex; align-items: flex-start; justify-content: center;
   justify-content: safe center;
   gap: var(--ma-gap);
@@ -505,7 +510,7 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   to { opacity: 0; scale: .8; }
 }
 @media (max-width: 760px) {
-  .main-agents { --ma-gap: 10px; --ma-overlap-extra: 14px; padding: var(--sp-2) var(--sp-3); }
+  .main-agents { --ma-gap: 10px; --ma-overlap-extra: 10px; padding: var(--sp-2) var(--sp-3); }
   .ma-item { width: 48px; }
   .ma-avatar { width: 36px; height: 36px; }
   .ma-name { max-width: 48px; font-size: 10px; }

@@ -1499,13 +1499,14 @@ function runningMainAgentWorkers() {
   return [...found.values()];
 }
 
-// 侧栏可用宽度 → 可见 worker 数。公式与设计 v5 一致：首个 worker 吃掉
-// 组间 gap 并叠到主头像上，后续每个 worker 只占“头像宽 - 6px”。
+// 侧栏可用宽度 → 可见 worker 数。公式与设计 v5 一致：首个 worker 吃掉组间
+// gap，再按 firstOverlap 贴到主头像右侧（正=叠上去，负=留间隙，需与 style.css
+// 的 --ma-overlap-extra 保持同一口径：firstOverlap = extra - 头像内边距）。
 function mainAgentWorkerVisibleCount(availableWidth, mobile) {
   if (typeof mobile !== 'boolean') mobile = (window.innerWidth || 1024) <= 760;
   const cfg = mobile
-    ? { item: 48, mainAvatar: 36, avatar: 22, firstOverlap: 8, stepOverlap: 6, gap: 1, tail: 8, max: 12 }
-    : { item: 56, mainAvatar: 40, avatar: 26, firstOverlap: 12, stepOverlap: 6, gap: 2, tail: 8, max: 12 };
+    ? { item: 48, mainAvatar: 36, avatar: 22, firstOverlap: 4, stepOverlap: 6, gap: 1, tail: 8, max: 12 }
+    : { item: 56, mainAvatar: 40, avatar: 26, firstOverlap: 6, stepOverlap: 6, gap: 2, tail: 8, max: 12 };
   const inset = (cfg.item - cfg.mainAvatar) / 2;
   const clusterStart = cfg.item - inset - cfg.firstOverlap;
   const available = Math.max(0, (Number(availableWidth) || 0) - clusterStart - cfg.tail);

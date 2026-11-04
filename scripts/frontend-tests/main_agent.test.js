@@ -300,7 +300,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 
   const countFn = X.mainAgentWorkerVisibleCount;
   check('动态数量 250px → 8', countFn(250, false) === 8, String(countFn(250, false)));
-  check('动态数量 200px → 6', countFn(200, false) === 6, String(countFn(200, false)));
+  check('动态数量 200px → 5', countFn(200, false) === 5, String(countFn(200, false)));
   check('动态数量过窄 → 最少 2', countFn(80, false) === 2, String(countFn(80, false)));
 
   // 全部结束后：总数徽标隐藏，退场鬼影 180ms 后移除
@@ -331,7 +331,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
   check('CSS: worker 组负 margin', css.includes('margin-left: calc(-1 * var(--ma-gap) - var(--ma-overlap-extra))'));
   check('CSS: +N 同节奏 bob', css.includes('.ma-worker-more') && css.includes('ma-worker-more-bob'));
   check('CSS: reduced-motion 停动画', /prefers-reduced-motion[\s\S]*?\.ma-worker, \.ma-worker-more \{ animation: none !important; \}/.test(css));
-  check('CSS: 移动端变量', /@media \(max-width: 760px\)[\s\S]*?--ma-overlap-extra: 14px/.test(css));
+  check('CSS: 移动端变量', /@media \(max-width: 760px\)[\s\S]*?--ma-overlap-extra: 10px/.test(css));
   check('CSS: worker 组底边对齐主头像', /\.ma-workers\s*\{[^}]*padding-top:\s*14px/s.test(css));
   check('CSS: worker 递增 140ms stagger', css.includes('animation-delay: calc(var(--worker-i, 0) * 140ms)'));
   check('CSS: entering 不重置 stagger', css.includes('animation-delay: calc(var(--worker-i, 0) * 140ms), 0ms'));
