@@ -37,6 +37,9 @@ func (s *Server) resolveAddress(to string) *store.Session {
 		return nil
 	}
 	for _, sess := range s.st.List() {
+		if sess.GroupID != "" {
+			continue // group shadow members are internal, not addressable peers
+		}
 		if strings.ToLower(sessionAddress(sess)) == key {
 			return sess
 		}

@@ -160,6 +160,9 @@ func (s *Server) a2aListSessionsJSON() (string, error) {
 		if sess.GroupID != "" {
 			continue // group shadow sessions are internal
 		}
+		if sess.Archived {
+			continue // archived sessions are not dispatch targets
+		}
 		out = append(out, s.a2aSessionSummary(sess))
 	}
 	raw, err := json.MarshalIndent(out, "", "  ")
