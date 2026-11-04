@@ -599,10 +599,15 @@ const state = {
   viewGroup: 'workspace', // 'workspace' | 'none'
   viewSort: 'updated',     // 'manual' | 'updated'
   collapsedGroups: new Set(),
-  // history pagination: replayed events are buffered, only the latest
-  // HISTORY_PAGE events are rendered; older ones load on demand.
-  historyBuf: [],      // all replayed events (oldest first)
+  // history pagination: the server replays only the tail window over SSE;
+  // older events page in via GET /history. historyBuf holds every event loaded
+  // so far (oldest first), histBase is the absolute index of historyBuf[0] in
+  // the full merged sequence, histRenderedFrom the index within historyBuf of
+  // the oldest rendered event. Remaining = histBase + histRenderedFrom.
+  historyBuf: [],      // loaded events (oldest first)
+  histBase: 0,         // absolute index of historyBuf[0] in the full sequence
   histRenderedFrom: 0, // index in historyBuf of the oldest rendered event
+  loadingMore: false,  // a history page fetch is in flight
   replaying: false,    // true until the server sends the replay_end marker
   renderingHistory: false, // 正在渲染回放/翻页历史（旧 status 事件不触发 flushPending 等副作用）
   stats: null,         // {turns, steps, firstTs, lastTs} for the current session
@@ -2551,6 +2556,7 @@ async function openSession(id) {
   state.subagentCards = {};
   state.agentToolMeta = {};
   state.historyBuf = [];
+  state.histBase = 0;
   state.histRenderedFrom = 0;
   state.replaying = true;
   state.live = null;
@@ -4033,7 +4039,8 @@ function connectEvents(id) {
     if (state.seenSeq.has(ev.seq)) return;
     state.seenSeq.add(ev.seq);
     if (ev.kind === 'replay_end') {
-      flushHistory();
+      applyReplayStats(ev.data && ev.data.stats);
+      flushHistory(ev.data);
       trajOnEvent(); // 回放补齐轨迹投影（若轨迹页开着）
       return;
     }
@@ -4115,6 +4122,7 @@ function resetChatForReplay() {
   state.subagentCards = {};
   state.agentToolMeta = {};
   state.historyBuf = [];
+  state.histBase = 0;
   state.histRenderedFrom = 0;
   state.replaying = true;
   state.live = null;
@@ -4150,6 +4158,22 @@ function resetLastTurn(st) {
   st.lastLlmMs = 0;
   st.lastLlmEstMs = 0;
   st.lastSeen = {};
+}
+
+// SSE 只回放尾部窗口，窗口之前的事件不会送到前端，所以服务端在 replay_end 里
+// 带一份它们的统计（轮数/步数/耗时，见 server 的 computeReplayStats），这里并进
+// state.stats。窗口自身的事件已随回放被 trackStats 记过，只补前缀，避免重复计。
+function applyReplayStats(s) {
+  const st = state.stats;
+  if (!st || !s) return;
+  st.turns += s.turns || 0;
+  st.steps += s.steps || 0;
+  if (s.first_ts) st.firstTs = st.firstTs ? Math.min(st.firstTs, s.first_ts) : s.first_ts;
+  if (s.last_ts) st.lastTs = Math.max(st.lastTs, s.last_ts);
+  st.llmMs += s.llm_ms || 0;
+  st.toolMs += s.tool_ms || 0;
+  st.llmEstMs += s.llm_est_ms || 0;
+  st.toolEstMs += s.tool_est_ms || 0;
 }
 
 function trackStats(ev) {
@@ -4248,43 +4272,31 @@ function updateStatsUI() {
   }
 }
 
-// 会话里最后一条用户输入在回放缓冲中的下标（没有则 -1）。三个引擎的回放都把真实
-// 输入转成 kind:"user" + data.text（claudehist / opencodehist / mcodehist 同口径），
-// tool_result 与 peer 消息走 kind:"stream" 不算——所以它就是「DOM 里最后一条
-// .msg-user」在缓冲里的对应物。空文本的 user 事件渲染出来是空气泡，一并跳过。
-function lastUserEventIndex(buf) {
-  for (let i = buf.length - 1; i >= 0; i--) {
-    const ev = buf[i];
-    if (ev && ev.kind === 'user' && ev.data && typeof ev.data.text === 'string' && ev.data.text.trim()) return i;
-  }
-  return -1;
-}
+// 会话里「最后一条用户输入在窗口里的位置」现在由服务端决定：replayWindowStart
+// 会把 SSE 回放窗口向前扩到最近一条 user 输入（data.text 非空），前端整窗渲染，
+// 所以顶部悬浮条钉的那条输入必然在窗口里。判据与服务端 isUserTextEvent 一致：
+// kind:"user" 且 data.text 非空（tool_result / peer 走 kind:"stream"，不算）。
 
-// Render the latest page of buffered history (called on replay_end).
-function flushHistory() {
+// Render the replay window (called on replay_end). The server already trimmed
+// it to the latest page extended back to the last user prompt, so render all
+// of it; older events page in through loadMoreHistory.
+function flushHistory(endData) {
   // EventSource auto-reconnect replays history again with fresh seqs; the
   // replayed events are dropped by seenSeq dedup, and the duplicate marker
   // must not re-render the buffer.
   if (!state.replaying) return;
   state.replaying = false;
+  if (endData && typeof endData.start === 'number') state.histBase = endData.start;
   const box = $('#messages');
   // Optimistic bubbles sent while history was loading belong at the end.
   const optimistic = [...box.querySelectorAll('.msg-optimistic')];
   const buf = state.historyBuf;
-  // 首屏窗口必须含最后一条 user 事件：顶部悬浮条钉的就是它（内容取 DOM 里最后一条
-  // .msg-user），而一轮几十步工具调用就能在它后面堆出上百条 assistant/tool 事件
-  // ——固定 50 条的窗口会把最后一条输入整条截在外面，切会话回来悬浮条凭空消失，
-  // 得点几次「加载更多」才回来。窗口只向前扩到那条输入为止，多渲染的正是用户
-  // 要看的那一轮，不算浪费；「加载更多」的剩余条数仍是 histRenderedFrom，口径不变。
-  const lastUser = lastUserEventIndex(buf);
-  state.histRenderedFrom = (lastUser >= 0 && lastUser < buf.length - HISTORY_PAGE)
-    ? lastUser
-    : Math.max(0, buf.length - HISTORY_PAGE);
+  state.histRenderedFrom = 0;
   // 历史渲染期间旧 status 事件不得触发副作用（旧 turn_end 会把待发送消息
   // 在轮次仍在跑时误提交；见 renderEvent 的 status 分支）。
   state.renderingHistory = true;
   try {
-    for (let i = state.histRenderedFrom; i < buf.length; i++) {
+    for (let i = 0; i < buf.length; i++) {
       safeRenderEvent(buf[i], box);
     }
   } finally {
@@ -4294,7 +4306,7 @@ function flushHistory() {
   // 事件，renderEvent 会摘掉已对账的乐观气泡，这里不能把摘掉的又接回来
   //（否则 prompt 显示两次，切走再切回才恢复一条）。
   for (const node of optimistic) if (node.isConnected) box.appendChild(node);
-  // 回放事件只渲染了最新一页，但任务面板要覆盖全部历史——从缓冲区全量重折。
+  // 回放事件只渲染了最新一页，但任务面板要覆盖已加载的历史——从缓冲区全量重折。
   taskFoldAll();
   syncTaskPanel();
   // 切走期间本轮已结束的会话：回放里的旧 turn_end 被上面挡住，在这里按
@@ -4307,9 +4319,9 @@ function flushHistory() {
   refreshPinnedPrompt();
 }
 
-// Prepend the previous page of buffered history, keeping the viewport
-// anchored on the message the user was looking at.
-function loadMoreHistory() {
+// Prepend the previous page of buffered history, keeping the viewport anchored
+// on the message the user was looking at.
+function renderPrevHistoryPage() {
   if (state.histRenderedFrom <= 0) return;
   const box = $('#messages');
   const from = Math.max(0, state.histRenderedFrom - HISTORY_PAGE);
@@ -4330,11 +4342,49 @@ function loadMoreHistory() {
   updateLoadMoreBtn();
 }
 
-// The pill button pinned at the top of the message list while there are
-// older buffered events not rendered yet.
+// Load the next older page: render what is already buffered, or fetch it from
+// the server when the buffer's front is exhausted.
+async function loadMoreHistory() {
+  if (state.histBase + state.histRenderedFrom <= 0) return;
+  if (state.histRenderedFrom > 0) {
+    renderPrevHistoryPage();
+    return;
+  }
+  if (state.histBase <= 0 || state.loadingMore || !state.current) return;
+  state.loadingMore = true;
+  updateLoadMoreBtn(); // 显示「加载中…」并禁用
+  try {
+    const res = await api(`/api/sessions/${state.current.id}/history?before=${state.histBase}&limit=${HISTORY_PAGE}`);
+    const evs = (res && res.events) || [];
+    if (evs.length) {
+      state.historyBuf = evs.concat(state.historyBuf);
+      state.histBase = (typeof res.from === 'number') ? res.from : Math.max(0, state.histBase - evs.length);
+      state.histRenderedFrom = evs.length;
+      // 前插打乱了按前缀增量投影的假设（traj.built / 任务面板的折叠顺序），
+      // 从新缓冲全量重投影；轨迹页此刻没开着（「加载更多」在聊天视图里），
+      // 所以重建不会打断用户正在看的轨迹筛选。
+      trajReset();
+      trajSync();
+      taskFoldAll();
+      syncTaskPanel();
+    } else {
+      state.histBase = 0; // nothing older server-side
+    }
+  } catch (e) {
+    setErrorBanner('加载更早的历史失败：' + (e && e.message ? e.message : e), { warning: true });
+  } finally {
+    state.loadingMore = false;
+  }
+  if (state.histRenderedFrom > 0) renderPrevHistoryPage();
+  else updateLoadMoreBtn();
+}
+
+// The pill button pinned at the top of the message list while older events
+// remain (unrendered in the buffer, or not yet fetched from the server).
 function updateLoadMoreBtn() {
+  const remaining = state.histBase + state.histRenderedFrom;
   let wrap = $('#load-more-wrap');
-  if (state.histRenderedFrom <= 0) {
+  if (remaining <= 0) {
     if (wrap) wrap.classList.add('hidden');
     return;
   }
@@ -4348,7 +4398,14 @@ function updateLoadMoreBtn() {
     const box = $('#messages');
     box.insertBefore(wrap, box.firstChild);
   }
-  wrap.firstChild.textContent = `加载更多（还有 ${state.histRenderedFrom} 条）`;
+  const btn = wrap.firstChild;
+  if (state.loadingMore) {
+    btn.disabled = true;
+    btn.textContent = '加载中…';
+  } else {
+    btn.disabled = false;
+    btn.textContent = `加载更多（还有 ${remaining} 条）`;
+  }
   wrap.classList.remove('hidden');
 }
 
@@ -4649,6 +4706,7 @@ function applyRewindInUI(ev, refill) {
   }
   buf.splice(cutAt);
   buf.push(ev);
+  if (state.histRenderedFrom > buf.length) state.histRenderedFrom = buf.length;
   trajReset();
   trajSync();
   if (trajActive()) trajRender();

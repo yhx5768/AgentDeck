@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +148,16 @@ type Server struct {
 	// native codex keep separate rollout trees).
 	codexCaches map[string]*codexhist.StatsCache
 
+	// replayCache memoizes the parsed engine transcript per session so a
+	// switch back and forth (or a "load more" page fetch) does not re-parse a
+	// multi-MB jsonl every time. Keyed by session id, validated by a cheap
+	// source fingerprint (size+mtime for on-disk transcripts); the LRU order
+	// bounds how many parsed sessions stay resident. Only stored events are
+	// re-merged on each read, which is O(n) and cheap.
+	replayMu    sync.Mutex
+	replayCache map[string]*replayCacheEntry
+	replayOrder []string
+
 	// boardHub fans out agent-board changes to SSE subscribers. The board is
 	// always stored at <data_dir>/agent-board.db; no file watcher is needed.
 	boardHub *boardHub
@@ -164,6 +176,15 @@ type ocCatalogEntry struct {
 	ts  time.Time
 	cat *opencodehist.Catalog
 	err error
+}
+
+// replayCacheEntry is one memoized engine-transcript parse, validated by the
+// source fingerprint captured when it was built. fps holds the events'
+// dedup fingerprints so repeated replays skip re-unmarshalling every event.
+type replayCacheEntry struct {
+	fp     string
+	events []*store.Event
+	fps    []string
 }
 
 // variantsTTL bounds how stale a served catalog may be. It matches the
@@ -186,6 +207,7 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 		ocRefreshing:   map[string]bool{},
 		ocProviders:    map[string][]string{},
 		ocDiscoverKick: make(chan struct{}, 1),
+		replayCache:    map[string]*replayCacheEntry{},
 	}
 	s.routes()
 	s.initAgentBoardDB(defaultBoardPaths(s.cfg().DataDir))
@@ -228,6 +250,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/sessions/{id}/goal", s.auth(s.handleSetGoal))
 	s.mux.Handle("DELETE /api/sessions/{id}/goal", s.auth(s.handleClearGoal))
 	s.mux.Handle("GET /api/sessions/{id}/events", s.auth(s.handleEvents))
+	s.mux.Handle("GET /api/sessions/{id}/history", s.auth(s.handleSessionHistory))
 	s.mux.Handle("GET /api/browser/status", s.auth(s.handleBrowserStatus))
 	s.mux.Handle("POST /api/browser/enable", s.auth(s.handleBrowserEnable))
 	s.mux.Handle("POST /api/browser/disable", s.auth(s.handleBrowserDisable))
@@ -1483,6 +1506,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// Compress the stream when the client accepts it. SSE frames are JSON
+	// text and a long session's replay is tens of MB; gzip cuts that by
+	// roughly an order of magnitude. The wrapper forwards Flush so events
+	// still stream live instead of buffering.
+	if acceptsGzip(r) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		w = &gzipResponseWriter{ResponseWriter: w, gz: gz}
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
@@ -1495,79 +1529,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// Buffering delays events and makes live messages appear missing.
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Replay history: stored events (user/status only — stream events are
-	// sourced live from Claude's on-disk jsonl) + parsed Claude history
-	// for stream events. Merge by ts ascending.
-	stored, err := s.st.Events(id)
+	// Replay history: stored user/status events merged with the engine's own
+	// transcript (ts-ordered, deduped). Only the tail window is sent over SSE;
+	// older events load on demand via GET .../history. Without this, switching
+	// to a session with a huge transcript shipped tens of MB every time.
+	merged, err := s.replayEvents(sess)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var merged []*store.Event
-	if sess.ClaudeSessionID != "" {
-		// Replay source depends on the engine: claude and qoder sessions are
-		// parsed from the CLI's own jsonl on disk (same format, different home
-		// directory — see claudehist.Profile), opencode sessions are exported
-		// via the CLI and mcode sessions are parsed from their own
-		// messages.jsonl (both keep their transcript inside the CLI's own
-		// store); codex sessions are parsed from the CLI's rollout tree.
-		var extEvents []*store.Event
-		switch s.engineOf(sess) {
-		case config.KindOpenCode:
-			if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
-				if evs, err := ocReplayEvents(cli, sess.ClaudeSessionID); err == nil {
-					extEvents = evs
-				} else {
-					log.Printf("opencode replay %s: %v", sess.ClaudeSessionID, err)
-				}
-			}
-		case config.KindMcode:
-			if mc, err := mcodehist.FetchSession(sess.ClaudeSessionID); err == nil {
-				extEvents = mc.ToEvents()
-			} else {
-				log.Printf("mcode replay %s: %v", sess.ClaudeSessionID, err)
-			}
-		case config.KindCodex:
-			if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
-				if cx, err := codexhist.FetchSession(codexHome(cli), sess.ClaudeSessionID); err == nil {
-					extEvents = cx.ToEvents()
-				} else {
-					log.Printf("codex replay %s: %v", sess.ClaudeSessionID, err)
-				}
-			}
-		default:
-			// claude and qoder share the transcript reader, differing only in
-			// which home directory it reads.
-			prof := claudehist.ClaudeProfile
-			if s.engineOf(sess) == config.KindQoder {
-				prof = claudehist.QoderProfile
-			}
-			extEvents, _ = claudehist.ConvertIn(prof, sess.Cwd, sess.ClaudeSessionID)
-			// 子代理 transcript 单独解析（subagents/agent-*.jsonl），补齐回放侧
-			// 与实时流（parent_tool_use_id 透传）同形的子代理消息事件。
-			if subEvents, err := claudehist.ConvertSubagentsIn(prof, sess.Cwd, sess.ClaudeSessionID); err == nil {
-				extEvents = append(extEvents, subEvents...)
-			}
-		}
-		merged = mergeStoredAndClaude(stored, extEvents)
-	} else {
-		for _, e := range stored {
-			merged = append(merged, e)
-		}
-	}
-	// If the log ends mid-turn but no turn is actually in flight — the backend
-	// was killed while a turn was running and restarted, so the persisted
-	// turn_start has no closing turn_end/interrupted/error — close it with a
-	// transient interrupted so the replay converges to the real idle state.
-	// Without this, the frontend replays the dangling turn_start on every
-	// connect and stays stuck on "running": stop is a no-op server-side and
-	// new messages only accumulate in the pending chip. The repair is
-	// per-connection and never persisted; it applies only when the manager
-	// reports no live turn activity (a genuine mid-run reconnect keeps the
-	// dangling turn_start, which is the only signal that the turn is live).
-	if !s.mgr.Busy(id) {
-		merged = closeStaleTurnStart(merged)
-	}
+	start := replayWindowStart(merged, replayWindow)
 
 	ch, unsubscribe := s.mgr.Subscribe(id)
 	defer unsubscribe()
@@ -1592,15 +1563,24 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	for _, ev := range merged {
+	// Send only the tail window; older events page in via .../history.
+	for _, ev := range merged[start:] {
 		if !send(ev) {
 			return
 		}
 	}
 	// Mark the end of the history replay: the frontend buffers replayed
 	// events and only renders the latest page once this marker arrives
-	// (everything after it is a live event, rendered immediately).
-	if !send(&store.Event{Kind: "replay_end", Ts: time.Now(), Data: json.RawMessage(`{}`)}) {
+	// (everything after it is a live event, rendered immediately). The
+	// payload carries the window's absolute offset (start) and the full
+	// event count (total) so the frontend can show and page the remainder,
+	// plus the footer stats for the events it did not receive.
+	endMeta, _ := json.Marshal(map[string]any{
+		"start": start,
+		"total": len(merged),
+		"stats": computeReplayStats(merged[:start]),
+	})
+	if !send(&store.Event{Kind: "replay_end", Ts: time.Now(), Data: endMeta}) {
 		return
 	}
 
@@ -1621,6 +1601,366 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// replayWindow is how many tail events the SSE replay ships on connect. The
+// window is widened (never shrunk) to include the most recent user prompt so
+// the pinned-prompt affordance survives a session switch; everything older
+// pages in via handleSessionHistory. 50 matches the frontend's HISTORY_PAGE,
+// so one "load more" click fetches exactly the next page.
+const replayWindow = 50
+
+// replayWindowStart returns the index of the first event to send: the last n
+// events, extended backwards to the most recent user prompt so the frontend's
+// pinned prompt (derived from the last rendered user message) is always in the
+// window.
+func replayWindowStart(events []*store.Event, n int) int {
+	if len(events) <= n {
+		return 0
+	}
+	start := len(events) - n
+	for i := len(events) - 1; i >= 0; i-- {
+		if isUserTextEvent(events[i]) {
+			if i < start {
+				return i
+			}
+			break
+		}
+	}
+	return start
+}
+
+// isUserTextEvent reports whether e is a stored user prompt carrying text —
+// the server-side twin of the frontend's lastUserEventIndex predicate.
+func isUserTextEvent(e *store.Event) bool {
+	if e == nil || e.Kind != "user" {
+		return false
+	}
+	var d struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(e.Data, &d) != nil {
+		return false
+	}
+	return strings.TrimSpace(d.Text) != ""
+}
+
+// replayEvents builds the merged replay event list for a session: stored
+// user/status events plus the engine's own transcript, ts-ordered and deduped
+// (see mergeStoredAndClaude). It also repairs a dangling turn_start left by a
+// backend that died mid-turn (see closeStaleTurnStart). Shared by the SSE
+// handler and the history-paging endpoint so both slice the same sequence.
+func (s *Server) replayEvents(sess *store.Session) ([]*store.Event, error) {
+	stored, err := s.st.Events(sess.ID)
+	if err != nil {
+		return nil, err
+	}
+	if sess.ClaudeSessionID == "" {
+		out := make([]*store.Event, 0, len(stored))
+		out = append(out, stored...)
+		return out, nil
+	}
+	ext, extFPs := s.externalReplayEvents(sess)
+	merged := mergeStoredAndClaude(stored, ext, extFPs)
+	// If the log ends mid-turn but no turn is actually in flight — the backend
+	// was killed while a turn was running and restarted, so the persisted
+	// turn_start has no closing turn_end/interrupted/error — close it with a
+	// transient interrupted so the replay converges to the real idle state.
+	// Without this, the frontend replays the dangling turn_start on every
+	// connect and stays stuck on "running": stop is a no-op server-side and
+	// new messages only accumulate in the pending chip. The repair is
+	// per-connection and never persisted; it applies only when the manager
+	// reports no live turn activity (a genuine mid-run reconnect keeps the
+	// dangling turn_start, which is the only signal that the turn is live).
+	if !s.mgr.Busy(sess.ID) {
+		merged = closeStaleTurnStart(merged)
+	}
+	return merged, nil
+}
+
+// externalReplayEvents parses the engine's own transcript into canonical
+// stream events, plus their dedup fingerprints (see mergeStoredAndClaude).
+// claude/qoder transcripts (the ones that grow to tens of MB) are memoized by
+// a cheap source fingerprint so a session switch, a reconnect, or a
+// history-page fetch does not re-parse the whole jsonl each time; the other
+// engines read through a CLI call whose cost we leave to the caller.
+func (s *Server) externalReplayEvents(sess *store.Session) ([]*store.Event, []string) {
+	kind := s.engineOf(sess)
+	if kind != config.KindClaude && kind != config.KindQoder {
+		return s.parseExternalEvents(sess), nil
+	}
+	prof := claudehist.ClaudeProfile
+	if kind == config.KindQoder {
+		prof = claudehist.QoderProfile
+	}
+	fp := transcriptFingerprint(prof, sess.Cwd, sess.ClaudeSessionID)
+	if fp == "" {
+		return s.parseExternalEvents(sess), nil
+	}
+	return s.cachedReplay(sess.ID, fp, func() ([]*store.Event, []string) {
+		evs := s.parseExternalEvents(sess)
+		return evs, eventFingerprints(evs)
+	})
+}
+
+// eventFingerprints precomputes the dedup fingerprint for each event.
+func eventFingerprints(evs []*store.Event) []string {
+	fps := make([]string, len(evs))
+	for i, e := range evs {
+		fps[i] = eventFingerprint(e)
+	}
+	return fps
+}
+
+// parseExternalEvents reads a session's transcript from whichever store its
+// engine keeps it in, without any caching.
+func (s *Server) parseExternalEvents(sess *store.Session) []*store.Event {
+	// Replay source depends on the engine: claude and qoder sessions are
+	// parsed from the CLI's own jsonl on disk (same format, different home
+	// directory — see claudehist.Profile), opencode sessions are exported
+	// via the CLI and mcode sessions are parsed from their own
+	// messages.jsonl (both keep their transcript inside the CLI's own
+	// store); codex sessions are parsed from the CLI's rollout tree.
+	switch s.engineOf(sess) {
+	case config.KindOpenCode:
+		if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
+			if evs, err := ocReplayEvents(cli, sess.ClaudeSessionID); err == nil {
+				return evs
+			} else {
+				log.Printf("opencode replay %s: %v", sess.ClaudeSessionID, err)
+			}
+		}
+	case config.KindMcode:
+		if mc, err := mcodehist.FetchSession(sess.ClaudeSessionID); err == nil {
+			return mc.ToEvents()
+		} else {
+			log.Printf("mcode replay %s: %v", sess.ClaudeSessionID, err)
+		}
+	case config.KindCodex:
+		if cli := s.cfg().CLIByName(sess.CLI); cli != nil {
+			if cx, err := codexhist.FetchSession(codexHome(cli), sess.ClaudeSessionID); err == nil {
+				return cx.ToEvents()
+			} else {
+				log.Printf("codex replay %s: %v", sess.ClaudeSessionID, err)
+			}
+		}
+	default:
+		// claude and qoder share the transcript reader, differing only in
+		// which home directory it reads.
+		prof := claudehist.ClaudeProfile
+		if s.engineOf(sess) == config.KindQoder {
+			prof = claudehist.QoderProfile
+		}
+		evs, _ := claudehist.ConvertIn(prof, sess.Cwd, sess.ClaudeSessionID)
+		// 子代理 transcript 单独解析（subagents/agent-*.jsonl），补齐回放侧
+		// 与实时流（parent_tool_use_id 透传）同形的子代理消息事件。
+		if subEvents, err := claudehist.ConvertSubagentsIn(prof, sess.Cwd, sess.ClaudeSessionID); err == nil {
+			evs = append(evs, subEvents...)
+		}
+		return evs
+	}
+	return nil
+}
+
+// replayCacheMax bounds how many parsed sessions stay resident. A big claude
+// transcript can be tens of MB of events, so the cap is deliberately small;
+// switching back and forth between a couple of long sessions still stays warm.
+const replayCacheMax = 4
+
+// transcriptFingerprint is a cheap change detector for a claude/qoder
+// transcript: size + mtime. Empty when the file can't be stat'd, in which case
+// the caller skips caching.
+func transcriptFingerprint(p claudehist.Profile, cwd, sessionID string) string {
+	fi, err := os.Stat(claudehist.HistoryPathIn(p, cwd, sessionID))
+	if err != nil {
+		return ""
+	}
+	return strconv.FormatInt(fi.Size(), 10) + ":" + strconv.FormatInt(fi.ModTime().UnixNano(), 10)
+}
+
+// cachedReplay returns the memoized parse for sessionID when fp matches,
+// otherwise runs build and stores the result, LRU-evicting the oldest entry.
+func (s *Server) cachedReplay(sessionID, fp string, build func() ([]*store.Event, []string)) ([]*store.Event, []string) {
+	s.replayMu.Lock()
+	if e, ok := s.replayCache[sessionID]; ok && e.fp == fp {
+		evs, fps := e.events, e.fps
+		s.touchReplayOrder(sessionID)
+		s.replayMu.Unlock()
+		return evs, fps
+	}
+	s.replayMu.Unlock()
+
+	evs, fps := build()
+
+	s.replayMu.Lock()
+	s.replayCache[sessionID] = &replayCacheEntry{fp: fp, events: evs, fps: fps}
+	s.touchReplayOrder(sessionID)
+	for len(s.replayOrder) > replayCacheMax {
+		old := s.replayOrder[0]
+		s.replayOrder = s.replayOrder[1:]
+		if old != sessionID {
+			delete(s.replayCache, old)
+		}
+	}
+	s.replayMu.Unlock()
+	return evs, fps
+}
+
+// touchReplayOrder moves sessionID to the most-recently-used end of the LRU
+// order. The caller must hold replayMu.
+func (s *Server) touchReplayOrder(sessionID string) {
+	for i, id := range s.replayOrder {
+		if id == sessionID {
+			s.replayOrder = append(s.replayOrder[:i], s.replayOrder[i+1:]...)
+			break
+		}
+	}
+	s.replayOrder = append(s.replayOrder, sessionID)
+}
+
+// handleSessionHistory returns a page of replay events older than the SSE
+// window. `before` is the absolute index (in the merged sequence) of the
+// oldest event the client already holds; `limit` is how many to return. The
+// response is {events:[...], from:<offset>} where from is the absolute index
+// of events[0], so the client can keep paging.
+func (s *Server) handleSessionHistory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess := s.st.Get(id)
+	if sess == nil {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	before, _ := strconv.Atoi(r.URL.Query().Get("before"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 500 {
+		limit = replayWindow
+	}
+	merged, err := s.replayEvents(sess)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if before > len(merged) {
+		before = len(merged)
+	}
+	if before < 0 {
+		before = 0
+	}
+	from := before - limit
+	if from < 0 {
+		from = 0
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": merged[from:before], "from": from})
+}
+
+// acceptsGzip reports whether the client advertised gzip support.
+func acceptsGzip(r *http.Request) bool {
+	for _, enc := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		if strings.EqualFold(strings.TrimSpace(strings.SplitN(enc, ";", 2)[0]), "gzip") {
+			return true
+		}
+	}
+	return false
+}
+
+// gzipResponseWriter streams through a gzip.Writer while keeping Flush usable
+// for SSE: a flush pushes the gzip block out and then the underlying flusher,
+// so events are not buffered until the stream closes.
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz *gzip.Writer
+}
+
+func (g *gzipResponseWriter) Write(p []byte) (int, error) { return g.gz.Write(p) }
+
+func (g *gzipResponseWriter) Flush() {
+	_ = g.gz.Flush()
+	if f, ok := g.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// replayStats summarizes a session's events for the composer footer
+// (轮数/步数/累计耗时). It mirrors the frontend's trackStats so a windowed
+// replay can still report totals for the events it did not send.
+type replayStats struct {
+	Turns     int   `json:"turns"`
+	Steps     int   `json:"steps"`
+	FirstTs   int64 `json:"first_ts"` // unix millis
+	LastTs    int64 `json:"last_ts"`
+	LLMMs     int64 `json:"llm_ms"`
+	ToolMs    int64 `json:"tool_ms"`
+	LLMEstMs  int64 `json:"llm_est_ms"`
+	ToolEstMs int64 `json:"tool_est_ms"`
+}
+
+// computeReplayStats aggregates a prefix of replay events the same way the
+// frontend's trackStats does: user events are turns, assistant tool_use blocks
+// are steps, result events carry exact LLM/tool timing, and adjacent-event gaps
+// are the estimation fallback. The frontend adds these totals to what it tracks
+// for the window, so a huge session's footer still reflects the whole history.
+func computeReplayStats(events []*store.Event) replayStats {
+	var st replayStats
+	var prevTs int64
+	for _, e := range events {
+		ts := e.Ts.UnixMilli()
+		if ts != 0 {
+			if st.FirstTs == 0 || ts < st.FirstTs {
+				st.FirstTs = ts
+			}
+			if ts > st.LastTs {
+				st.LastTs = ts
+			}
+		}
+		if e.Kind == "user" {
+			st.Turns++
+		} else if e.Kind == "stream" {
+			var d struct {
+				Type          string `json:"type"`
+				DurationMs    int64  `json:"duration_ms"`
+				DurationAPIMs int64  `json:"duration_api_ms"`
+				Message       struct {
+					Content []struct {
+						Type string `json:"type"`
+					} `json:"content"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(e.Data, &d) == nil {
+				switch d.Type {
+				case "assistant":
+					for _, b := range d.Message.Content {
+						if b.Type == "tool_use" {
+							st.Steps++
+						}
+					}
+				case "result":
+					st.LLMMs += d.DurationAPIMs
+					if d.DurationMs > d.DurationAPIMs {
+						st.ToolMs += d.DurationMs - d.DurationAPIMs
+					}
+				}
+				if ts != 0 && prevTs != 0 {
+					gap := ts - prevTs
+					if gap < 0 {
+						gap = 0
+					}
+					if gap > 120000 {
+						gap = 120000
+					}
+					switch d.Type {
+					case "assistant":
+						st.LLMEstMs += gap
+					case "user":
+						st.ToolEstMs += gap
+					}
+				}
+			}
+		}
+		if ts != 0 {
+			prevTs = ts
+		}
+	}
+	return st
 }
 
 // closeStaleTurnStart appends a transient interrupted status event when the
@@ -1656,7 +1996,11 @@ func closeStaleTurnStart(events []*store.Event) []*store.Event {
 // mergeStoredAndClaude returns a single ts-ordered event list combining the
 // persisted user/status events with parsed Claude stream events. Stream
 // events are assigned synthetic seqs starting at max(stored seq) + 1.
-func mergeStoredAndClaude(stored []*store.Event, claude []*store.Event) []*store.Event {
+//
+// claudeFPs, when its length matches claude, supplies precomputed fingerprints
+// (see eventFingerprints) so a warm replay does not re-unmarshal every event's
+// Data; pass nil to compute them here.
+func mergeStoredAndClaude(stored []*store.Event, claude []*store.Event, claudeFPs []string) []*store.Event {
 	maxSeq := int64(0)
 	for _, e := range stored {
 		if e.Seq > maxSeq {
@@ -1666,7 +2010,7 @@ func mergeStoredAndClaude(stored []*store.Event, claude []*store.Event) []*store
 	out := make([]*store.Event, 0, len(stored)+len(claude))
 	out = append(out, stored...)
 
-	seen := make(map[string]struct{}, len(stored))
+	seen := make(map[string]struct{}, len(stored)+len(claude))
 	for _, e := range stored {
 		seen[eventFingerprint(e)] = struct{}{}
 	}
@@ -1687,8 +2031,9 @@ func mergeStoredAndClaude(stored []*store.Event, claude []*store.Event) []*store
 		storedUserText[strings.TrimSpace(d.Text)]++
 	}
 
+	useFP := len(claudeFPs) == len(claude)
 	nextSeq := maxSeq + 1
-	for _, e := range claude {
+	for i, e := range claude {
 		// Suppress Claude's echo of the user prompt (we already have it).
 		if e.Kind == "user" {
 			var d struct {
@@ -1700,10 +2045,16 @@ func mergeStoredAndClaude(stored []*store.Event, claude []*store.Event) []*store
 				continue
 			}
 		}
-		if _, ok := seen[eventFingerprint(e)]; ok {
+		var fp string
+		if useFP {
+			fp = claudeFPs[i]
+		} else {
+			fp = eventFingerprint(e)
+		}
+		if _, ok := seen[fp]; ok {
 			continue
 		}
-		seen[eventFingerprint(e)] = struct{}{}
+		seen[fp] = struct{}{}
 		c := *e
 		c.Seq = nextSeq
 		nextSeq++
