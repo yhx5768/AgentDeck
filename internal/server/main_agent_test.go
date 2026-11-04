@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"cc-webui/internal/claudehist"
+	"cc-webui/internal/config"
 	"cc-webui/internal/store"
 )
 
@@ -120,12 +121,49 @@ func TestMainAgentPromptEndpoint(t *testing.T) {
 	if body.MaxBytes != maxRolePromptBytes {
 		t.Fatalf("max_bytes = %d, want %d", body.MaxBytes, maxRolePromptBytes)
 	}
-	for _, want := range []string{"1. 归属", "5. 状态", "9. 台账", "mainAgent", "Worker 规则"} {
+	for _, want := range []string{
+		"1. 归属", "4. 状态", "mainAgent", "Worker 规则",
+		"board_create", "board_comment", "board_bind_worker", "send_message",
+		"新建 / 进行中 / 待人工 / 待验收 / 已完成 / 已取消",
+	} {
 		if !strings.Contains(body.Prompt, want) {
 			t.Errorf("default prompt lost %q", want)
 		}
 	}
+	// The default prompt must be self-contained: no machine-specific paths or
+	// removed tooling from the reading workspace it was once copied from.
+	for _, bad := range []string{"/home/soar", "routing-table", "tracking_ledger", "iql", "ducc"} {
+		if strings.Contains(body.Prompt, bad) {
+			t.Errorf("default prompt still references %q", bad)
+		}
+	}
 	if len(body.Prompt) > maxRolePromptBytes {
 		t.Fatalf("default prompt is %d bytes, over the cap", len(body.Prompt))
+	}
+}
+
+// TestMainAgentPromptFromConfig: the worker defaults come from
+// main_agent.worker, and main_agent.prompt replaces the whole template.
+func TestMainAgentPromptFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	yes := true
+	cfg := &config.Config{
+		DataDir: dir,
+		MainAgent: &config.MainAgentConfig{
+			Worker: config.WorkerDefaults{
+				CLI: "claude", Provider: "sensenova", Model: "deepseek-v4-flash",
+				Effort: "max", Resident: &yes,
+			},
+		},
+	}
+	s := &Server{cm: config.NewManager(filepath.Join(dir, "config.yaml"), cfg)}
+	if p := s.mainAgentPrompt(); !strings.Contains(p, "claude / sensenova / deepseek-v4-flash / max / 常驻") {
+		t.Fatalf("worker defaults not interpolated:\n%s", p)
+	}
+
+	cfg.MainAgent.Prompt = "CUSTOM PROMPT"
+	s2 := &Server{cm: config.NewManager(filepath.Join(dir, "config.yaml"), cfg)}
+	if got := s2.mainAgentPrompt(); got != "CUSTOM PROMPT" {
+		t.Fatalf("override = %q", got)
 	}
 }

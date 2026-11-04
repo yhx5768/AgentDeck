@@ -242,8 +242,35 @@ type Config struct {
 	// to false to opt out (e.g. to keep every session's tool list minimal).
 	AgentdeckMCP *bool `yaml:"agentdeck_mcp"`
 
+	// MainAgent configures the preloaded main-agent role prompt and the default
+	// worker profile that prompt interpolates. nil = built-in defaults.
+	MainAgent *MainAgentConfig `yaml:"main_agent" json:"main_agent,omitempty"`
+
 	// TokenGenerated is true when the token was auto-generated at startup.
 	TokenGenerated bool `yaml:"-" json:"-"`
+}
+
+// MainAgentConfig is the `main_agent` section of config.yaml.
+type MainAgentConfig struct {
+	// Worker is the default profile the main agent uses when it creates a
+	// worker via new_session. Its values are interpolated into the built-in
+	// role prompt so the model knows the house default; the model can still
+	// override any field per task.
+	Worker WorkerDefaults `yaml:"worker" json:"worker"`
+	// Prompt replaces the whole built-in role prompt when non-empty. Leave it
+	// unset to use the built-in template (with Worker interpolated).
+	Prompt string `yaml:"prompt" json:"prompt,omitempty"`
+}
+
+// WorkerDefaults is the default profile for a new worker session.
+type WorkerDefaults struct {
+	CLI      string `yaml:"cli" json:"cli,omitempty"`
+	Provider string `yaml:"provider" json:"provider,omitempty"`
+	Model    string `yaml:"model" json:"model,omitempty"`
+	Effort   string `yaml:"effort" json:"effort,omitempty"`
+	// Resident keeps a long-lived process online (claude only). nil = unset
+	// (the prompt then omits the 常驻/非常驻 hint).
+	Resident *bool `yaml:"resident" json:"resident,omitempty"`
 }
 
 // AgentdeckMCPEnabled reports whether the agentdeck MCP server is injected.

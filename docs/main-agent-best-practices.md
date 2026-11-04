@@ -56,6 +56,8 @@ sequenceDiagram
 
 ### 3.1 默认配置
 
+> 主 Agent 建 worker 的默认档现在由 **`config.yaml` 的 `main_agent.worker`** 配（cli/provider/model/effort/resident），会被拼进预载的角色提示里；下表是 ducc 环境的一个样例，本机以 config 的 `clis`/`providers` 为准。
+
 | 项 | 默认值 | 说明 |
 |---|---|---|
 | 引擎 | `--cli ducc --provider ducc-models` | **常驻进程**只有 claude 内核（ducc、claude）支持，其他引擎带 `--resident` 会被服务端 400；但**跨会话消息（A2A）已引擎中立**——worker 与主 Agent 不一定是 claude，投递走 `/api/a2a/send`（见 `a2a-rd.md`） |
@@ -238,7 +240,7 @@ for s in json.load(sys.stdin):
 
 ## 12. 已知限制
 
-- 只有 claude 内核（ducc、claude）能常驻和收发 `SendMessage`。opencode、codex、mcode、qoder 会话只能由主 Agent 用 `agentdeck.py send` 投递、过后用 `tail` 读结果，不能主动回报，所以不当 worker 用。`reply`、`run` 会让主 Agent 阻塞到对方跑完，也不适合派工。
+- **常驻进程**只有 claude 内核（ducc、claude）支持（其他引擎带 `--resident` 会被服务端 400）；但**跨会话消息（A2A）已引擎中立**，opencode/codex/mcode/qoder 的 worker 也能用 agentdeck MCP 的 `send_message` 主动回报主 Agent（投递走 `/api/a2a/send` 排一轮，不需要常驻，见 `a2a-rd.md`）。所以 worker 引擎可以不是 claude，只是没有常驻进程时空闲期不在线、回报要等它下一轮。`reply`/`run` 会让主 Agent 阻塞到对方跑完，不适合派工。
 - peer 消息只投递给在线会话，不会替离线会话存着。
 - 空闲通知只带最后一条回复的第一行，而且要等主 Agent 当前轮结束才送达。
 - 回报要等主 Agent 下一次工具调用才进上下文，主 Agent 跑长命令时回报会晚到。

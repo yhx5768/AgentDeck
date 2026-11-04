@@ -67,6 +67,21 @@ default_cwd: "~"
 # 设 false 时移除注入（mcode 的条目会被清理）。
 # agentdeck_mcp: false
 
+# main_agent：预载的「主 Agent 角色提示」与它拼进去的 worker 默认档。
+# GET /api/main-agent-prompt 下发的就是拼好的提示；前端「作为主 Agent」开关把它写进
+# 会话的 role_prompt（改这里后要在 📡 面板把开关关掉再打开、或用角色提示弹窗的
+# 「填入主 Agent 默认」，才会装进已有会话）。
+# main_agent:
+#   worker:              # 主 Agent 建 worker（new_session）时的默认档，会拼进提示
+#     cli: "claude"
+#     provider: "sensenova"
+#     model: "deepseek-v4-flash"
+#     effort: "max"
+#     resident: true     # 常驻（仅 claude 内核支持；不写则提示里不体现）
+#   # prompt: |          # 非空则整段替换内置模板（想完全自定义角色提示时用）
+#   #   ## 我的主 Agent 规则
+#   #   ...
+
 # 三层结构：
 #   clis[]      - 一个聊天 CLI 二进制安装（path + args + 权限模式 + 共享 env）
 #                 kind: claude（缺省）= Claude Code 及兼容 CLI（stream-json 协议）
