@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,65 @@ func TestEnqueueBumpsUpdatedAt(t *testing.T) {
 	}
 	if got := st.Get(sid).UpdatedAt; !got.After(base) {
 		t.Fatalf("Enqueue 没刷新 UpdatedAt: %v", got)
+	}
+}
+
+// TestEnqueueRecordsImageNames pins that a turn's persisted user event carries
+// the on-disk names of its images (not base64), which is what lets the frontend
+// render them after a reload/replay. A turn with no images must not write the
+// field at all.
+func TestEnqueueRecordsImageNames(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	const sid = "s1"
+	if err := st.Upsert(&store.Session{ID: sid, Name: "t"}, nil); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	m := NewManager(config.NewManager("", &config.Config{}), st)
+	// Pretend a turn is in flight: Enqueue then only appends to the queue
+	// instead of spawning a worker (which would need a real CLI).
+	r := m.rt(sid)
+	r.mu.Lock()
+	r.working = true
+	r.mu.Unlock()
+
+	readUser := func() (text string, images []string) {
+		t.Helper()
+		evs, err := st.Events(sid)
+		if err != nil {
+			t.Fatalf("events: %v", err)
+		}
+		for i := len(evs) - 1; i >= 0; i-- {
+			if evs[i].Kind != "user" {
+				continue
+			}
+			var d struct {
+				Text   string   `json:"text"`
+				Images []string `json:"images"`
+			}
+			if err := json.Unmarshal(evs[i].Data, &d); err != nil {
+				t.Fatalf("decode user event: %v", err)
+			}
+			return d.Text, d.Images
+		}
+		t.Fatal("no user event persisted")
+		return
+	}
+
+	if err := m.Enqueue(sid, Message{Text: "看这个", ImageNames: []string{"image.png", "image-2.png"}}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, images := readUser(); len(images) != 2 || images[0] != "image.png" {
+		t.Fatalf("images = %v, want the two persisted names", images)
+	}
+
+	if err := m.Enqueue(sid, Message{Text: "只有文本"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, images := readUser(); len(images) != 0 {
+		t.Fatalf("images = %v, want none for a text-only turn", images)
 	}
 }
 

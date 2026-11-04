@@ -6050,6 +6050,21 @@ function setErrorBanner(text, opts) {
   banner.classList.remove('hidden');
 }
 
+// 用户消息里的图片：事件只存文件名（见 runner.Message.ImageNames），图片本体在
+// 会话上传目录里，经 /api/sessions/{id}/uploads/{name} 取回（server 的
+// handleSessionUpload）。乐观气泡用的是本地 base64，回放/刷新后走这里，所以切
+// 会话回来图片仍在。
+function renderUserImages(bubble, names) {
+  if (!Array.isArray(names) || !names.length || !state.current) return;
+  for (const name of names) {
+    const im = document.createElement('img');
+    im.className = 'thumb';
+    im.src = `/api/sessions/${state.current.id}/uploads/${encodeURIComponent(name)}`;
+    im.alt = '';
+    bubble.appendChild(im);
+  }
+}
+
 function renderEvent(ev, box) {
   box = box || $('#messages');
   const d = ev.data;
@@ -6059,12 +6074,12 @@ function renderEvent(ev, box) {
     return;
   }
   if (ev.kind === 'user') {
-    // Replace any pending optimistic bubble with the authoritative one
-    // (which contains only text — images are not stored in events).
+    // Replace any pending optimistic bubble with the authoritative one.
     const last = box.lastElementChild;
     if (last && last.classList.contains('msg-optimistic')) last.remove();
     const bubble = addMsg('msg-user', '你', box, ev.ts);
-    bubble.textContent = d.text;
+    renderUserImages(bubble, d.images);
+    if (d.text) bubble.appendChild(document.createTextNode(d.text));
     // A checkpoint uuid means this message can be rewound (files + dialogue).
     if (d && d.checkpoint) {
       const msgDiv = bubble.parentElement;

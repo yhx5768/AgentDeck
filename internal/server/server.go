@@ -246,6 +246,7 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /api/sessions/{id}", s.auth(s.handleDeleteSession))
 	s.mux.Handle("POST /api/sessions/{id}/messages", s.auth(s.handlePostMessage))
 	s.mux.Handle("POST /api/sessions/{id}/uploads", s.auth(s.handleUpload))
+	s.mux.Handle("GET /api/sessions/{id}/uploads/{name}", s.auth(s.handleSessionUpload))
 	s.mux.Handle("POST /api/sessions/{id}/stop", s.auth(s.handleStop))
 	s.mux.Handle("PUT /api/sessions/{id}/goal", s.auth(s.handleSetGoal))
 	s.mux.Handle("DELETE /api/sessions/{id}/goal", s.auth(s.handleClearGoal))
@@ -1300,8 +1301,17 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "select a workspace before sending messages")
 		return
 	}
+	// 图片消息不落进事件（base64 会让事件日志与每次 SSE 回放膨胀）：把每张图
+	// 落到本会话上传目录，事件里只存文件名，前端经
+	// /api/sessions/{id}/uploads/{name} 取回。此前图片只在乐观气泡里闪一下——
+	// 服务端回推纯文本 user 事件就把它顶掉了，刷新/切会话后彻底消失。
+	imageNames, err := s.persistMessageImages(id, body.Images)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "保存图片失败："+err.Error())
+		return
+	}
 	if err := s.mgr.Enqueue(id, runner.Message{
-		Text: body.Text, Images: body.Images, Files: body.Files, Source: source,
+		Text: body.Text, Images: body.Images, Files: body.Files, ImageNames: imageNames, Source: source,
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

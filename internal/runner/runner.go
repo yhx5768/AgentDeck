@@ -61,6 +61,12 @@ type Message struct {
 	Text   string         `json:"text"`
 	Images []Image        `json:"images,omitempty"`
 	Files  []UploadedFile `json:"files,omitempty"`
+	// ImageNames are the on-disk file names of the persisted copies of Images
+	// (data/uploads/<sid>/), recorded in the stored user event so the frontend
+	// can render them from disk after a reload/replay. The base64 in Images
+	// only rides the live turn — persisting it would bloat the event log and
+	// every SSE replay.
+	ImageNames []string `json:"image_names,omitempty"`
 	// Source records where the turn came from: user (composer/API), agent-send
 	// (agentdeck.py send), or agent-send-explicit. It rides on the persisted
 	// user event so the UI and dedupe logic can distinguish a real person
@@ -434,8 +440,9 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	if sess == nil {
 		return fmt.Errorf("session not found")
 	}
-	// Persist the user turn (text only — images are reconstructed from the
-	// current draft on the client and aren't durable state; uploaded files
+	// Persist the user turn (text only for the body — images are stored as
+	// file names under data/uploads/<sid>/ (see ImageNames) so a reload can
+	// render them without embedding base64 in the event log; uploaded files
 	// are mentioned in the composed text so replay shows where they live).
 	// opencode turns echo only the raw prompt text: files ride as `-f`
 	// attachments outside the text, and opencode's export re-states the
@@ -445,9 +452,12 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	if cli := m.cm.Get().CLIByName(sess.CLI); cli != nil && cli.IsOpenCode() {
 		echoText = msg.Text
 	}
-	event := map[string]string{"text": echoText}
+	event := map[string]any{"text": echoText}
 	if msg.Source != "" {
 		event["source"] = msg.Source
+	}
+	if len(msg.ImageNames) > 0 {
+		event["images"] = msg.ImageNames
 	}
 	if _, err := m.st.AppendEvent(sessionID, "user", event); err != nil {
 		return err
