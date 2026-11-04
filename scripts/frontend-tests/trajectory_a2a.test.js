@@ -154,6 +154,11 @@ const EVENTS = [
             type: 'tool_use', id: 't-exec-list', name: 'execute',
             input: { code: 'const r = await tools.agentdeck.list_sessions();\nreturn JSON.stringify(r);' },
           },
+          {
+            // 只是「提到」send_message（搜工具名）也不算 A2A 发。
+            type: 'tool_use', id: 't-exec-mention', name: 'execute',
+            input: { code: 'const s = await search({ query: "send_message", limit: 5 });\nreturn s.items.map(i => i.path);' },
+          },
         ],
       },
     },
@@ -223,6 +228,12 @@ function main() {
   const execList = records.find((r) => r.callId === 't-exec-list');
   check('execute 里的 list_sessions 不算 A2A',
     !!execList && X.trajA2ADir(execList) === '' && X.trajRecordRole(execList) === 'tool');
+  const execMention = records.find((r) => r.callId === 't-exec-mention');
+  check('execute 里只提到 send_message（没调用）不算 A2A',
+    !!execMention && X.trajA2ADir(execMention) === '' && X.trajRecordRole(execMention) === 'tool',
+    execMention && execMention.summary);
+  check('a2aSendInfo 对「只提到」的代码返回 null',
+    X.a2aSendInfo('execute', execMention.toolInput) === null);
   check('a2aSendInfo 从代码里抽出 to/message',
     (() => { const i = X.a2aSendInfo('execute', execSend.toolInput); return i && i.to === 'mainAgent' && i.message === 'ack oc'; })());
 

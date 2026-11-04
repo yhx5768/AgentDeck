@@ -74,7 +74,11 @@ function a2aSendInfo(toolName, input) {
     return { to: String((input && input.to) || ''), message: String((input && input.message) || ''), native: true };
   }
   const code = input && (input.code || input.command);
-  if (typeof code !== 'string' || !/agentdeck/i.test(code) || !/send_message/.test(code)) return null;
+  if (typeof code !== 'string') return null;
+  // 必须是**真的在调用** agentdeck 的 send_message（名字后面紧跟左括号），
+  // 光是代码里提到这个词不算——否则 search({query:"send_message"})、注释、
+  // 变量名之类的调用会被误判成 A2A 发，整张工具卡被渲染成 message。
+  if (!/agentdeck[._]+send_message\s*\(/i.test(code)) return null;
   const to = (code.match(/to\s*:\s*["'`]([^"'`]+)["'`]/) || [])[1] || '';
   const msg = (code.match(/message\s*:\s*["'`]([\s\S]*?)["'`]\s*[,}\n)]/) || [])[1] || '';
   return { to, message: msg || code, native: false, code };
