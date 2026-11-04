@@ -219,6 +219,34 @@ func TestServeKeyIncludesConfigScope(t *testing.T) {
 	}
 }
 
+func TestOpencodePerSessionRolePrompt(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	st, err := store.Open(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := config.NewManager("", &config.Config{Listen: "127.0.0.1:8321", GatewayToken: "tok", DataDir: dir})
+	m := NewManager(cm, st)
+	if err := st.Upsert(&store.Session{
+		ID: "s1", Name: "main", MainAgent: true, RolePrompt: "你是主 Agent", Cwd: dir,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfgDir := m.ensureOpencodeRuleFor("s1")
+	if cfgDir == "" {
+		t.Fatal("no per-session config dir")
+	}
+	raw, _ := os.ReadFile(filepath.Join(cfgDir, "opencode.json"))
+	if !strings.Contains(string(raw), "ROLE_PROMPT.md") {
+		t.Fatalf("role prompt not wired into instructions: %s", raw)
+	}
+	roleRaw, err := os.ReadFile(filepath.Join(cfgDir, "ROLE_PROMPT.md"))
+	if err != nil || !strings.Contains(string(roleRaw), "你是主 Agent") {
+		t.Fatalf("role file missing/wrong: %v %s", err, roleRaw)
+	}
+}
+
 func TestOpencodeConfigScope(t *testing.T) {
 	// Browser off: only coordinating sessions get their own config.
 	m := browserTestManager(t)

@@ -58,7 +58,7 @@ sequenceDiagram
 
 | 项 | 默认值 | 说明 |
 |---|---|---|
-| 引擎 | `--cli ducc --provider ducc-models` | 常驻和 peer 消息只有 claude 内核（ducc、claude）支持，其他引擎带 `--resident` 建会话会被服务端 400 |
+| 引擎 | `--cli ducc --provider ducc-models` | **常驻进程**只有 claude 内核（ducc、claude）支持，其他引擎带 `--resident` 会被服务端 400；但**跨会话消息（A2A）已引擎中立**——worker 与主 Agent 不一定是 claude，投递走 `/api/a2a/send`（见 `a2a-rd.md`） |
 | 模型 | `--model DeepSeek-V4.1-Flash` | 写模型目录里的原样 ID，大小写敏感。服务端 `modelKnown` 只认 config.yaml 里登记的名字或 `ducc models` 输出的 ID，都是精确匹配；写成 `deepseek-v4.1-flash` 两边都没有，返回 400 `unknown model` |
 | 档位 | `--effort max` | claude 内核的固定档位之一（low / medium / high / xhigh / max） |
 | 常驻 | `--resident` | 必开。不开常驻的会话只在跑某一轮时临时注册，用的还是派生名，按地址名发 `SendMessage` 发不到它 |
@@ -110,7 +110,7 @@ worker 不单独传 `--permission-mode`，继承 cli 配置（例如 config.yaml
 
 ### 4.1 用 SendMessage 发派工单
 
-派工、追问、转达确认都用 `SendMessage`，不用 `agentdeck.py send`。`SendMessage` 到达时带发送方的地址名（`from-name`），CLI 还会附一段说明：消息来自另一个会话、不是用户输入、peer 不能授予额外权限。worker 因此知道是谁派的活，也不会把它当成用户本人的指令。`agentdeck.py send` 写入的是一条普通 user 消息，在 worker 看来就是用户亲手输入的。
+派工、追问、转达确认都用**跨会话消息**，不用 `agentdeck.py send`。**首选 agentdeck 的 MCP 工具 `send_message`**（所有引擎都注入，`from` 填自己的地址名）；claude 引擎也可用内置 `SendMessage`。两者到达时都带发送方的地址名，接收方知道是谁派的活、也不会当成用户本人的指令。`agentdeck.py send` 写入的是一条普通 user 消息，在接收方看来就是用户亲手输入的（所以默认不给主 Agent 用）。
 
 ```text
 【派工】<项目-任务>，来自 <主 Agent 地址名>

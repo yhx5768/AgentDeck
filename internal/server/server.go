@@ -823,10 +823,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("engine mismatch: cli %q (%s) with provider %q (%s)", cli.Name, cli.Kind, prov.Name, prov.Kind))
 		return
 	}
-	// Resident/peer messaging is a Claude Code protocol feature; no other engine
-	// may enable it. Mirrors the PATCH guard in handlePatchSession.
-	if (body.Resident || body.PeerName != "") && !cli.IsClaude() {
-		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻/peer 消息")
+	// A resident process is a Claude Code protocol feature; no other engine may
+	// enable it. An address name (peer_name), by contrast, is engine-neutral —
+	// it is how the A2A bus (and Claude's own SendMessage) reaches the session,
+	// so every engine may set one. Mirrors the PATCH guard.
+	if body.Resident && !cli.IsClaude() {
+		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻进程")
 		return
 	}
 	peerName := ""
@@ -1012,10 +1014,10 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Resident/peer messaging is a Claude Code protocol feature; no other engine
-	// may enable it (the cli kind that applies after this patch decides).
-	if (body.Resident != nil || body.PeerName != nil) && cli != nil && !cli.IsClaude() {
-		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻/peer 消息")
+	// A resident process is Claude-only; an address name is engine-neutral (it
+	// is the A2A address). The cli kind that applies after this patch decides.
+	if body.Resident != nil && cli != nil && !cli.IsClaude() {
+		writeErr(w, http.StatusBadRequest, cli.Kind+" 引擎不支持常驻进程")
 		return
 	}
 	// Only the engines that keep a plain transcript file inside the workspace
@@ -1079,8 +1081,11 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			log.Printf("session %s: workspace %s -> %s (transcript relocated)", sess.ID, sess.Cwd, effCwd)
 		}
 	}
-	// Peer-name rename writes to the transcript at its final location.
-	if body.PeerName != nil && sess.ClaudeSessionID != "" {
+	// Peer-name rename writes the claude/qoder transcript custom-title (the CLI
+	// resolves SendMessage against it). Other engines keep the address in the
+	// store only — their session id is not a claude transcript file, so writing
+	// one would create a bogus jsonl.
+	if body.PeerName != nil && sess.ClaudeSessionID != "" && (cli == nil || cli.IsClaude() || cli.IsQoder()) {
 		name := peerName
 		if name == "" {
 			name = runner.CleanPeerName(sess.Name)

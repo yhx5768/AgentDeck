@@ -54,15 +54,30 @@ func postCreateSession(t *testing.T, s *Server, body map[string]any) *httptest.R
 func TestCreateSessionResidentClaudeOnly(t *testing.T) {
 	s, _ := createResidentServer(t)
 
-	// A non-claude engine must reject resident/peer_name outright.
-	for _, body := range []map[string]any{
-		{"cli": "oc", "provider": "oc-p", "cwd": t.TempDir(), "resident": true},
-		{"cli": "oc", "provider": "oc-p", "cwd": t.TempDir(), "peer_name": "bob"},
-	} {
-		w := postCreateSession(t, s, body)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("non-claude resident: code = %d, want 400 (body=%s)", w.Code, w.Body.String())
-		}
+	// A resident process is claude-only.
+	w := postCreateSession(t, s, map[string]any{
+		"cli": "oc", "provider": "oc-p", "cwd": t.TempDir(), "resident": true,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("non-claude resident: code = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateSessionPeerNameAnyEngine(t *testing.T) {
+	s, st := createResidentServer(t)
+
+	// An address name is engine-neutral: an opencode session may set one (the
+	// A2A bus resolves it from the store, not a claude transcript).
+	w := postCreateSession(t, s, map[string]any{
+		"cli": "oc", "provider": "oc-p", "cwd": t.TempDir(), "peer_name": "bob",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("opencode peer_name: code = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var view sessionView
+	_ = json.Unmarshal(w.Body.Bytes(), &view)
+	if sess := st.Get(view.Session.ID); sess == nil || sess.PeerName != "bob" {
+		t.Fatalf("peer name not stored: %+v", sess)
 	}
 }
 

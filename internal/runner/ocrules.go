@@ -88,7 +88,7 @@ func (m *Manager) opencodeConfigScope(sess *store.Session) string {
 	if m.browserEnabled != nil && m.browserEnabled() {
 		return sess.ID
 	}
-	if sess.MainAgent || sess.PeerName != "" || sess.Resident {
+	if sess.MainAgent || sess.PeerName != "" || sess.Resident || strings.TrimSpace(sess.RolePrompt) != "" {
 		return sess.ID
 	}
 	return ""
@@ -114,6 +114,16 @@ func (m *Manager) writeOpencodeConfig(sessionID string) string {
 	hint := m.cm == nil || m.cm.Get().HTMLHintEnabled()
 	ade := m.cm != nil && m.cm.Get().AgentdeckMCPEnabled()
 
+	// A session role prompt has no append flag in opencode either; it rides the
+	// same `instructions` array as the HTML hint, but in the per-session config
+	// (the base config must stay shared across sessions).
+	rolePrompt := ""
+	if sessionID != "" && m.st != nil {
+		if sess := m.st.Get(sessionID); sess != nil {
+			rolePrompt = strings.TrimSpace(sess.RolePrompt)
+		}
+	}
+
 	// MCP servers only go in the per-session config. Declaring "mcp" in the
 	// shared base would replace the user's own mcp section for every opencode
 	// session; a per-session config is only created for sessions that actually
@@ -131,7 +141,7 @@ func (m *Manager) writeOpencodeConfig(sessionID string) string {
 	}
 	// Nothing to write → do not create the directory at all, so an opted-out
 	// config leaves no trace in $HOME (see TestEnsureOpencodeRuleRespectsSwitch).
-	if !hint && len(servers) == 0 {
+	if !hint && len(servers) == 0 && rolePrompt == "" {
 		return ""
 	}
 
@@ -154,14 +164,26 @@ func (m *Manager) writeOpencodeConfig(sessionID string) string {
 	}
 
 	config := map[string]any{"$schema": "https://opencode.ai/config.json"}
+	var instructions []string
 	if hint {
 		hintPath := filepath.Join(base, "HTML_RENDER_HINT.md")
 		hintText := strings.TrimSpace(htmlRenderHint) + "\n"
 		if err := writeIfChanged(hintPath, []byte(hintText)); err == nil {
-			config["instructions"] = []string{hintPath}
+			instructions = append(instructions, hintPath)
 		} else {
 			log.Printf("写 %s 失败: %v", hintPath, err)
 		}
+	}
+	if rolePrompt != "" {
+		rolePath := filepath.Join(dir, "ROLE_PROMPT.md")
+		if err := writeIfChangedMode(rolePath, []byte(rolePrompt+"\n"), 0o600); err == nil {
+			instructions = append(instructions, rolePath)
+		} else {
+			log.Printf("写 %s 失败: %v", rolePath, err)
+		}
+	}
+	if len(instructions) > 0 {
+		config["instructions"] = instructions
 	}
 	if len(servers) > 0 {
 		config["mcp"] = map[string]any{"servers": servers}

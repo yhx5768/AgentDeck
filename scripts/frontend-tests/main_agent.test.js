@@ -355,8 +355,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 
   state.current = { id: 's1', name: 'oc', engine: 'opencode', role_prompt: '' };
   await X.openRolePromptDialog();
-  check('opencode 明确提示不注入',
-    $('#role-prompt-note').textContent.includes('暂不支持'), $('#role-prompt-note').textContent);
+  check('opencode 说明走 instructions 注入',
+    $('#role-prompt-note').textContent.includes('instructions'), $('#role-prompt-note').textContent);
 
   $('#role-prompt-text').value = '中文abc';
   X.updateRolePromptCounter();
