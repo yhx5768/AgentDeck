@@ -279,7 +279,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
       session: w.id, updated_at: now,
     })).concat([{
       id: 'T-1-newer', title: '最新任务', status: '进行中', worker: 'worker-1',
-      session: 'worker-1', updated_at: '2026-11-03T22:01:00Z',
+      session: 'worker-1', updated_at: '2099-01-01T00:00:00Z',
     }]),
   };
   X.renderMainAgents();
