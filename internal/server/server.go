@@ -238,6 +238,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/sessions/{id}/browser/stream", s.auth(s.handleBrowserStream))
 	s.mux.Handle("POST /api/sessions/{id}/browser/input", s.auth(s.handleBrowserInput))
 	s.mux.HandleFunc("POST /api/internal/browser/mcp", s.handleInternalBrowserMCP)
+	s.mux.HandleFunc("POST /api/internal/agentdeck/mcp", s.handleInternalAgentdeckMCP)
 	s.mux.Handle("GET /api/claude-sessions", s.auth(s.handleClaudeSessions))
 	s.mux.Handle("GET /api/claude-sessions/preview", s.auth(s.handleClaudeSessionPreview))
 	s.mux.Handle("GET /api/opencode-sessions", s.auth(s.handleOpenCodeSessions))

@@ -235,8 +235,21 @@ type Config struct {
 	// opt out. See runner/htmlhint.go for the text and the per-engine coverage.
 	HTMLRenderHint *bool `yaml:"html_render_hint"`
 
+	// AgentdeckMCP controls whether cc-webui injects its agentdeck MCP server
+	// (list_sessions / send_message / new_session / get_session / stop_session)
+	// into every engine's tool list, so any engine's agent can drive AgentDeck
+	// and talk to peer sessions over the A2A bus. nil (unset) means ON. Set it
+	// to false to opt out (e.g. to keep every session's tool list minimal).
+	AgentdeckMCP *bool `yaml:"agentdeck_mcp"`
+
 	// TokenGenerated is true when the token was auto-generated at startup.
 	TokenGenerated bool `yaml:"-" json:"-"`
+}
+
+// AgentdeckMCPEnabled reports whether the agentdeck MCP server is injected.
+// Unset means enabled — see the AgentdeckMCP doc comment.
+func (c *Config) AgentdeckMCPEnabled() bool {
+	return c == nil || c.AgentdeckMCP == nil || *c.AgentdeckMCP
 }
 
 // HTMLHintEnabled reports whether the HTML render hint should be injected.

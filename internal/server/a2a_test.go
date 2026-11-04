@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,66 @@ func TestA2ASendResolvesByNameFallback(t *testing.T) {
 	// "name [ref]" disambiguator is stripped.
 	if got := s.resolveAddress("Alice [3fa9c1]"); got == nil || got.ID != "t3" {
 		t.Fatalf("resolveAddress ref-strip failed: %+v", got)
+	}
+}
+
+func TestAgentdeckMCPEndpoint(t *testing.T) {
+	s, st := createResidentServer(t)
+	putSession(t, st, &store.Session{
+		ID: "t1", Name: "主Agent", PeerName: "mainAgent",
+		Cwd: t.TempDir(), CLI: "claude", Provider: "gw",
+	})
+
+	mcpPost := func(method string, params any, remote string) *httptest.ResponseRecorder {
+		payload := map[string]any{"method": method}
+		if params != nil {
+			payload["params"] = params
+		}
+		raw, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/internal/agentdeck/mcp", bytes.NewReader(raw))
+		req.RemoteAddr = remote
+		req.Header.Set("X-CC-Webui-Session", "t1")
+		w := httptest.NewRecorder()
+		s.handleInternalAgentdeckMCP(w, req)
+		return w
+	}
+
+	// tools/list exposes the surface.
+	w := mcpPost("tools/list", nil, "127.0.0.1:12345")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "send_message") {
+		t.Fatalf("tools/list: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// tools/call list_sessions renders sessions with their address.
+	w = mcpPost("tools/call", map[string]any{"name": "list_sessions", "arguments": map[string]any{}}, "127.0.0.1:12345")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "mainAgent") {
+		t.Fatalf("list_sessions: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// tools/call send_message delivers over the bus; `from` defaults to the
+	// calling session's address when the session header is present.
+	w = mcpPost("tools/call", map[string]any{
+		"name":      "send_message",
+		"arguments": map[string]any{"to": "mainAgent", "message": "hi from mcp"},
+	}, "127.0.0.1:12345")
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "isError") {
+		t.Fatalf("send_message: code=%d body=%s", w.Code, w.Body.String())
+	}
+	waitIdle(t, s, "t1")
+	evs, _ := st.Events("t1")
+	found := false
+	for _, e := range evs {
+		if e.Kind == "user" && strings.Contains(string(e.Data), "hi from mcp") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("send_message did not persist an a2a user event")
+	}
+
+	// A non-loopback caller is rejected outright.
+	if w := mcpPost("tools/list", nil, "10.0.0.1:9999"); w.Code != http.StatusForbidden {
+		t.Fatalf("non-loopback: code=%d, want 403", w.Code)
 	}
 }
 

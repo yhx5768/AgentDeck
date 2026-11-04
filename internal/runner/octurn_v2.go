@@ -675,7 +675,7 @@ func (m *Manager) runOpenCodeTurnV2(sessionID string, msg Message, sess *store.S
 	model := prov.EffectiveModel(sess.ModelOverride)
 	permMode := effectivePermissionMode(sess.PermissionMode, cli.PermissionMode)
 
-	h, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, resolvedCwd, m.browserSessionFor(sessionID))
+	h, release, err := m.ocPool.acquire(context.Background(), cli, prov, model, resolvedCwd, m.opencodeConfigScope(sess))
 	if err != nil {
 		m.emit(sessionID, "status", map[string]string{"state": "error", "error": err.Error()})
 		m.setIdle(sessionID, err.Error())
