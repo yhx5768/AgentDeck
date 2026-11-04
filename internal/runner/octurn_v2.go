@@ -152,6 +152,23 @@ func (t *openCodeTurnV2) consume(events <-chan opencodev2.Event) {
 			t.emitAssistant(d.AssistantMessageID, map[string]any{
 				"type": "text", "text": d.Text, "id": textPartID(d.AssistantMessageID, d.Ordinal),
 			})
+		case "session.reasoning.delta":
+			// Reasoning streams on its own namespace in v2 (session.reasoning.*,
+			// not the answer's session.text.*), so — unlike v1, whose reasoning
+			// deltas were indistinguishable from the reply — forwarding it can
+			// never leak private thinking into the answer bubble. The frontend
+			// accumulates it into the same live "thinking" block claude's
+			// thinking_delta feeds; the full block below replaces it on end.
+			var d v2TextDelta
+			if ev.Decode(&d) != nil || d.Delta == "" {
+				continue
+			}
+			t.mgr.emit(t.sessionID, "stream", map[string]any{
+				"type":      "oc_reasoning_delta",
+				"messageID": d.AssistantMessageID,
+				"partID":    reasoningPartID(d.AssistantMessageID, d.Ordinal),
+				"delta":     d.Delta,
+			})
 		case "session.reasoning.ended":
 			var d v2TextEnded
 			if ev.Decode(&d) != nil || strings.TrimSpace(d.Text) == "" {
@@ -159,7 +176,7 @@ func (t *openCodeTurnV2) consume(events <-chan opencodev2.Event) {
 			}
 			t.emitAssistant(d.AssistantMessageID, map[string]any{
 				"type": "thinking", "thinking": d.Text,
-				"id": fmt.Sprintf("%s:reasoning-%d", d.AssistantMessageID, d.Ordinal),
+				"id": reasoningPartID(d.AssistantMessageID, d.Ordinal),
 			})
 		case "session.tool.called":
 			var d v2ToolCalled
@@ -217,6 +234,12 @@ func (t *openCodeTurnV2) consume(events <-chan opencodev2.Event) {
 
 func textPartID(messageID string, ordinal int) string {
 	return fmt.Sprintf("%s:text-%d", messageID, ordinal)
+}
+
+// reasoningPartID names a reasoning part; the live oc_reasoning_delta events and
+// the final thinking block share it so the frontend can pair them.
+func reasoningPartID(messageID string, ordinal int) string {
+	return fmt.Sprintf("%s:reasoning-%d", messageID, ordinal)
 }
 
 func (t *openCodeTurnV2) emitAssistant(messageID string, block map[string]any) {

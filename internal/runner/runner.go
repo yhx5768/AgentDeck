@@ -1766,9 +1766,13 @@ func (m *Manager) captureCheckpoint(sessionID string, msg Message, sess *store.S
 		return
 	}
 	if _, err := m.st.UpdateEvent(sessionID, userSeq, func(ev *store.Event) {
-		var d map[string]string
-		if json.Unmarshal(ev.Data, &d) != nil {
-			d = map[string]string{}
+		// map[string]any, NOT map[string]string: an image message's event holds
+		// `images` (a []string), which fails a map[string]string unmarshal. The
+		// old fallback then rewrote the event as checkpoint-only and dropped the
+		// text — see ocheckpoint.go's writeCheckpoint for the same fix.
+		var d map[string]any
+		if json.Unmarshal(ev.Data, &d) != nil || d == nil {
+			d = map[string]any{}
 		}
 		d["checkpoint"] = uuid
 		raw, _ := json.Marshal(d)

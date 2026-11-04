@@ -5911,6 +5911,26 @@ function liveFinalizeAll() {
   state.live = null;
 }
 
+// 新建一个流式 thinking 块。claude 的 content_block_start(thinking) 与 opencode
+// 的 oc_reasoning_delta 共用它，所以两条引擎的「完整 thinking 块替换 live 块」
+// 都走同一个 liveTake('thinking')，前端只有一套收尾逻辑。流式期间展开，完成后
+// 用户可手动折叠。
+function liveThinkingBlock(box, ts, initial) {
+  const details = document.createElement('details');
+  details.className = 'tool-block thinking-block';
+  details.open = true;
+  const summary = document.createElement('summary');
+  summary.textContent = 'thinking…';
+  const body = document.createElement('div');
+  body.className = 'tool-body streaming';
+  details.append(summary, body);
+  wrapInMsg(details, box, ts);
+  const b = { kind: 'thinking', el: details, bodyEl: body, buf: initial || '', done: false, taken: false, raf: null };
+  livePush(b);
+  liveSchedulePaint(b);
+  return b;
+}
+
 function renderStreamEvent(d, box, ts) {
   const ev = d.event;
   if (!ev || typeof ev !== 'object') return;
@@ -5930,18 +5950,7 @@ function renderStreamEvent(d, box, ts) {
         livePush(b);
         liveSchedulePaint(b);
       } else if (cb.type === 'thinking') {
-        const details = document.createElement('details');
-        details.className = 'tool-block thinking-block';
-        details.open = true; // 流式期间展开，完成后用户可手动折叠
-        const summary = document.createElement('summary');
-        summary.textContent = 'thinking…';
-        const body = document.createElement('div');
-        body.className = 'tool-body streaming';
-        details.append(summary, body);
-        wrapInMsg(details, box, ts);
-        const b = { kind: 'thinking', el: details, bodyEl: body, buf: cb.thinking || '', done: false, taken: false, raf: null };
-        livePush(b);
-        liveSchedulePaint(b);
+        liveThinkingBlock(box, ts, cb.thinking || '');
       } else {
         // tool_use 等：无增量渲染，等完整 assistant 事件（cur 已在上面固化）
       }
@@ -5999,6 +6008,26 @@ function renderOcTextDelta(d, box, ts) {
   state.ocBuf = text;
   state.ocBubble = b;
   liveSchedulePaint(b);
+}
+
+// opencode 的推理增量。v2 把 reasoning 和正文分成两个事件命名空间
+// （session.reasoning.* / session.text.*），所以这里的增量必定是思考内容，不会
+// 像 v1 那样和回答混在同一个 field 里。它复用 claude thinking_delta 的 live
+// 块，完整 thinking 块到达时由既有的 liveTake('thinking') 原样替换。
+function renderOcReasoningDelta(d, box, ts) {
+  const text = d.delta || '';
+  if (!text) return;
+  // liveTake 只把被替换的块标成 taken，不清 cur；而 opencode 没有 claude 的
+  // content_block_start/stop 来收尾，所以完整 thinking 块到达后 cur 仍指着那个
+  // 已移出 DOM 的块。必须跳过 taken 的块另起一个，否则新一段思考会被追加进一个
+  // 看不见的节点。
+  const b = liveBlock('thinking');
+  if (b && !b.taken) {
+    b.buf += text;
+    liveSchedulePaint(b);
+    return;
+  }
+  liveThinkingBlock(box, ts, text);
 }
 
 // 单条事件渲染失败不能拖垮整段回放。renderEvent 里全是 DOM 手术（md 的代码块壳、
@@ -6197,6 +6226,8 @@ function renderEvent(ev, box) {
       }
     } else if (d.type === 'oc_text_delta') {
       renderOcTextDelta(d, box, ev.ts);
+    } else if (d.type === 'oc_reasoning_delta') {
+      renderOcReasoningDelta(d, box, ev.ts);
     } else if (d.type === 'stream_event') {
       renderStreamEvent(d, box, ev.ts);
     } else if (d.type === 'user' && d.origin && d.origin.kind === 'peer') {

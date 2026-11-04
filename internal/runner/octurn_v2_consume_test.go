@@ -111,3 +111,84 @@ collected:
 		t.Fatal("turn was not marked done by session.execution.succeeded")
 	}
 }
+
+// TestV2ConsumeStreamsReasoning pins the live-reasoning path. v2 namespaces
+// reasoning separately from the answer (session.reasoning.* vs session.text.*),
+// so its deltas are safe to forward — and they must be, or the frontend sits
+// silent through the model's (often minutes-long) thinking. Each delta becomes
+// an oc_reasoning_delta, and the finished part still lands as one canonical
+// thinking block whose id matches the deltas' partID, so the frontend's
+// liveTake('thinking') pairs and replaces them.
+func TestV2ConsumeStreamsReasoning(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := config.NewManager(filepath.Join(dir, "config.yaml"), &config.Config{DataDir: dir})
+	m := NewManager(cm, st)
+	defer m.Close()
+
+	const sid = "s1"
+	ch, unsub := m.Subscribe(sid)
+	defer unsub()
+
+	turn := newOpenCodeTurnV2(nil, m, sid)
+	turn.ocSessionID = "ses_x"
+
+	events := make(chan opencodev2.Event, 8)
+	done := make(chan struct{})
+	go func() {
+		turn.consume(events)
+		close(done)
+	}()
+
+	mk := func(typ, data string) opencodev2.Event {
+		return opencodev2.Event{Type: typ, Data: json.RawMessage(data)}
+	}
+	for _, ev := range []opencodev2.Event{
+		mk("session.reasoning.started", `{"sessionID":"ses_x","assistantMessageID":"msg_a","ordinal":0}`),
+		mk("session.reasoning.delta", `{"sessionID":"ses_x","assistantMessageID":"msg_a","ordinal":0,"delta":"17*23"}`),
+		mk("session.reasoning.delta", `{"sessionID":"ses_x","assistantMessageID":"msg_a","ordinal":0,"delta":" = 391"}`),
+		mk("session.reasoning.ended", `{"sessionID":"ses_x","assistantMessageID":"msg_a","ordinal":0,"text":"17*23 = 391"}`),
+	} {
+		events <- ev
+	}
+	close(events)
+	<-done
+
+	var got []map[string]any
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Kind != "stream" {
+				continue
+			}
+			var d map[string]any
+			_ = json.Unmarshal(ev.Data, &d)
+			got = append(got, d)
+		default:
+			goto collected
+		}
+	}
+collected:
+	if len(got) != 3 {
+		t.Fatalf("stream events = %d, want 3: %+v", len(got), got)
+	}
+	for i, want := range []string{"17*23", " = 391"} {
+		if got[i]["type"] != "oc_reasoning_delta" || got[i]["delta"] != want {
+			t.Fatalf("reasoning delta %d = %+v", i, got[i])
+		}
+		if got[i]["partID"] != "msg_a:reasoning-0" {
+			t.Fatalf("reasoning delta %d partID = %v", i, got[i]["partID"])
+		}
+	}
+	msg := got[2]["message"].(map[string]any)
+	blk := msg["content"].([]any)[0].(map[string]any)
+	if blk["type"] != "thinking" || blk["thinking"] != "17*23 = 391" {
+		t.Fatalf("thinking block = %+v", blk)
+	}
+	if blk["id"] != "msg_a:reasoning-0" {
+		t.Fatalf("thinking id = %v, must equal the deltas' partID", blk["id"])
+	}
+}

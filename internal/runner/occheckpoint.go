@@ -46,9 +46,15 @@ func (m *Manager) writeCheckpoint(sessionID, checkpoint string) {
 		return
 	}
 	if _, err := m.st.UpdateEvent(sessionID, userSeq, func(ev *store.Event) {
-		var d map[string]string
-		if json.Unmarshal(ev.Data, &d) != nil {
-			d = map[string]string{}
+		// map[string]any, NOT map[string]string: the event carries non-string
+		// values (`images` is a []string). Unmarshalling into map[string]string
+		// fails on those, and the old `d = map[string]string{}` fallback then
+		// rewrote the event as checkpoint-only — silently dropping the user's
+		// text and image names, which showed up as a blank user bubble plus a
+		// duplicate on the next replay.
+		var d map[string]any
+		if json.Unmarshal(ev.Data, &d) != nil || d == nil {
+			d = map[string]any{}
 		}
 		d["checkpoint"] = checkpoint
 		raw, _ := json.Marshal(d)
