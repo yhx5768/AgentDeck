@@ -35,13 +35,14 @@ function grabFn(name) {
 }
 
 const setup = `
-const state = { current: { id: 's1' }, pendingBySid: {}, boardMockBusy: false };
+const state = { current: { id: 's1' }, pendingBySid: {}, boardMockBusy: false, replaying: false };
 let pendingSeq = 0;
 let postMessageImpl = async () => {};
 const sent = [];
 const sentEvents = [];
 const errors = [];
 const refills = [];
+const statusCalls = [];
 async function postMessage(payload) { return postMessageImpl(payload); }
 async function boardAppendUserEvent(taskId, text) { sentEvents.push({ taskId, text }); }
 async function boardRefillFromPending(taskId, text) { refills.push({ taskId, text }); }
@@ -49,6 +50,10 @@ function renderPendingBubble() {}
 function clearPendingBubble() {}
 function setErrorBanner(message) { errors.push(message); }
 function isRunning() { return false; }
+function updateStatusUI(st) {
+  statusCalls.push({ running: !!st.running, queued: st.queued || 0 });
+  if (state.current) state.current.status = { running: !!st.running, queued: st.queued || 0 };
+}
 ${grabFn('pendingItems')}
 ${grabFn('pendingQueue')}
 ${grabFn('enqueuePending')}
@@ -57,11 +62,13 @@ ${grabFn('holdPending')}
 ${grabFn('flushPending')}
 ${grabFn('retryPending')}
 ${grabFn('cancelPending')}
+${grabFn('syncCurrentStatus')}
 window.__x = {
-  state, sent, sentEvents, errors, refills,
+  state, sent, sentEvents, errors, refills, statusCalls,
   pendingItems, enqueuePending, holdPending, flushPending, retryPending, cancelPending,
+  syncCurrentStatus,
   setPost(fn) { postMessageImpl = fn; },
-  reset() { state.pendingBySid = {}; state.current = { id: 's1' }; state.boardMockBusy = false; sent.length = 0; sentEvents.length = 0; errors.length = 0; refills.length = 0; postMessageImpl = async () => {}; },
+  reset() { state.pendingBySid = {}; state.current = { id: 's1' }; state.boardMockBusy = false; state.replaying = false; sent.length = 0; sentEvents.length = 0; errors.length = 0; refills.length = 0; statusCalls.length = 0; postMessageImpl = async () => {}; },
 };
 `;
 
@@ -182,6 +189,48 @@ test('模拟忙碌开关开启时只保留队列，不 POST；关闭后继续发
   await x.flushPending();
   assert.deepStrictEqual(plain(x.sent), ['a']);
   assert.strictEqual(x.pendingItems('s1').length, 0);
+});
+
+// state.current.status 只由 SSE 的 status 事件与显式回读更新；SSE 一旦漏掉
+// turn_end，isRunning() 就永远为真，composer 把后续消息全扣在待发送队列里
+// （表现：发了消息一直 running、没有回复）。5s 轮询兜底必须把它对齐并补交。
+test('轮询补回漏掉的 turn_end：翻到 idle 会补交扣住的消息', async () => {
+  x.reset();
+  x.setPost(async (payload) => { x.sent.push(payload.text); });
+  x.state.current = { id: 's1', status: { running: true, queued: 0 } };
+  x.holdPending('held', [], []);
+  assert.strictEqual(x.pendingItems('s1').length, 1);
+  assert.deepStrictEqual(plain(x.sent), []);
+  // 轮询看到服务端其实已经 idle
+  x.syncCurrentStatus([{ id: 's1', status: { running: false, queued: 0 } }]);
+  await tick();
+  assert.deepStrictEqual(plain(x.sent), ['held'], '扣住的消息要被补交');
+  assert.strictEqual(x.pendingItems('s1').length, 0);
+  assert.deepStrictEqual(plain(x.statusCalls), [{ running: false, queued: 0 }]);
+});
+
+test('状态没变时不动 UI、不补交', () => {
+  x.reset();
+  x.state.current = { id: 's1', status: { running: true, queued: 0 } };
+  x.syncCurrentStatus([{ id: 's1', status: { running: true, queued: 0 } }]);
+  assert.strictEqual(x.statusCalls.length, 0);
+});
+
+test('回放期间只对齐状态，不补交（交给 flushHistory 统一处理）', () => {
+  x.reset();
+  x.state.current = { id: 's1', status: { running: true, queued: 0 } };
+  x.state.replaying = true;
+  x.holdPending('held', [], []);
+  x.syncCurrentStatus([{ id: 's1', status: { running: false, queued: 0 } }]);
+  assert.strictEqual(x.statusCalls.length, 1, '状态仍然要对齐');
+  assert.strictEqual(x.pendingItems('s1').length, 1, '回放期间不提交');
+});
+
+test('轮询列表里没有当前会话时不动', () => {
+  x.reset();
+  x.state.current = { id: 's1', status: { running: true, queued: 0 } };
+  x.syncCurrentStatus([{ id: 'other', status: { running: false, queued: 0 } }]);
+  assert.strictEqual(x.statusCalls.length, 0);
 });
 
 test('CSS 契约：队列列表可滚动、有逐条状态和失败重试', () => {

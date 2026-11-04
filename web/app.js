@@ -1123,11 +1123,33 @@ async function loadSessions() {
   state.archived = archived;
   applyPreviewWorkers();
   diffRunningSessions(active2);
+  syncCurrentStatus(active2);
   diffPendingAsks();
   renderSessionList();
   renderArchiveList();
   renderWsActivity();
   loadGroups().catch(() => {}); // 群列表随会话轮询一起刷新（量小）
+}
+
+// 轮询兜底：state.current.status 只由 SSE 的 status 事件与显式回读更新，5s 轮询
+// 一直没管它。SSE 一旦漏掉 turn_end（连接抖动、回放窗口内的竞态、进程被杀留下的
+// 悬挂 turn_start），isRunning() 就永远为真——composer 会把后续消息全扣进待发送
+// 队列，表现正是「发了消息一直 running、没有回复」。这里按轮询到的真实状态对齐，
+// 翻到 idle 时补交被扣住的消息，让前端自己恢复，不用等用户刷新。
+function syncCurrentStatus(list) {
+  const cur = state.current;
+  if (!cur || !cur.id) return;
+  const s = list.find((x) => x.id === cur.id);
+  if (!s || !s.status) return;
+  const was = !!(cur.status && cur.status.running);
+  const wasQueued = (cur.status && cur.status.queued) || 0;
+  const running = !!s.status.running;
+  const queued = s.status.queued || 0;
+  cur.status = { running, queued };
+  if (was === running && wasQueued === queued) return;
+  updateStatusUI(cur.status);
+  // 回放期间不补交：flushHistory 会在回放结束后按最新状态统一处理。
+  if (was && !running && !state.replaying) flushPending();
 }
 
 function statusDot(s) {
