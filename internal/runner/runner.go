@@ -62,10 +62,17 @@ type Message struct {
 	Images []Image        `json:"images,omitempty"`
 	Files  []UploadedFile `json:"files,omitempty"`
 	// Source records where the turn came from: user (composer/API), agent-send
-	// (agentdeck.py send), or agent-send-explicit. It rides on the persisted
-	// user event so the UI and dedupe logic can distinguish a real person
-	// typing from an agent CLI injecting a notification.
+	// (agentdeck.py send), agent-send-explicit, or a2a (the engine-neutral
+	// agent-to-agent bus). It rides on the persisted user event so the UI and
+	// dedupe logic can distinguish a real person typing from an agent CLI
+	// injecting a notification.
 	Source string `json:"source,omitempty"`
+	// From and Body carry an A2A message's decoded pieces. Text holds the
+	// envelope-wrapped form the engine sees (so replay dedup matches the CLI's
+	// own echo); From is the sender's address name and Body is the plain text
+	// the UI renders in the peer bubble. Both ride on the persisted user event.
+	From string `json:"from,omitempty"`
+	Body string `json:"body,omitempty"`
 }
 
 // turnText composes the text actually sent to the CLI for a user turn: the
@@ -448,6 +455,12 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	event := map[string]string{"text": echoText}
 	if msg.Source != "" {
 		event["source"] = msg.Source
+	}
+	if msg.From != "" {
+		event["from"] = msg.From
+	}
+	if msg.Body != "" {
+		event["body"] = msg.Body
 	}
 	if _, err := m.st.AppendEvent(sessionID, "user", event); err != nil {
 		return err

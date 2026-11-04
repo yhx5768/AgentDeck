@@ -223,6 +223,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PATCH /api/sessions/{id}", s.auth(s.handlePatchSession))
 	s.mux.Handle("DELETE /api/sessions/{id}", s.auth(s.handleDeleteSession))
 	s.mux.Handle("POST /api/sessions/{id}/messages", s.auth(s.handlePostMessage))
+	s.mux.Handle("POST /api/a2a/send", s.auth(s.handleA2ASend))
 	s.mux.Handle("POST /api/sessions/{id}/uploads", s.auth(s.handleUpload))
 	s.mux.Handle("POST /api/sessions/{id}/stop", s.auth(s.handleStop))
 	s.mux.Handle("PUT /api/sessions/{id}/goal", s.auth(s.handleSetGoal))
@@ -1210,14 +1211,6 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// agentSendBlocked prevents the duplicate-notification path: a worker that
-// calls agentdeck.py send to a mainAgent session while also using SendMessage
-// injects both a user turn and a peer bubble. Real user messages and explicit
-// API clients use source=user and are never blocked.
-func agentSendBlocked(sess *store.Session, source string) bool {
-	return sess != nil && sess.MainAgent && source == "agent-send"
-}
-
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess := s.st.Get(id)
@@ -1239,7 +1232,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	if source == "" {
 		source = "user"
 	}
-	if agentSendBlocked(sess, source) {
+	if s.agentSendBlocked(sess, source) {
 		writeErr(w, http.StatusConflict,
 			"agentdeck send 不能直接给主 Agent 发消息（会与 SendMessage 重复）；请改用 SendMessage")
 		return

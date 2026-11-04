@@ -278,8 +278,10 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
       id: `T-${i + 1}`, title: `任务 ${i + 1}`, status: '进行中', worker: w.peer_name,
       session: w.id, updated_at: now,
     })).concat([{
+      // Must be strictly later than `now` so the dedup picks it as the latest;
+      // a hardcoded timestamp drifts into the past as real time advances.
       id: 'T-1-newer', title: '最新任务', status: '进行中', worker: 'worker-1',
-      session: 'worker-1', updated_at: '2026-11-03T22:01:00Z',
+      session: 'worker-1', updated_at: new Date(Date.parse(now) + 60000).toISOString(),
     }]),
   };
   X.renderMainAgents();

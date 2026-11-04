@@ -4255,7 +4255,11 @@ function updateStatsUI() {
 function lastUserEventIndex(buf) {
   for (let i = buf.length - 1; i >= 0; i--) {
     const ev = buf[i];
-    if (ev && ev.kind === 'user' && ev.data && typeof ev.data.text === 'string' && ev.data.text.trim()) return i;
+    if (!ev || ev.kind !== 'user' || !ev.data) continue;
+    // A2A 入站消息也落在 user 事件上，但它渲染成 msg-peer 气泡、不是真人输入，
+    // 不能算作「最后一条用户输入」（否则悬浮条会指向一条 peer 消息）。
+    if (ev.data.source === 'a2a') continue;
+    if (typeof ev.data.text === 'string' && ev.data.text.trim()) return i;
   }
   return -1;
 }
@@ -4823,7 +4827,9 @@ function buildToolView(block, details, body) {
     body.appendChild(buildTaskToolView(input || {}));
     return true;
   }
-  if (name === 'sendmessage' && input && typeof input.message === 'string') {
+  // 出站 A2A：claude 原生 SendMessage，或 agentdeck MCP 的 send_message
+  //（mcp__agentdeck__send_message）。两者都渲染成同一张「发件」卡片。
+  if (isA2ASendTool(name) && input && typeof input.message === 'string') {
     return buildPeerSendView(input, details, body);
   }
   if (name === 'bash' && input && typeof input.command === 'string') {
@@ -6001,6 +6007,14 @@ function renderEvent(ev, box) {
     return;
   }
   if (ev.kind === 'user') {
+    // A2A（会话间消息）入站：总线把消息当作一轮 user 事件落库，并带上
+    // source/from/body。渲染成与 claude 原生 peer 消息同形的紫色气泡，
+    // 轨迹视图里也归入 A2A 角色（见 trajectory.js 的 source==='a2a' 分支）。
+    if (d && d.source === 'a2a') {
+      const bubble = addMsg('msg-peer', `⇢ 来自 ${escapeHtml(d.from || '另一个会话')}`, box, ev.ts);
+      bubble.innerHTML = md(d.body || d.text || '');
+      return;
+    }
     // Replace any pending optimistic bubble with the authoritative one
     // (which contains only text — images are not stored in events).
     const last = box.lastElementChild;
