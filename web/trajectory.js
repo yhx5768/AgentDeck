@@ -62,11 +62,29 @@ function isA2ASendTool(name) {
   return n.includes('agentdeck') && n.includes('send_message');
 }
 
+// 出站 A2A 的调用信息（{to, message, native}），认不出返回 null。两种来源：
+//   1) 原生 MCP 工具 —— claude/mcode 记成 mcp__agentdeck__send_message，input
+//      里直接是 to/message；
+//   2) opencode 走 Code Mode —— 所有工具都记成 execute/bash，agentdeck 的调用
+//      埋在 input.code 里（tools.agentdeck.send_message({to,message})）。这里
+//      从代码里认出它，尽量抽出 to/message；抽不到就退回展示整段代码。
+// 轨迹视图与对话流渲染共用这一个判定，两处对「是不是 A2A 发」永远一致。
+function a2aSendInfo(toolName, input) {
+  if (isA2ASendTool(toolName)) {
+    return { to: String((input && input.to) || ''), message: String((input && input.message) || ''), native: true };
+  }
+  const code = input && (input.code || input.command);
+  if (typeof code !== 'string' || !/agentdeck/i.test(code) || !/send_message/.test(code)) return null;
+  const to = (code.match(/to\s*:\s*["'`]([^"'`]+)["'`]/) || [])[1] || '';
+  const msg = (code.match(/message\s*:\s*["'`]([\s\S]*?)["'`]\s*[,}\n)]/) || [])[1] || '';
+  return { to, message: msg || code, native: false, code };
+}
+
 // A2A（会话间消息）方向：in = 收到其他会话的 peer 消息，out = 调用发送工具
 // 发给其他会话。两种记录在台账里归到同一个 A2A 角色，但高亮样式区分方向。
 function trajA2ADir(r) {
   if (r.kind === 'peer') return 'in';
-  if (r.kind === 'tool' && isA2ASendTool(r.toolName)) return 'out';
+  if (r.kind === 'tool' && a2aSendInfo(r.toolName, r.toolInput)) return 'out';
   return '';
 }
 
@@ -197,12 +215,18 @@ function trajProject(ev) {
         let t = traj.byCallId[b.id];
         if (!t) {
           const toolName = b.name || 'tool';
-          const isA2ASend = isA2ASendTool(toolName);
+          const a2a = a2aSendInfo(toolName, b.input);
           const tsum = toolSummary(b.input);
+          // A2A 发送的摘要本身就是「⇢ 收件人 · 预览」，不再重复工具名。opencode
+          // 的 Code Mode 里 toolName 是 execute，只有抽到收件人时才用 A2A 摘要，
+          // 否则退回原来的「execute …」。
+          let summary;
+          if (a2a && a2a.to) summary = `⇢ ${a2a.to}${tsum ? '  ' + tsum : ''}`;
+          else if (a2a) summary = tsum || toolName;
+          else summary = toolName + (tsum ? '  ' + tsum : '');
           t = trajAddRecord(trajCurrentTurn(), {
             kind: 'tool', ts, callId: b.id, toolName, toolInput: b.input,
-            // A2A 发送的摘要本身就是「⇢ 收件人 · 预览」，不再重复工具名
-            summary: isA2ASend ? (tsum || toolName) : toolName + (tsum ? '  ' + tsum : ''),
+            summary,
           });
           traj.byCallId[b.id] = t;
         } else {

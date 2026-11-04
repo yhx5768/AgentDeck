@@ -4839,7 +4839,12 @@ function renderToolUse(block, box, ts, raw) {
   summary.innerHTML = `<span class="tool-status" title="执行中"></span><span class="tool-name"></span><span class="tool-summary-text"></span><span class="tool-elapsed"></span>`;
   summary.querySelector('.tool-status').textContent = '●';
   summary.querySelector('.tool-name').textContent = block.name || 'tool';
-  summary.querySelector('.tool-summary-text').textContent = toolSummary(block.input);
+  // 出站 A2A：opencode 走 Code Mode 时工具名是 execute，调用埋在代码里，
+  // a2aSendInfo 能认出来；摘要统一成「⇢ 收件人 · 预览」。
+  const a2aSend = a2aSendInfo(bn, block.input);
+  summary.querySelector('.tool-summary-text').textContent = a2aSend
+    ? `⇢ ${a2aSend.to || '…'}${a2aSend.message ? ' · ' + a2aSend.message.trim().replace(/\s+/g, ' ').slice(0, 80) : ''}`
+    : toolSummary(block.input);
   const body = document.createElement('div');
   body.className = 'tool-body';
   if (!buildToolView(block, details, body)) {
@@ -4900,10 +4905,12 @@ function buildToolView(block, details, body) {
     body.appendChild(buildTaskToolView(input || {}));
     return true;
   }
-  // 出站 A2A：claude 原生 SendMessage，或 agentdeck MCP 的 send_message
-  //（mcp__agentdeck__send_message）。两者都渲染成同一张「发件」卡片。
-  if (isA2ASendTool(name) && input && typeof input.message === 'string') {
-    return buildPeerSendView(input, details, body);
+  // 出站 A2A：claude 原生 SendMessage、agentdeck MCP 的 send_message
+  //（mcp__agentdeck__send_message / agentdeck.send_message），或 opencode Code
+  // Mode 里包在 execute 代码里的调用——都渲染成同一张「发件」卡片。
+  const a2aSend = a2aSendInfo(name, input);
+  if (a2aSend) {
+    return buildPeerSendView(a2aSend, details, body);
   }
   if (name === 'bash' && input && typeof input.command === 'string') {
     details.classList.add('tool-bash');
@@ -4962,7 +4969,15 @@ function buildPeerSendView(input, details, body) {
   }
   const msg = document.createElement('div');
   msg.className = 'peer-send-msg';
-  msg.innerHTML = md(input.message || '');
+  if (!input.native && input.code && input.message === input.code) {
+    // opencode 的 execute 包装：没能从代码里抽出正文（多行 / 带转义），原样
+    // 显示代码，别当 markdown 渲染。
+    const pre = document.createElement('pre');
+    pre.textContent = input.code;
+    msg.appendChild(pre);
+  } else {
+    msg.innerHTML = md(input.message || '');
+  }
   body.appendChild(msg);
   details.open = true;
   return true;

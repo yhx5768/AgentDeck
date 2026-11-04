@@ -77,7 +77,7 @@ window.__state = state;
 window.__traj = traj;
 window.__x = {
   trajA2ADir, trajRecordRole, trajKindLabel, trajRecordSearchText,
-  trajSync, trajRender, trajReset,
+  trajSync, trajRender, trajReset, a2aSendInfo, isA2ASendTool,
 };`;
 
 w.eval(setup);
@@ -137,6 +137,27 @@ const EVENTS = [
       },
     },
   },
+  // opencode 走 Code Mode：所有工具都记成 execute，agentdeck 调用埋在代码里。
+  {
+    kind: 'stream', ts: '2026-11-03T10:00:06.000Z',
+    data: {
+      type: 'assistant',
+      message: {
+        id: 'm3',
+        content: [
+          {
+            type: 'tool_use', id: 't-exec-send', name: 'execute',
+            input: { code: 'const r = await tools.agentdeck.send_message({ from: "oc", to: "mainAgent", message: "ack oc" });\nreturn JSON.stringify(r);' },
+          },
+          {
+            // 非发送的 execute（list_sessions）不能被误判成 A2A 发。
+            type: 'tool_use', id: 't-exec-list', name: 'execute',
+            input: { code: 'const r = await tools.agentdeck.list_sessions();\nreturn JSON.stringify(r);' },
+          },
+        ],
+      },
+    },
+  },
 ];
 
 /** 从 index.html 里取轨迹筛选按钮的 data-kind 顺序。 */
@@ -191,6 +212,19 @@ function main() {
   const ocSend = records.find((r) => r.toolName === 'agentdeck.send_message');
   check('MCP send_message（opencode 点号）归入 A2A/out',
     !!ocSend && X.trajA2ADir(ocSend) === 'out' && X.trajRecordRole(ocSend) === 'a2a');
+
+  // opencode Code Mode：execute 里包着的 send_message 也要归 A2A 发，且摘要带收件人。
+  const execSend = records.find((r) => r.callId === 't-exec-send');
+  check('execute 里包着的 send_message 归入 A2A/out',
+    !!execSend && X.trajA2ADir(execSend) === 'out' && X.trajRecordRole(execSend) === 'a2a',
+    execSend && execSend.summary);
+  check('execute A2A 摘要带收件人',
+    !!execSend && execSend.summary.startsWith('⇢ mainAgent'), execSend && execSend.summary);
+  const execList = records.find((r) => r.callId === 't-exec-list');
+  check('execute 里的 list_sessions 不算 A2A',
+    !!execList && X.trajA2ADir(execList) === '' && X.trajRecordRole(execList) === 'tool');
+  check('a2aSendInfo 从代码里抽出 to/message',
+    (() => { const i = X.a2aSendInfo('execute', execSend.toolInput); return i && i.to === 'mainAgent' && i.message === 'ack oc'; })());
 
   const el = (r) => doc.querySelector(`[data-rid="${r.id}"]`);
   const sendEl = el(send), readEl = el(read), peerEl = el(peer);

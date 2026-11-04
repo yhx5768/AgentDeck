@@ -494,3 +494,37 @@ func TestReadRegistryForSessionFindsLauncherChild(t *testing.T) {
 		t.Fatalf("session lookup for empty id = %+v, want nil", e)
 	}
 }
+
+// TestHistoryDirResolvesSymlinkedCwd pins the resolved-slug behavior: the CLI
+// derives its project dir from the resolved cwd (Node process.cwd()), so a
+// symlinked workspace (e.g. /tmp -> /private/tmp) must map to the resolved
+// project dir or replay/stats/rewind read the wrong place and come up empty.
+func TestHistoryDirResolvesSymlinkedCwd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	real := filepath.Join(home, "real-project")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "link-project")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".claude", "projects", slugify(resolved))
+	if got := HistoryDir(link); got != want {
+		t.Fatalf("HistoryDir(symlink) = %q, want %q", got, want)
+	}
+	// The symlink and its target must resolve to the same project dir.
+	if HistoryDir(real) != HistoryDir(link) {
+		t.Fatalf("HistoryDir(real)=%q != HistoryDir(link)=%q", HistoryDir(real), HistoryDir(link))
+	}
+	// A cwd that no longer exists (imported session) falls back to the literal.
+	gone := filepath.Join(home, "does-not-exist")
+	if got := HistoryDir(gone); got != filepath.Join(home, ".claude", "projects", slugify(gone)) {
+		t.Fatalf("HistoryDir(missing) = %q", got)
+	}
+}

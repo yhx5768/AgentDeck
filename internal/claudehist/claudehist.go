@@ -69,13 +69,27 @@ func projectsDirIn(p Profile) string {
 // projectsDir is Claude Code's projects root.
 func projectsDir() string { return projectsDirIn(ClaudeProfile) }
 
+// historySlug resolves symlinks in cwd before slugifying. The CLI derives its
+// project directory from the *resolved* working directory (Node's
+// process.cwd()), so a symlinked cwd — /tmp -> /private/tmp on macOS, or a
+// project reached through a symlinked parent — would otherwise look up a
+// nonexistent slug and every transcript read (replay, stats, rewind, rename)
+// would come up empty. A cwd that no longer exists (imported session) falls
+// back to the literal path.
+func historySlug(cwd string) string {
+	if r, err := filepath.EvalSymlinks(cwd); err == nil {
+		return slugify(r)
+	}
+	return slugify(cwd)
+}
+
 // HistoryDirIn returns the history directory for a cwd ("" -> the projects
 // root) under profile p.
 func HistoryDirIn(p Profile, cwd string) string {
 	if cwd == "" {
 		return projectsDirIn(p)
 	}
-	return filepath.Join(projectsDirIn(p), slugify(cwd))
+	return filepath.Join(projectsDirIn(p), historySlug(cwd))
 }
 
 // HistoryDir returns the history directory for a cwd ("" -> the projects root).
