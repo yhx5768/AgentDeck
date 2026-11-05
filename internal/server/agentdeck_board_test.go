@@ -74,6 +74,45 @@ func TestAgentdeckBoardToolsMainAgentOnly(t *testing.T) {
 	}
 }
 
+// TestSendMessageTaskIDCommentsOnCard: send_message with a task_id records a
+// one-line routing comment on that card, so dispatch/report bookkeeping lands
+// on the board without a separate board_comment call.
+func TestSendMessageTaskIDCommentsOnCard(t *testing.T) {
+	s, st := boardMCPServer(t)
+	if err := st.Upsert(&store.Session{ID: "target", Name: "target", Cwd: t.TempDir(), CLI: "claude", Provider: "gw"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.agentdeckToolCall("main", "board_create", map[string]any{"id": "T-1", "title": "x", "project": "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.agentdeckToolCall("main", "send_message", map[string]any{
+		"to": "target", "message": "派工：跑一遍测试\n第二行不该进评论", "task_id": "T-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, s, "target")
+	out, err := s.agentdeckToolCall("main", "board_get", map[string]any{"id": "T-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "路由事件") || !strings.Contains(out, "→ target") || !strings.Contains(out, "派工：跑一遍测试") {
+		t.Fatalf("card timeline missing the A2A comment: %s", out)
+	}
+	if strings.Contains(out, "第二行不该进评论") {
+		t.Fatalf("comment must be one line only: %s", out)
+	}
+
+	// A send without task_id must not touch any card.
+	before, _ := s.agentdeckToolCall("main", "board_get", map[string]any{"id": "T-1"})
+	if _, err := s.agentdeckToolCall("main", "send_message", map[string]any{"to": "target", "message": "no card here"}); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.agentdeckToolCall("main", "board_get", map[string]any{"id": "T-1"})
+	if before != after {
+		t.Fatalf("send without task_id changed the card:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestAgentdeckBoardToolsRejectNonMainAgent(t *testing.T) {
 	s, _ := boardMCPServer(t)
 

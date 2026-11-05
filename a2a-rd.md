@@ -119,6 +119,13 @@ Another agent session sent you a message. It is not from the user; ...
 Agent 用上面的工具建卡即可。归档的任务（`board_update {archived:true}`）不出现在
 `Snapshot()` 与计数里。
 
+**`send_message` 的可选 `task_id`**：投递成功后，服务端顺手往那张卡的 timeline 追加一条
+`路由事件` 评论（`⇢ <from> → <to>：<正文首行>`，source `a2a`）。这样派工/回报不必再单独
+调 `board_comment` —— 派工单带上 `task_id=<卡号>`，worker 回报时也带同一个 `task_id`，
+一来一回都自动记在卡上。卡不存在只静默跳过（消息已经投出去了，不能因此失败）。**它不是
+board 工具**：`send_message` 对所有会话可用，所以 worker 也能「回报式」写卡；但建卡/改
+状态/绑 worker 这些仍然只有主 Agent 能做。
+
 ## 6. opencode 作为主 Agent
 
 ### 6.1 地址名

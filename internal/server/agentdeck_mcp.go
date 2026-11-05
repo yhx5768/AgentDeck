@@ -117,7 +117,17 @@ func (s *Server) agentdeckToolCall(sessionID, name string, args map[string]any) 
 		code, body := s.callHandler(s.handleA2ASend, http.MethodPost, "/api/a2a/send", map[string]any{
 			"from": from, "to": to, "message": message,
 		}, nil)
-		return resultText(code, body, "message sent")
+		result, err := resultText(code, body, "message sent")
+		if err != nil {
+			return "", err
+		}
+		// Optional board bookkeeping: a task_id on the send records a one-line
+		// comment on that card, so dispatch/report does not need a separate
+		// board_comment call. A missing/unknown card must not fail the send.
+		if taskID, _ := args["task_id"].(string); strings.TrimSpace(taskID) != "" {
+			s.appendA2AComment(strings.TrimSpace(taskID), from, to, message)
+		}
+		return result, nil
 	case "new_session":
 		code, body := s.callHandler(s.handleCreateSession, http.MethodPost, "/api/sessions", args, nil)
 		return resultText(code, body, "")
@@ -254,6 +264,40 @@ func filterBoardTasks(snapshot []byte, project, status string) (string, error) {
 		return "", err
 	}
 	return string(raw), nil
+}
+
+// appendA2AComment records an A2A delivery on a board task's timeline (the
+// `task_id` option on send_message). Failures are swallowed: the message itself
+// was already delivered, and a missing/unknown card must not fail the send.
+func (s *Server) appendA2AComment(taskID, from, to, message string) {
+	line := a2aFirstLine(message)
+	if line == "" {
+		line = "(空消息)"
+	}
+	s.callHandler(s.handleAgentBoardAppendEventDB, http.MethodPost,
+		"/api/agent-board/tasks/"+taskID+"/events",
+		map[string]any{
+			"kind":   "路由事件",
+			"text":   fmt.Sprintf("⇢ %s → %s：%s", from, to, line),
+			"source": "a2a",
+		},
+		map[string]string{"id": taskID})
+}
+
+// a2aFirstLine returns the first non-empty line of s, capped at 200 runes.
+func a2aFirstLine(s string) string {
+	for _, ln := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(ln)
+		if t == "" {
+			continue
+		}
+		r := []rune(t)
+		if len(r) > 200 {
+			return string(r[:200]) + "…"
+		}
+		return t
+	}
+	return ""
 }
 
 // resultText turns an in-process handler response into the model-facing string:

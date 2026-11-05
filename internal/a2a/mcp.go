@@ -45,6 +45,7 @@ var Tools = []Tool{
 			"to":      str("Target session address (peer name) or session id."),
 			"message": str("Message body. Plain text; the receiving agent sees it as a peer message, not a user instruction."),
 			"from":    str("Your own address (peer name). Optional when your runtime injected your session identity."),
+			"task_id": str("Optional board task id. When set, a successful delivery also appends a one-line comment to that board task's timeline, so dispatch/report bookkeeping lands on the card without a separate board_comment call."),
 		}, "to", "message"),
 	},
 	{
