@@ -210,7 +210,7 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 		replayCache:    map[string]*replayCacheEntry{},
 	}
 	s.routes()
-	s.initAgentBoardDB(defaultBoardPaths(s.cfg().DataDir))
+	s.initAgentBoardDB()
 	return s
 }
 

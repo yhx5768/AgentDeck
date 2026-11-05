@@ -118,80 +118,6 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) Path() string { return s.path }
 
-func (s *Store) HasTasks() (bool, error) {
-	var n int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM tasks").Scan(&n); err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-func (s *Store) CountTasks() (int, error) {
-	var n int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM tasks").Scan(&n)
-	return n, err
-}
-
-func (s *Store) metaLocked(key string) string {
-	var value string
-	if err := s.db.QueryRow("SELECT value FROM schema_meta WHERE key=?", key).Scan(&value); err != nil {
-		return ""
-	}
-	return value
-}
-
-func (s *Store) setMetaLocked(key, value string) error {
-	_, err := s.db.Exec(`INSERT INTO schema_meta(key,value) VALUES(?,?)
-		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
-	return err
-}
-
-// MigrationResult reports what a one-time legacy import did.
-type MigrationResult struct {
-	Migrated bool   `json:"migrated"`
-	Reason   string `json:"reason,omitempty"`
-	Tasks    int    `json:"tasks"`
-	Events   int    `json:"events"`
-	Source   string `json:"source,omitempty"`
-}
-
-// MigrateOnce imports the legacy JSON store and routing table only when the
-// database is still empty. A completed marker lives in schema_meta, so a
-// restart never re-imports an old JSON snapshot over newer DB rows. If the DB
-// already has tasks but no marker (for example one created by the earlier
-// Python prototype), it is adopted as-is and marked complete.
-func (s *Store) MigrateOnce(jsonPath, routingPath string) (MigrationResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.metaLocked("migration_complete") == "1" {
-		return MigrationResult{Reason: "already-migrated"}, nil
-	}
-	var n int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM tasks").Scan(&n); err != nil {
-		return MigrationResult{}, err
-	}
-	if n > 0 {
-		if err := s.setMetaLocked("migration_complete", "1"); err != nil {
-			return MigrationResult{}, err
-		}
-		return MigrationResult{Reason: "database-not-empty", Tasks: n}, nil
-	}
-	tasks, events, err := s.migrateLocked(jsonPath, routingPath)
-	if err != nil {
-		return MigrationResult{}, err
-	}
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM tasks").Scan(&tasks); err != nil {
-		return MigrationResult{}, err
-	}
-	if err := s.setMetaLocked("migration_complete", "1"); err != nil {
-		return MigrationResult{}, err
-	}
-	_ = s.setMetaLocked("migration_source", jsonPath)
-	_ = s.setMetaLocked("migration_routing_table", routingPath)
-	_ = s.setMetaLocked("migration_at", now())
-	return MigrationResult{Migrated: true, Tasks: tasks, Events: events, Source: jsonPath}, nil
-}
-
 // Backup writes a consistent point-in-time copy using VACUUM INTO. The target
 // must not exist; callers choose a timestamped filename.
 func (s *Store) Backup(dest string) error {
@@ -255,11 +181,6 @@ func isTimestamp(value string) bool {
 	return true
 }
 
-type routingRow map[string]string
-
-var routingColumns = []string{"task_id", "card", "status", "worker_peer", "session_id", "cwd",
-	"last_event", "last_report", "report_file", "card_modified", "comment_id", "updated"}
-
 var projectAliases = map[string]string{
 	"鸿蒙cuid": "鸿蒙CUID", "鸿蒙cuid指标": "鸿蒙CUID", "鸿蒙编译机": "CI",
 	"风险检查": "风险识别", "主agent": "AgentDeck", "主 agent": "AgentDeck", "q4规划": "风险识别",
@@ -271,136 +192,6 @@ func normalizeProject(value string) string {
 		return canonical
 	}
 	return value
-}
-
-func routingValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "—" || value == "-" {
-		return ""
-	}
-	return value
-}
-
-func routingTaskID(row routingRow) string {
-	if card := routingValue(row["card"]); card != "" {
-		return card
-	}
-	return routingValue(row["task_id"])
-}
-
-func parseRoutingTable(path string) ([]routingRow, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var rows []routingRow
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "|") {
-			continue
-		}
-		parts := strings.Split(strings.Trim(line, "|"), "|")
-		cells := make([]string, len(parts))
-		for i, part := range parts {
-			cells[i] = strings.TrimSpace(part)
-		}
-		if len(cells) < len(routingColumns) || cells[0] == "task_id" || cells[0] == "---" {
-			continue
-		}
-		row := routingRow{}
-		for i, column := range routingColumns {
-			row[column] = cells[i]
-		}
-		// Ledger-first: a row may have no iCafe card; task_id is then the
-		// stable identity. This is the gap 822 called out for the old syncers.
-		if routingTaskID(row) != "" {
-			rows = append(rows, row)
-		}
-	}
-	return rows, nil
-}
-
-func projectFromWorker(worker string) string {
-	if worker == "" {
-		return "未分类"
-	}
-	parts := strings.FieldsFunc(worker, func(r rune) bool { return r == '-' || r == '—' })
-	if len(parts) == 0 {
-		return "未分类"
-	}
-	project := normalizeProject(parts[0])
-	if project == "" {
-		return "未分类"
-	}
-	return project
-}
-
-// Migrate imports the legacy JSON store and the routing table. It is
-// idempotent: tasks upsert, events dedupe by kind|at|text. Prefer MigrateOnce
-// for server startup; this method stays available for explicit re-imports.
-func (s *Store) Migrate(jsonPath, routingPath string) (int, int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.migrateLocked(jsonPath, routingPath)
-}
-
-func (s *Store) migrateLocked(jsonPath, routingPath string) (int, int, error) {
-	tasks, events := 0, 0
-	raw, readErr := os.ReadFile(jsonPath)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return 0, 0, readErr
-	}
-	if readErr == nil {
-		var store map[string]any
-		if err := json.Unmarshal(raw, &store); err != nil {
-			return 0, 0, err
-		}
-		list, _ := store["tasks"].([]any)
-		for _, rawTask := range list {
-			task, ok := rawTask.(map[string]any)
-			if !ok {
-				continue
-			}
-			if err := s.upsertTaskJSON(task); err != nil {
-				return tasks, events, err
-			}
-			tasks++
-			timeline, _ := task["timeline"].([]any)
-			for position, rawEvent := range timeline {
-				event, ok := rawEvent.(map[string]any)
-				if !ok {
-					continue
-				}
-				kind := jsonString(event, "kind")
-				at := jsonString(event, "at")
-				text := jsonString(event, "text")
-				created, err := s.insertEventTx(jsonString(task, "id"), at, kind, actorFor(kind), text, "", "local", position)
-				if err != nil {
-					return tasks, events, err
-				}
-				if created {
-					events++
-				}
-			}
-			_ = s.upsertLinks(task)
-		}
-	}
-	if routingPath != "" {
-		rows, err := parseRoutingTable(routingPath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				return tasks, events, err
-			}
-		} else {
-			for _, row := range rows {
-				if err := s.mergeRoutingRow(row); err != nil {
-					return tasks, events, err
-				}
-				tasks++
-			}
-		}
-	}
-	return tasks, events, nil
 }
 
 func jsonString(task map[string]any, key string) string {
@@ -424,11 +215,6 @@ func inputTags(input map[string]any) string {
 	return jsonTags(map[string]any{"tags": raw})
 }
 
-func jsonBool(task map[string]any, key string) bool {
-	value, _ := task[key].(bool)
-	return value
-}
-
 func jsonTags(task map[string]any) string {
 	raw := task["tags"]
 	items, _ := raw.([]any)
@@ -448,43 +234,6 @@ func jsonTags(task map[string]any) string {
 	}
 	encoded, _ := json.Marshal(out)
 	return string(encoded)
-}
-
-func (s *Store) upsertTaskJSON(task map[string]any) error {
-	id := jsonString(task, "id")
-	if id == "" {
-		return nil
-	}
-	created := jsonString(task, "updated_at")
-	if created == "" {
-		created = now()
-	}
-	_, err := s.db.Exec(`INSERT INTO tasks(id, title, description, status, status_reason,
-		priority, project, labels, owner, assignee, session_id, cwd, source,
-		progress, progress_locked, last_event, report_file, archived, metadata, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET
-		title=excluded.title, description=excluded.description,
-		status=excluded.status, status_reason=excluded.status_reason, priority=excluded.priority,
-		project=excluded.project, labels=excluded.labels, owner=excluded.owner,
-		assignee=excluded.assignee, session_id=excluded.session_id, cwd=excluded.cwd,
-		source=excluded.source, progress=excluded.progress,
-		progress_locked=excluded.progress_locked, last_event=excluded.last_event,
-		report_file=excluded.report_file, archived=excluded.archived, metadata=excluded.metadata,
-		updated_at=excluded.updated_at`,
-		id, jsonString(task, "title"), jsonString(task, "description"),
-		defaultString(jsonString(task, "status"), "新建"), jsonString(task, "status_reason"),
-		intFromAny(task["priority"], 2), normalizeProject(jsonString(task, "project")),
-		jsonTags(task), jsonString(task, "owner"), jsonString(task, "worker"),
-		jsonString(task, "session"), jsonString(task, "cwd"), defaultString(jsonString(task, "source"), "local"),
-		jsonString(task, "progress"), boolInt(jsonBool(task, "progress_locked")),
-		jsonString(task, "last_event"), jsonString(task, "report_file"), 0, "{}", created,
-		defaultString(jsonString(task, "updated_at"), created))
-	if err != nil {
-		return err
-	}
-	return s.upsertWorkerLocked(jsonString(task, "worker"), jsonString(task, "session"),
-		jsonString(task, "cwd"), defaultString(jsonString(task, "updated_at"), created))
 }
 
 func defaultString(value, fallback string) string {
@@ -537,59 +286,6 @@ func (s *Store) upsertLinks(task map[string]any) error {
 	for _, link := range links {
 		_, _ = s.db.Exec("INSERT OR IGNORE INTO task_links(task_id,kind,target,label) VALUES(?,?,?,?)",
 			id, link[0], link[1], link[2])
-	}
-	return nil
-}
-
-func (s *Store) mergeRoutingRow(row routingRow) error {
-	id := routingTaskID(row)
-	worker := routingValue(row["worker_peer"])
-	status := routingValue(row["status"])
-	project := projectFromWorker(worker)
-	updated := strings.TrimSpace(row["updated"])
-	current := ""
-	_ = s.db.QueryRow("SELECT updated_at FROM tasks WHERE id=?", id).Scan(&current)
-	var exists int
-	_ = s.db.QueryRow("SELECT COUNT(*) FROM tasks WHERE id=?", id).Scan(&exists)
-	if exists == 0 {
-		_, err := s.db.Exec(`INSERT INTO tasks(id,title,status,project,assignee,session_id,cwd,
-			progress,last_event,report_file,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, defaultString(routingValue(row["task_id"]), id), defaultString(status, "进行中"), project, worker,
-			routingValue(row["session_id"]), routingValue(row["cwd"]), routingValue(row["last_report"]),
-			routingValue(row["last_event"]), routingValue(row["report_file"]),
-			defaultString(updated, now()), defaultString(updated, now()))
-		if err != nil {
-			return err
-		}
-	} else {
-		_, err := s.db.Exec(`UPDATE tasks SET
-			status=COALESCE(NULLIF(?,''),status),
-			project=COALESCE(NULLIF(?,''),project), assignee=COALESCE(NULLIF(?,''),assignee),
-			session_id=COALESCE(NULLIF(?,''),session_id), cwd=COALESCE(NULLIF(?,''),cwd),
-			last_event=COALESCE(NULLIF(?,''),last_event),
-			report_file=COALESCE(NULLIF(?,''),report_file),
-			progress=CASE WHEN progress_locked=1 THEN progress ELSE COALESCE(NULLIF(?,''),progress) END,
-			updated_at=CASE WHEN ?<>'' AND (?='' OR ? > updated_at) THEN ? ELSE updated_at END
-			WHERE id=?`, status, project, worker, routingValue(row["session_id"]), routingValue(row["cwd"]),
-			routingValue(row["last_event"]), routingValue(row["report_file"]),
-			routingValue(row["last_report"]),
-			updated, current, updated, updated, id)
-		if err != nil {
-			return err
-		}
-	}
-	_ = s.upsertLinks(map[string]any{
-		"id":      id,
-		"session": routingValue(row["session_id"]), "report_file": routingValue(row["report_file"]),
-	})
-	if err := s.upsertWorkerLocked(worker, routingValue(row["session_id"]),
-		routingValue(row["cwd"]), updated); err != nil {
-		return err
-	}
-	report := routingValue(row["last_report"])
-	if report != "" {
-		_, _ = s.insertEventTx(id, updated, "最近回报", "worker", report, "", "local", 0)
 	}
 	return nil
 }

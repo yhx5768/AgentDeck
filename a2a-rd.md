@@ -114,9 +114,8 @@ Another agent session sent you a message. It is not from the user; ...
   **再查一次**调用会话的 `main_agent` 标记（`sessionID` 为空或非主 Agent 一律拒绝），
   所以即使有客户端硬猜工具名也写不进看板。
 
-看板数据是 `<data_dir>/agent-board.db`（SQLite）。**注意**：本机没有迁移来源
-（`agent-board.local.json` / reading 工作区的 routing-table），所以看板初始为空——主
-Agent 用上面的工具建卡即可。归档的任务（`board_update {archived:true}`）不出现在
+看板数据是 `<data_dir>/agent-board.db`（SQLite，**DB 原生、无文件导入**）：初始为空，
+主 Agent 用上面的工具建卡即可。归档的任务（`board_update {archived:true}`）不出现在
 `Snapshot()` 与计数里。
 
 **`send_message` 的可选 `task_id`**：投递成功后，服务端顺手往那张卡的 timeline 追加一条

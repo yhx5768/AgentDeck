@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,69 +14,20 @@ import (
 )
 
 // SQLite board store (YHX-TODO-821). The DB is always <data_dir>/agent-board.db;
-// there is no board configuration. On first start (DB file absent) the legacy
-// JSON snapshot and the local routing table are imported once if they exist.
-// Reads and writes all go through boarddb.
+// there is no board configuration and no file import: the board is DB-native,
+// read and written through boarddb (the HTTP API and the agentdeck MCP board
+// tools). Reads and writes all go through boarddb.
 
-const defaultAgentBoardRoutingTable = "/home/soar/Projects/reading/work/projects/agentdeck-main-agent/routing-table.md"
-
-// boardPaths keeps the three fixed paths explicit so tests can override them
-// without adding user-facing config.
-type boardPaths struct {
-	DB           string
-	LegacyJSON   string
-	RoutingTable string
-}
-
-func defaultBoardPaths(dataDir string) boardPaths {
-	return boardPaths{
-		DB:           filepath.Join(dataDir, "agent-board.db"),
-		LegacyJSON:   filepath.Join(dataDir, "agent-board.local.json"),
-		RoutingTable: defaultAgentBoardRoutingTable,
-	}
-}
-
-func removeSQLiteFiles(path string) {
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		_ = os.Remove(path + suffix)
-	}
-}
-
-func (s *Server) initAgentBoardDB(paths boardPaths) {
-	_, statErr := os.Stat(paths.DB)
-	dbExisted := statErr == nil
-	if statErr != nil && !os.IsNotExist(statErr) {
-		s.boardDBErr = fmt.Errorf("stat agent-board db: %w", statErr)
-		log.Printf("agent-board: %v; board API disabled", s.boardDBErr)
-		return
-	}
-	st, err := boarddb.Open(paths.DB)
+func (s *Server) initAgentBoardDB() {
+	path := filepath.Join(s.cfg().DataDir, "agent-board.db")
+	st, err := boarddb.Open(path)
 	if err != nil {
 		s.boardDBErr = fmt.Errorf("open agent-board db: %w", err)
 		log.Printf("agent-board: %v; board API disabled", s.boardDBErr)
 		return
 	}
-	if dbExisted {
-		s.boardDB = st
-		log.Printf("agent-board: sqlite %s exists; legacy migration skipped", paths.DB)
-		return
-	}
-	tasks, events, err := st.Migrate(paths.LegacyJSON, paths.RoutingTable)
-	if err != nil {
-		_ = st.Close()
-		// The DB did not exist before this start, so discard the partial
-		// import and let the next start retry instead of skipping forever.
-		removeSQLiteFiles(paths.DB)
-		s.boardDBErr = fmt.Errorf("migrate agent-board db: %w", err)
-		log.Printf("agent-board: %v; board API disabled", s.boardDBErr)
-		return
-	}
-	if count, countErr := st.CountTasks(); countErr == nil {
-		tasks = count
-	}
 	s.boardDB = st
-	log.Printf("agent-board: sqlite %s created; imported %d tasks / %d new events",
-		paths.DB, tasks, events)
+	log.Printf("agent-board: sqlite %s ready", path)
 }
 
 func (s *Server) closeAgentBoardDB() {

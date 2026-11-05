@@ -270,7 +270,7 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **前端**（`web/app.js` 的 `board*` 函数 + `index.html` 的 `#board-view`）是**只读**视图，只在 `main_agent` 会话显示（`syncMainAgentTabs`）：按 `status_order` 分列、项目筛选、点卡开抽屉（overview/timeline/links/raw）。数据来自 `GET /api/agent-board`（快照），SSE `/api/agent-board/events` 变化即重取；`scripts/frontend-tests/board.test.js` 钉住渲染契约。
 - **写入口只有 `/api/agent-board/*`**（create / update / bind / append / backup）。主 Agent 用 **agentdeck MCP 的 `board_*` 工具**（`board_list` / `board_get` / `board_create` / `board_update` / `board_comment` / `board_bind_worker`，映射到这些 handler）；**只在 `main_agent` 会话暴露**——注入面 `agentdeckMCPInfo` 加 env `CC_WEBUI_A2A_BOARD=1` 让代理把 `a2a.BoardTools` 追加进 `tools/list`，服务端再用 `requireMainAgent` 复核（见 `a2a-rd.md` §5.4）。**`send_message` 的 `task_id`** 是另一条自动记账路径：投递成功后服务端往那张卡追加一条 `路由事件` 评论（`⇢ from → to：首行`，见 `appendA2AComment`）——它不是 board 工具、对所有会话可用，所以 worker 用 `send_message{task_id}` 也能「回报式」写卡；卡不存在静默跳过。
 - **归档**：`board_update {archived:true}` 后任务不出现在 `Snapshot()` 与 counts（`boarddb.Snapshot` 过滤 `archived=0`），因为只读 UI 没有「显示归档」开关。
-- **迁移**：DB 首次创建时从 `<data_dir>/agent-board.local.json` + `defaultAgentBoardRoutingTable`（reading 工作区的 `routing-table.md`）导入一次；两个来源在本机都不存在 → 看板初始为空，靠主 Agent 建卡。**没有周期性同步**，写入只发生在 HTTP handler。
+- **无文件导入**：看板就是 `<data_dir>/agent-board.db`，**DB 原生**——初始为空，靠主 Agent 用 `board_*` 工具建卡。**没有** legacy JSON / routing-table 迁移，也没有周期同步；读写只发生在 `/api/agent-board/*` 的 handler（别再加回任何外部文件来源）。
 - **别把它当权限**：`main_agent` 只是标记；服务端只对**看板工具**按它拦截（`requireMainAgent`），其余 `/api/*` 任何本地会话都能调。
 
 ## 后端包职责（`internal/`）

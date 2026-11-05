@@ -22,7 +22,7 @@ func boardMCPServer(t *testing.T) (*Server, *store.Store) {
 		t.Fatal(err)
 	}
 	s := &Server{cm: cm, st: st, mgr: runner.NewManager(cm, st), boardHub: newBoardHub()}
-	s.initAgentBoardDB(boardPaths{DB: filepath.Join(dir, "agent-board.db")})
+	s.initAgentBoardDB()
 	if s.boardDBErr != nil {
 		t.Fatal(s.boardDBErr)
 	}
