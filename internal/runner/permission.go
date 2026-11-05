@@ -118,6 +118,10 @@ func (m *Manager) createPending(sessionID, tool string, input map[string]any, to
 	m.perm.mu.Lock()
 	m.perm.pending[id] = pr
 	m.perm.mu.Unlock()
+	// A parked prompt is an escalation: if this session is a dispatched worker,
+	// let the main agent know it is waiting on a human-only gate (see
+	// server/incidents.go). Outside the lock; the notifier must not block.
+	m.notifyAsk(sessionID, pr)
 	return pr
 }
 
@@ -180,6 +184,7 @@ func (m *Manager) pendingFor(sessionID string) []*PermissionRequest {
 // subscribers. Permission request/resolved events ride this path: they are
 // live prompts, not history.
 func (m *Manager) BroadcastTransient(sessionID, kind string, data any) {
+	m.noteActivity(sessionID)
 	m.broadcast(sessionID, kind, data)
 }
 

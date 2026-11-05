@@ -129,6 +129,13 @@ type sessionRuntime struct {
 	goalAwait   bool
 	goalVerdict string
 	goalTail    string
+
+	// lastActivity is when this runtime last produced an event; the stall
+	// watchdog (see notify.go) reports a running turn that goes silent for too
+	// long. stallNotified latches so one stall produces one notification per
+	// turn. Guarded by mu.
+	lastActivity  time.Time
+	stallNotified bool
 }
 
 // Manager spawns claude processes and fans out stream events.
@@ -149,6 +156,13 @@ type Manager struct {
 	// interrupt it over HTTP.
 	ocTurns   *ocTurnRegistry
 	ocTurnsV2 *ocTurnRegistryV2
+
+	// notifier is the outbound channel to the workspace main agent (see
+	// notify.go). Set by the server after construction; guarded by notifyMu so
+	// SetNotifier can run while turns are in flight.
+	notifyMu  sync.Mutex
+	notifier  *Notifier
+	watchOnce sync.Once
 }
 
 func NewManager(cm *config.Manager, st *store.Store, browserEnabled ...func() bool) *Manager {
@@ -327,6 +341,8 @@ func (m *Manager) Subscribe(sessionID string) (<-chan *store.Event, func()) {
 // handler. This avoids double storage and lets terminal-side updates show
 // up in cc-webui after a reconnect.
 func (m *Manager) emit(sessionID, kind string, data any) {
+	// Every event is activity for the stall watchdog.
+	m.noteActivity(sessionID)
 	if kind == "stream" {
 		// Stream events are never persisted, so the goal loop reads its verdict
 		// off this path instead of the event log.
@@ -340,6 +356,33 @@ func (m *Manager) emit(sessionID, kind string, data any) {
 		return
 	}
 	m.BroadcastEvent(sessionID, ev)
+	// A status error is the single funnel every engine's turn failure goes
+	// through (CLI missing, model rejected, process crashed). Hand it to the
+	// notifier, which routes it to the main agent if this session is a
+	// dispatched worker (see server/incidents.go).
+	if kind == "status" {
+		if msg, ok := statusError(data); ok {
+			m.notifyTurnError(sessionID, msg)
+		}
+	}
+}
+
+// statusError extracts the message from a status-error payload. Callers pass
+// both map[string]string (the common shape) and map[string]any (the
+// unrecognized-model case).
+func statusError(data any) (string, bool) {
+	switch v := data.(type) {
+	case map[string]string:
+		if v["state"] == "error" {
+			return v["error"], true
+		}
+	case map[string]any:
+		if s, _ := v["state"].(string); s == "error" {
+			msg, _ := v["error"].(string)
+			return msg, true
+		}
+	}
+	return "", false
 }
 
 // broadcast sends a transient event (not persisted) to subscribers with a
@@ -410,6 +453,9 @@ func (m *Manager) setRunning(sessionID string, cancel context.CancelFunc) {
 	r := m.rt(sessionID)
 	r.mu.Lock()
 	r.cancel = cancel
+	// A fresh turn starts the stall clock; a stall latches once per turn.
+	r.lastActivity = time.Now()
+	r.stallNotified = false
 	r.notifyStatus()
 	r.mu.Unlock()
 }

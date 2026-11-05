@@ -81,6 +81,11 @@ default_cwd: "~"
 #   # prompt: |          # 非空则整段替换内置模板（想完全自定义角色提示时用）
 #   #   ## 我的主 Agent 规则
 #   #   ...
+#   notify:              # 运行时把 worker 出事/卡住/停在人工门上报给主 Agent（默认开）
+#     enabled: true      # 不写 = 开；没有主 Agent 时什么都不发生
+#     stall_minutes: 15  # 一轮 running 但这么久没有任何产出，算卡死（每轮只报一次）
+#     worker_cooldown_minutes: 5   # 同一个 worker 两次通知的最小间隔（防崩溃循环刷屏）
+#     hourly_cap: 20     # 全局每小时通知上限
 
 # 三层结构：
 #   clis[]      - 一个聊天 CLI 二进制安装（path + args + 权限模式 + 共享 env）

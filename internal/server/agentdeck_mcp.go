@@ -103,31 +103,17 @@ func (s *Server) agentdeckToolCall(sessionID, name string, args map[string]any) 
 	case "list_sessions":
 		return s.a2aListSessionsJSON()
 	case "send_message":
-		to, _ := args["to"].(string)
-		message, _ := args["message"].(string)
-		if strings.TrimSpace(to) == "" || strings.TrimSpace(message) == "" {
-			return "", fmt.Errorf("send_message requires 'to' and 'message'")
+		return s.agentdeckSendMessage(sessionID, args)
+	case "read_session_messages":
+		session, _ := args["session"].(string)
+		if strings.TrimSpace(session) == "" {
+			return "", fmt.Errorf("read_session_messages requires 'session'")
 		}
-		from, _ := args["from"].(string)
-		if strings.TrimSpace(from) == "" && sessionID != "" {
-			if caller := s.st.Get(sessionID); caller != nil {
-				from = sessionAddress(caller)
-			}
-		}
-		code, body := s.callHandler(s.handleA2ASend, http.MethodPost, "/api/a2a/send", map[string]any{
-			"from": from, "to": to, "message": message,
-		}, nil)
-		result, err := resultText(code, body, "message sent")
-		if err != nil {
-			return "", err
-		}
-		// Optional board bookkeeping: a task_id on the send records a one-line
-		// comment on that card, so dispatch/report does not need a separate
-		// board_comment call. A missing/unknown card must not fail the send.
-		if taskID, _ := args["task_id"].(string); strings.TrimSpace(taskID) != "" {
-			s.appendA2AComment(strings.TrimSpace(taskID), from, to, message)
-		}
-		return result, nil
+		return s.handleReadSessionMessages(session, intArg(args, "before"), intArg(args, "limit"))
+	case "search_messages":
+		query, _ := args["query"].(string)
+		session, _ := args["session"].(string)
+		return s.handleSearchMessages(query, session, intArg(args, "limit"))
 	case "new_session":
 		code, body := s.callHandler(s.handleCreateSession, http.MethodPost, "/api/sessions", args, nil)
 		return resultText(code, body, "")
@@ -150,6 +136,76 @@ func (s *Server) agentdeckToolCall(sessionID, name string, args map[string]any) 
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+// agentdeckSendMessage is the send_message tool. It is idempotent on an
+// optional `send_id`: a retry with the same id (from the same sender) returns
+// the first delivery's receipt instead of delivering the message twice, so an
+// agent that loses a reply can safely resend.
+func (s *Server) agentdeckSendMessage(sessionID string, args map[string]any) (string, error) {
+	to, _ := args["to"].(string)
+	message, _ := args["message"].(string)
+	if strings.TrimSpace(to) == "" || strings.TrimSpace(message) == "" {
+		return "", fmt.Errorf("send_message requires 'to' and 'message'")
+	}
+	from, _ := args["from"].(string)
+	if strings.TrimSpace(from) == "" && sessionID != "" {
+		if caller := s.st.Get(sessionID); caller != nil {
+			from = sessionAddress(caller)
+		}
+	}
+	// The HTTP handler owns idempotency: it looks up send_id in sendDedup and
+	// returns the first receipt (with duplicate:true) instead of re-delivering.
+	payload := map[string]any{"from": from, "to": to, "message": message}
+	if sendID := strings.TrimSpace(stringArg(args, "send_id")); sendID != "" {
+		payload["send_id"] = sendID
+	}
+	code, body := s.callHandler(s.handleA2ASend, http.MethodPost, "/api/a2a/send", payload, nil)
+	result, err := resultText(code, body, "message sent")
+	if err != nil {
+		return "", err
+	}
+	// A deduplicated replay must not re-comment the card.
+	var receipt map[string]any
+	_ = json.Unmarshal(body, &receipt)
+	if dup, _ := receipt["duplicate"].(bool); dup {
+		return result, nil
+	}
+	// Optional board bookkeeping: a task_id on the send records a one-line
+	// comment on that card, so dispatch/report does not need a separate
+	// board_comment call. A missing/unknown card must not fail the send.
+	if taskID, _ := args["task_id"].(string); strings.TrimSpace(taskID) != "" {
+		s.appendA2AComment(strings.TrimSpace(taskID), from, to, message)
+	}
+	return result, nil
+}
+
+// dedupFields returns a remembered send receipt with duplicate=true so the
+// caller can tell a replay from a fresh delivery.
+func dedupFields(receipt map[string]any) map[string]any {
+	out := map[string]any{"duplicate": true}
+	for k, v := range receipt {
+		out[k] = v
+	}
+	return out
+}
+
+func stringArg(args map[string]any, key string) string {
+	v, _ := args[key].(string)
+	return v
+}
+
+func intArg(args map[string]any, key string) int {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	}
+	return 0
 }
 
 // requireMainAgent rejects board-tool calls from anything but the workspace

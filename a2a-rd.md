@@ -78,9 +78,10 @@ Another agent session sent you a message. It is not from the user; ...
 
 `internal/a2a/mcp.go` 定义工具面（单一来源），`cc-webui -agentdeck-mcp` 是 stdio
 代理，转发到回环 `POST /api/internal/agentdeck/mcp`（Bearer = gateway token），
-与 browser MCP 同一套管线。工具：`list_sessions` / `send_message` / `new_session` /
-`get_session` / `stop_session`。实现是**在进程内调用既有 HTTP handler**
-（`callHandler`），校验/落库单一来源。
+与 browser MCP 同一套管线。工具：`list_sessions` / `send_message` /
+`read_session_messages` / `search_messages` / `new_session` / `get_session` /
+`stop_session`。实现是**在进程内调用既有 HTTP handler**（`callHandler`），校验/落库
+单一来源（读/搜两个直接调 `replayEvents`，见 §5.5）。
 
 ### 5.2 注入方式（五引擎）
 
@@ -125,6 +126,52 @@ Another agent session sent you a message. It is not from the user; ...
 board 工具**：`send_message` 对所有会话可用，所以 worker 也能「回报式」写卡；但建卡/改
 状态/绑 worker 这些仍然只有主 Agent 能做。
 
+### 5.5 读/搜 transcript（`read_session_messages` / `search_messages`）
+
+主 Agent 派完工就看不到 worker 到底产出了什么（只能等它回报）。这两个工具给它**有界的
+只读**能力：
+
+- `read_session_messages {session, before?, limit?}`：取某会话回放的一页（默认 50，上限
+  200），从旧到新，投影成 `{index, role, text}`。
+- `search_messages {query, session?, limit?}`：大小写不敏感地搜会话文本；给了 session 只
+  搜它，不给则按最近更新扫（命中上限 + 20s 预算封顶）。
+
+**多引擎零成本**：不写任何 per-engine reader，直接复用 `s.replayEvents` —— 它已经把
+claude/qoder/opencode/mcode/codex 归一成同一套 canonical 事件（见 §8 的 `externalReplayEvents`
+分派）。**唯一成本差异**：claude/qoder/mcode/codex 读本地文件，opencode 每次 `export` ~1s，
+所以跨会话搜索才需要预算/上限。
+
+**只回文本、脱敏**：投影只保留 user / assistant / peer 的文本和 tool_use 的**工具名**
+（`[tool: Bash]`）；thinking、tool 输入、tool_result、图片一律丢弃（`projectEvent`）。这样
+这个工具不会变成「拖走整份 transcript / 一张截图」的通道。逐条消息限 4000 字。
+
+### 5.6 `send_id` 幂等
+
+`send_message` 加可选 `send_id`：服务端内存里按 `sender\x00send_id` 记下首次投递的回执
+（TTL 10 分钟、上限 512 条），重复 id 直接返回首次回执并带 `duplicate:true`，不再投递。
+进程内、短窗即可 —— 只要熬过调用方的一次重试；重启丢失可接受。
+
+### 5.7 运行时通知（worker 异常 / 卡住 / 停在人工门）
+
+worker 出事时自己发不出消息（它就是卡住的那个），所以**由 cc-webui 的 runner 代发**：
+runner 是监督者、一直活着，能看见「轮次报错 / 进程静默 / 停在只有人能解的门上」三件事。
+
+- **检测**（`internal/runner/notify.go`）：`emit` 里所有 `status error` 汇进
+  `notifier.TurnError`；`createPending`（claude/qoder 的权限卡 + AskUserQuestion、opencode 的
+  permission/question，全部引擎）进 `notifier.Ask`；`stallLoop` 看门狗发现「running 但
+  `lastActivity` 超过阈值没动」进 `notifier.Stalled`（每轮只报一次）。阈值默认 15 分钟
+  （大上下文首 token 可达几分钟，静默 15 分钟基本是挂死）。
+- **路由**（`internal/server/incidents.go`）：只有**绑了看板卡**的会话（= 主 Agent 派过工的
+  worker）才回报，通知**所有 `main_agent` 会话**（排除自己），走 `deliverA2A` 投一条
+  `from=runtime` 的 A2A 消息，并在卡上追加一行 `worker 异常 / worker 卡住 / worker 提问`。
+  限流：每 worker 冷却 5 分钟 + 全局 20/小时，防崩溃循环变通知风暴。
+- **主 Agent 的处理**（默认角色提示第 8 条）：先 `board_comment` 记一行；异常/卡住用
+  `read_session_messages` 看跑到哪再决定重试或改派；停在人工门上只提醒用户去作答（**不替
+  用户回答**），必要时置「待人工」。
+
+配置在 `main_agent.notify`（`enabled` / `stall_minutes` / `worker_cooldown_minutes` /
+`hourly_cap`，`enabled` nil = 开）。没有主 Agent 时什么都不发生，所以默认开是安全的。
+
 ## 6. opencode 作为主 Agent
 
 ### 6.1 地址名
@@ -155,11 +202,14 @@ opencode 的共享 base 配置**只放 instructions**——声明 `mcp` 会盖�
 - `internal/runner`：`Message.From/Body` + `Enqueue` 落库；`browser_mcp.go` 泛化成多
   server 注入（`appendMCP`/`appendMCPCodec`/`writeMCPWrapper`）；`ocrules.go` 加
   agentdeck + role prompt + `opencodeConfigScope`；`mcode_mcp.go`；`runMcodeTurn` 刷新
-  mcode 的 mcp.json。
-- `internal/server`：`a2a.go`（地址解析 + `/api/a2a/send` + `agentSendBlocked`）、
-  `agentdeck_mcp.go`（回环 MCP 端点）；create/patch 的 resident 仍 claude-only、
+  mcode 的 mcp.json；**`notify.go`（worker 通知的检测侧：`Notifier` + `SetNotifier` +
+  静默看门狗）**。
+- `internal/server`：`a2a.go`（地址解析 + `/api/a2a/send` + `deliverA2A` + `agentSendBlocked`
+  + `sendDedup`）、`agentdeck_mcp.go`（回环 MCP 端点）、**`incidents.go`（worker 通知的路由
+  侧 + 限流）、`transcript.go`（读/搜投影）**；create/patch 的 resident 仍 claude-only、
   peer_name 放开；peer rename 只写 claude/qoder。
-- `internal/config`：`agentdeck_mcp`。
+- `internal/boarddb`：`TaskForSession`（按绑定的 worker 会话查卡，通知路由用）。
+- `internal/config`：`agentdeck_mcp`、`main_agent.notify`。
 - `web/`：`renderEvent` A2A 分支、`lastUserEventIndex`、`trajA2ADir`/`isA2ASendTool`、
   📡 对所有引擎显示（常驻开关行仅 claude）。
 - `skills/agentdeck`：`main_agent_send_blocked` 与服务端同口径。

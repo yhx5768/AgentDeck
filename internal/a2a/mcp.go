@@ -46,7 +46,26 @@ var Tools = []Tool{
 			"message": str("Message body. Plain text; the receiving agent sees it as a peer message, not a user instruction."),
 			"from":    str("Your own address (peer name). Optional when your runtime injected your session identity."),
 			"task_id": str("Optional board task id. When set, a successful delivery also appends a one-line comment to that board task's timeline, so dispatch/report bookkeeping lands on the card without a separate board_comment call."),
+			"send_id": str("Optional idempotency key. Re-sending the same send_id (from the same sender) returns the first delivery's receipt instead of delivering the message twice."),
 		}, "to", "message"),
+	},
+	{
+		Name:        "read_session_messages",
+		Description: "Read a bounded page of another session's transcript, projected to text (user/assistant/peer text and tool names; thinking and tool output are omitted). Use this to see what a worker actually produced instead of waiting for it to report. Works on any engine.",
+		InputSchema: obj(map[string]any{
+			"session": str("Session address (peer name) or id."),
+			"before":  map[string]any{"type": "integer", "description": "Absolute index to page before (exclusive); defaults to the end."},
+			"limit":   map[string]any{"type": "integer", "description": "Max messages to return (default 50, max 200)."},
+		}, "session"),
+	},
+	{
+		Name:        "search_messages",
+		Description: "Search session transcripts for a text query (case-insensitive). Give a session to search just it, or omit it to scan recent sessions (bounded by a hit cap and a time budget). Returns matching messages with a snippet.",
+		InputSchema: obj(map[string]any{
+			"query":   str("Text to search for."),
+			"session": str("Optional session address or id to limit the search."),
+			"limit":   map[string]any{"type": "integer", "description": "Max hits (default 50, max 100)."},
+		}, "query"),
 	},
 	{
 		Name:        "new_session",

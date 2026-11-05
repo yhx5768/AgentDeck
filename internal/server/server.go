@@ -158,6 +158,12 @@ type Server struct {
 	replayCache map[string]*replayCacheEntry
 	replayOrder []string
 
+	// notifyRate rate-limits the runtime's worker notifications to the main
+	// agent (see incidents.go).
+	notifyRate notifyLimiter
+	// sendDedup makes send_message idempotent on an optional send_id.
+	sendDedup sendDedup
+
 	// boardHub fans out agent-board changes to SSE subscribers. The board is
 	// always stored at <data_dir>/agent-board.db; no file watcher is needed.
 	boardHub *boardHub
@@ -211,6 +217,10 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 	}
 	s.routes()
 	s.initAgentBoardDB()
+	// The runner detects worker incidents/escalations and hands them here; the
+	// stall watchdog needs the notifier, so wire both before starting it.
+	mgr.SetNotifier(s.workerNotifier())
+	mgr.StartStallWatch()
 	return s
 }
 

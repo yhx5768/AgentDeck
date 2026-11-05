@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -260,6 +261,65 @@ type MainAgentConfig struct {
 	// Prompt replaces the whole built-in role prompt when non-empty. Leave it
 	// unset to use the built-in template (with Worker interpolated).
 	Prompt string `yaml:"prompt" json:"prompt,omitempty"`
+	// Notify tunes the runtime's worker notifications to the main agent
+	// (incidents: a worker turn errored or stalled; escalations: a worker parked
+	// on a human-only gate). See internal/server/incidents.go.
+	Notify NotifyConfig `yaml:"notify" json:"notify"`
+}
+
+// NotifyConfig is the `main_agent.notify` section of config.yaml: the policy for
+// the runtime's worker-to-main-agent notifications.
+type NotifyConfig struct {
+	// Enabled turns the notifications on/off. nil (unset) means ON — without a
+	// main agent nothing is notified anyway, so opting in per-session is enough.
+	Enabled *bool `yaml:"enabled" json:"enabled,omitempty"`
+	// StallMinutes is how long a running turn may produce no output at all
+	// before it counts as stalled. Defaults to 15 (a huge-context first token
+	// can take a few minutes; total silence for 15 is a hang).
+	StallMinutes int `yaml:"stall_minutes" json:"stall_minutes,omitempty"`
+	// WorkerCooldownMinutes is the minimum gap between two notifications for the
+	// same worker, so a crash loop cannot become a notification storm. Defaults
+	// to 5.
+	WorkerCooldownMinutes int `yaml:"worker_cooldown_minutes" json:"worker_cooldown_minutes,omitempty"`
+	// HourlyCap is the global ceiling of notifications per hour. Defaults to 20.
+	HourlyCap int `yaml:"hourly_cap" json:"hourly_cap,omitempty"`
+}
+
+// NotifySettings is the normalized worker-notification policy the runtime and
+// the server consume (defaults applied).
+type NotifySettings struct {
+	Enabled        bool
+	StallTimeout   time.Duration
+	WorkerCooldown time.Duration
+	HourlyCap      int
+}
+
+// Notify returns the normalized notification policy. It works with or without a
+// `main_agent` section: the defaults are the policy, and a session can be marked
+// main agent at runtime (the UI toggle) without any config entry.
+func (c *Config) Notify() NotifySettings {
+	s := NotifySettings{
+		Enabled:        true,
+		StallTimeout:   15 * time.Minute,
+		WorkerCooldown: 5 * time.Minute,
+		HourlyCap:      20,
+	}
+	if c != nil && c.MainAgent != nil {
+		n := c.MainAgent.Notify
+		if n.Enabled != nil {
+			s.Enabled = *n.Enabled
+		}
+		if n.StallMinutes > 0 {
+			s.StallTimeout = time.Duration(n.StallMinutes) * time.Minute
+		}
+		if n.WorkerCooldownMinutes > 0 {
+			s.WorkerCooldown = time.Duration(n.WorkerCooldownMinutes) * time.Minute
+		}
+		if n.HourlyCap > 0 {
+			s.HourlyCap = n.HourlyCap
+		}
+	}
+	return s
 }
 
 // WorkerDefaults is the default profile for a new worker session.

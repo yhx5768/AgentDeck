@@ -1,8 +1,8 @@
 // Package boarddb is the SQLite task store used by the AgentDeck board.
 //
 // tasks is the current projection; task_events is append-only history;
-// task_links holds reports/sessions/cards; workers records agent/session
-// bindings. The JSON store is only an import/export format now.
+// task_links holds report/session links; workers records agent/session
+// bindings. The board is DB-native: there is no file import.
 package boarddb
 
 import (
@@ -155,6 +155,8 @@ func actorFor(kind string) string {
 	return map[string]string{
 		"用户消息": "user", "原始任务": "user", "主 Agent 回复": "mainAgent",
 		"A2A 发": "mainAgent", "A2A 收": "worker", "最近回报": "worker", "建卡": "system",
+		// Runtime-generated worker notifications (see internal/server/incidents.go).
+		"worker 异常": "system", "worker 卡住": "system", "worker 提问": "system",
 	}[kind]
 }
 
@@ -492,6 +494,30 @@ func (s *Store) GetTask(id string) (map[string]any, error) {
 		return nil, err
 	}
 	events, err := s.taskEvents(id)
+	if err != nil {
+		return nil, err
+	}
+	return row.toMap(events), nil
+}
+
+// TaskForSession returns the board task whose bound worker session is
+// sessionID, or nil when none is bound. It backs the runtime's worker
+// notifications: only a session the main agent dispatched (i.e. bound to a
+// card) reports back to the main agent. Lock-free like GetTask/Snapshot (the
+// pool is capped at one connection).
+func (s *Store) TaskForSession(sessionID string) (map[string]any, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, nil
+	}
+	row, err := scanTask(s.db.QueryRow(taskSelect+" WHERE session_id=? ORDER BY updated_at DESC LIMIT 1", sessionID))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	events, err := s.taskEvents(row.id)
 	if err != nil {
 		return nil, err
 	}
