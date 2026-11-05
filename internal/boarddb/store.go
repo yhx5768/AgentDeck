@@ -36,7 +36,6 @@ INSERT INTO schema_meta(key, value) VALUES ('version', '1')
 
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
-  display_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT '新建',
@@ -49,7 +48,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   session_id TEXT NOT NULL DEFAULT '',
   cwd TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT 'local',
-  external_ref TEXT NOT NULL DEFAULT '{}',
   progress TEXT NOT NULL DEFAULT '',
   progress_locked INTEGER NOT NULL DEFAULT 0,
   last_event TEXT NOT NULL DEFAULT '',
@@ -457,35 +455,29 @@ func (s *Store) upsertTaskJSON(task map[string]any) error {
 	if id == "" {
 		return nil
 	}
-	external := map[string]string{}
-	if jsonString(task, "icafe_id") != "" {
-		external = map[string]string{"system": "icafe", "id": jsonString(task, "icafe_id"),
-			"url": jsonString(task, "url")}
-	}
-	externalJSON, _ := json.Marshal(external)
 	created := jsonString(task, "updated_at")
 	if created == "" {
 		created = now()
 	}
-	_, err := s.db.Exec(`INSERT INTO tasks(id, display_id, title, description, status, status_reason,
-		priority, project, labels, owner, assignee, session_id, cwd, source, external_ref,
+	_, err := s.db.Exec(`INSERT INTO tasks(id, title, description, status, status_reason,
+		priority, project, labels, owner, assignee, session_id, cwd, source,
 		progress, progress_locked, last_event, report_file, archived, metadata, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
-		display_id=excluded.display_id, title=excluded.title, description=excluded.description,
+		title=excluded.title, description=excluded.description,
 		status=excluded.status, status_reason=excluded.status_reason, priority=excluded.priority,
 		project=excluded.project, labels=excluded.labels, owner=excluded.owner,
 		assignee=excluded.assignee, session_id=excluded.session_id, cwd=excluded.cwd,
-		source=excluded.source, external_ref=excluded.external_ref, progress=excluded.progress,
+		source=excluded.source, progress=excluded.progress,
 		progress_locked=excluded.progress_locked, last_event=excluded.last_event,
 		report_file=excluded.report_file, archived=excluded.archived, metadata=excluded.metadata,
 		updated_at=excluded.updated_at`,
-		id, jsonString(task, "icafe_id"), jsonString(task, "title"), jsonString(task, "description"),
+		id, jsonString(task, "title"), jsonString(task, "description"),
 		defaultString(jsonString(task, "status"), "新建"), jsonString(task, "status_reason"),
 		intFromAny(task["priority"], 2), normalizeProject(jsonString(task, "project")),
 		jsonTags(task), jsonString(task, "owner"), jsonString(task, "worker"),
 		jsonString(task, "session"), jsonString(task, "cwd"), defaultString(jsonString(task, "source"), "local"),
-		string(externalJSON), jsonString(task, "progress"), boolInt(jsonBool(task, "progress_locked")),
+		jsonString(task, "progress"), boolInt(jsonBool(task, "progress_locked")),
 		jsonString(task, "last_event"), jsonString(task, "report_file"), 0, "{}", created,
 		defaultString(jsonString(task, "updated_at"), created))
 	if err != nil {
@@ -542,9 +534,6 @@ func (s *Store) upsertLinks(task map[string]any) error {
 	if session := jsonString(task, "session"); session != "" {
 		links = append(links, [3]string{"session", session, "会话"})
 	}
-	if jsonString(task, "icafe_id") != "" && jsonString(task, "url") != "" {
-		links = append(links, [3]string{"card", jsonString(task, "url"), jsonString(task, "icafe_id")})
-	}
 	for _, link := range links {
 		_, _ = s.db.Exec("INSERT OR IGNORE INTO task_links(task_id,kind,target,label) VALUES(?,?,?,?)",
 			id, link[0], link[1], link[2])
@@ -554,7 +543,6 @@ func (s *Store) upsertLinks(task map[string]any) error {
 
 func (s *Store) mergeRoutingRow(row routingRow) error {
 	id := routingTaskID(row)
-	card := routingValue(row["card"])
 	worker := routingValue(row["worker_peer"])
 	status := routingValue(row["status"])
 	project := projectFromWorker(worker)
@@ -563,45 +551,36 @@ func (s *Store) mergeRoutingRow(row routingRow) error {
 	_ = s.db.QueryRow("SELECT updated_at FROM tasks WHERE id=?", id).Scan(&current)
 	var exists int
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM tasks WHERE id=?", id).Scan(&exists)
-	url := ""
-	externalJSON := "{}"
-	if card != "" {
-		url = "https://console.cloud.baidu-int.com/devops/icafe/issue/" + card + "/show"
-		if encoded, err := json.Marshal(map[string]string{"system": "icafe", "id": card, "url": url}); err == nil {
-			externalJSON = string(encoded)
-		}
-	}
 	if exists == 0 {
-		_, err := s.db.Exec(`INSERT INTO tasks(id,display_id,title,status,project,assignee,session_id,cwd,
-			progress,last_event,report_file,external_ref,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, card, defaultString(routingValue(row["task_id"]), id), defaultString(status, "进行中"), project, worker,
+		_, err := s.db.Exec(`INSERT INTO tasks(id,title,status,project,assignee,session_id,cwd,
+			progress,last_event,report_file,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			id, defaultString(routingValue(row["task_id"]), id), defaultString(status, "进行中"), project, worker,
 			routingValue(row["session_id"]), routingValue(row["cwd"]), routingValue(row["last_report"]),
-			routingValue(row["last_event"]), routingValue(row["report_file"]), externalJSON,
+			routingValue(row["last_event"]), routingValue(row["report_file"]),
 			defaultString(updated, now()), defaultString(updated, now()))
 		if err != nil {
 			return err
 		}
 	} else {
-		_, err := s.db.Exec(`UPDATE tasks SET display_id=COALESCE(NULLIF(?,''),display_id),
+		_, err := s.db.Exec(`UPDATE tasks SET
 			status=COALESCE(NULLIF(?,''),status),
 			project=COALESCE(NULLIF(?,''),project), assignee=COALESCE(NULLIF(?,''),assignee),
 			session_id=COALESCE(NULLIF(?,''),session_id), cwd=COALESCE(NULLIF(?,''),cwd),
 			last_event=COALESCE(NULLIF(?,''),last_event),
 			report_file=COALESCE(NULLIF(?,''),report_file),
-			external_ref=CASE WHEN ?<>'{}' THEN ? ELSE external_ref END,
 			progress=CASE WHEN progress_locked=1 THEN progress ELSE COALESCE(NULLIF(?,''),progress) END,
 			updated_at=CASE WHEN ?<>'' AND (?='' OR ? > updated_at) THEN ? ELSE updated_at END
-			WHERE id=?`, card, status, project, worker, routingValue(row["session_id"]), routingValue(row["cwd"]),
+			WHERE id=?`, status, project, worker, routingValue(row["session_id"]), routingValue(row["cwd"]),
 			routingValue(row["last_event"]), routingValue(row["report_file"]),
-			externalJSON, externalJSON, routingValue(row["last_report"]),
+			routingValue(row["last_report"]),
 			updated, current, updated, updated, id)
 		if err != nil {
 			return err
 		}
 	}
 	_ = s.upsertLinks(map[string]any{
-		"id": id, "icafe_id": card, "url": url,
+		"id":      id,
 		"session": routingValue(row["session_id"]), "report_file": routingValue(row["report_file"]),
 	})
 	if err := s.upsertWorkerLocked(worker, routingValue(row["session_id"]),
@@ -687,22 +666,22 @@ func (s *Store) BindWorker(taskID, worker, session, cwd string) error {
 }
 
 type taskRow struct {
-	id, displayID, title, description, status, statusReason, project, labels, owner, assignee,
-	session, cwd, source, externalRef, progress, lastEvent, reportFile, metadata, createdAt, updatedAt string
+	id, title, description, status, statusReason, project, labels, owner, assignee,
+	session, cwd, source, progress, lastEvent, reportFile, metadata, createdAt, updatedAt string
 	priority, progressLocked, archived int
 }
 
 func scanTask(scanner interface{ Scan(...any) error }) (*taskRow, error) {
 	row := &taskRow{}
-	err := scanner.Scan(&row.id, &row.displayID, &row.title, &row.description, &row.status, &row.statusReason,
+	err := scanner.Scan(&row.id, &row.title, &row.description, &row.status, &row.statusReason,
 		&row.priority, &row.project, &row.labels, &row.owner, &row.assignee, &row.session, &row.cwd,
-		&row.source, &row.externalRef, &row.progress, &row.progressLocked, &row.lastEvent, &row.reportFile,
+		&row.source, &row.progress, &row.progressLocked, &row.lastEvent, &row.reportFile,
 		&row.archived, &row.metadata, &row.createdAt, &row.updatedAt)
 	return row, err
 }
 
-const taskSelect = `SELECT id,display_id,title,description,status,status_reason,priority,project,labels,
-	owner,assignee,session_id,cwd,source,external_ref,progress,progress_locked,last_event,report_file,
+const taskSelect = `SELECT id,title,description,status,status_reason,priority,project,labels,
+	owner,assignee,session_id,cwd,source,progress,progress_locked,last_event,report_file,
 	archived,metadata,created_at,updated_at FROM tasks`
 
 func (s *Store) getTaskLocked(id string) (*taskRow, error) {
@@ -715,14 +694,12 @@ func (r *taskRow) toMap(events []map[string]any) map[string]any {
 	if tags == nil {
 		tags = []string{}
 	}
-	var external map[string]string
-	_ = json.Unmarshal([]byte(r.externalRef), &external)
 	task := map[string]any{
-		"id": r.id, "icafe_id": r.displayID, "source": r.source, "title": r.title,
+		"id": r.id, "source": r.source, "title": r.title,
 		"full_title": r.title, "status": r.status, "project": r.project, "owner": r.owner,
 		"worker": r.assignee, "session": r.session, "cwd": r.cwd, "updated_at": r.updatedAt,
 		"progress": r.progress, "last_event": r.lastEvent, "report_file": r.reportFile,
-		"tags": tags, "timeline": events, "url": external["url"],
+		"tags": tags, "timeline": events,
 	}
 	if r.statusReason != "" {
 		task["status_reason"] = r.statusReason
@@ -834,10 +811,6 @@ func (s *Store) CreateTask(input map[string]any) (map[string]any, error) {
 	if id == "" {
 		id = "T-" + time.Now().Format("20060102-150405.000000")
 	}
-	displayID := inputString(input, "display_id")
-	if displayID == "" {
-		displayID = inputString(input, "icafe_id")
-	}
 	status := defaultString(inputString(input, "status"), "新建")
 	project := normalizeProject(inputString(input, "project"))
 	assignee := inputString(input, "worker")
@@ -851,29 +824,20 @@ func (s *Store) CreateTask(input map[string]any) (map[string]any, error) {
 	reportFile := inputString(input, "report_file")
 	tags := inputTags(input)
 	priority := intFromAny(input["priority"], 2)
-	external := map[string]string{}
-	if displayID != "" {
-		url := inputString(input, "url")
-		if url == "" {
-			url = "https://console.cloud.baidu-int.com/devops/icafe/issue/" + displayID + "/show"
-		}
-		external = map[string]string{"system": "icafe", "id": displayID, "url": url}
-	}
-	externalJSON, _ := json.Marshal(external)
 	at := now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO tasks(id,display_id,title,description,status,project,labels,
-		owner,assignee,session_id,cwd,source,external_ref,progress,last_event,report_file,
-		priority,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, displayID, title, description, status, project, tags, owner, assignee, session, cwd,
-		source, string(externalJSON), progress, lastEvent, reportFile, priority, at, at)
+	_, err := s.db.Exec(`INSERT INTO tasks(id,title,description,status,project,labels,
+		owner,assignee,session_id,cwd,source,progress,last_event,report_file,
+		priority,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, title, description, status, project, tags, owner, assignee, session, cwd,
+		source, progress, lastEvent, reportFile, priority, at, at)
 	if err != nil {
 		return nil, err
 	}
 	_, _ = s.insertEventTx(id, at, "建卡", "system", "任务创建", "", "local", 0)
 	_ = s.upsertLinks(map[string]any{
-		"id": id, "icafe_id": displayID, "url": external["url"],
+		"id":      id,
 		"session": session, "report_file": reportFile,
 	})
 	if err := s.upsertWorkerLocked(assignee, session, cwd, at); err != nil {

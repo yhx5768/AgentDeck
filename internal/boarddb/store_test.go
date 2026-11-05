@@ -23,11 +23,11 @@ func writeJSON(t *testing.T, path string, value any) {
 func sampleJSON() map[string]any {
 	return map[string]any{"tasks": []any{
 		map[string]any{
-			"id": "YHX-TODO-819", "icafe_id": "YHX-TODO-819", "title": "回复上板",
+			"id": "YHX-TODO-819", "title": "回复上板",
 			"status": "已完成", "project": "AgentDeck", "worker": "AgentDeck-卡片自动化",
 			"session": "sess-1", "cwd": "/work", "updated_at": "2026-11-03 19:35",
 			"progress": "完成", "last_event": "A2A 收", "report_file": "report.md",
-			"tags": []any{"规划"}, "url": "https://example.test/YHX-TODO-819",
+			"tags": []any{"规划"},
 			"timeline": []any{
 				map[string]any{"at": "2026-11-03 19:35", "kind": "最近回报", "text": "完成"},
 				map[string]any{"at": "2026-11-03 19:09", "kind": "A2A 收", "text": "worker 回报"},
@@ -36,7 +36,7 @@ func sampleJSON() map[string]any {
 			},
 		},
 		map[string]any{
-			"id": "YHX-TODO-818", "icafe_id": "YHX-TODO-818", "title": "自动同步",
+			"id": "YHX-TODO-818", "title": "自动同步",
 			"status": "待验收", "project": "AgentDeck", "updated_at": "2026-11-03 19:31",
 			"progress_locked": true, "status_reason": "最终方案",
 			"timeline": []any{map[string]any{"at": "2026-11-03 19:20", "kind": "主 Agent 回复", "text": "方案"}},
@@ -145,7 +145,7 @@ func TestMigrateOnceDoesNotOverwriteNewerDB(t *testing.T) {
 	}
 }
 
-func TestMigrateRoutingRowsWithoutICafeCard(t *testing.T) {
+func TestMigrateRoutingRows(t *testing.T) {
 	dir := t.TempDir()
 	routingPath := filepath.Join(dir, "routing-table.md")
 	routing := `| task_id | card | status | worker_peer | session_id | cwd | last_event | last_report | report_file | card_modified | comment_id | updated |
@@ -172,14 +172,19 @@ func TestMigrateRoutingRowsWithoutICafeCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if local["icafe_id"] != "" || local["url"] != "" {
-		t.Fatalf("local task should not claim an iCafe card: %+v", local)
+	if local["id"] != "local-task-1" {
+		t.Fatalf("local task id = %+v", local)
+	}
+	// The routing table's card column is used as the board task id, but the
+	// board no longer models an external card reference.
+	if _, ok := local["icafe_id"]; ok {
+		t.Fatalf("task must not carry an icafe_id: %+v", local)
 	}
 	other, err := st.GetTask("OTHER-123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if other["icafe_id"] != "OTHER-123" || other["url"] == "" {
+	if other["id"] != "OTHER-123" || other["worker"] != "Verify-生产发布" {
 		t.Fatalf("other card = %+v", other)
 	}
 }

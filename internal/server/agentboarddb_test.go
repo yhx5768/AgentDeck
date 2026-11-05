@@ -54,7 +54,7 @@ func boardDBServerAt(t *testing.T, dbPath, jsonPath, routingPath string) *Server
 func sampleBoardJSON() map[string]any {
 	return map[string]any{"tasks": []any{
 		map[string]any{
-			"id": "YHX-TODO-819", "icafe_id": "YHX-TODO-819", "title": "回复上板",
+			"id": "YHX-TODO-819", "title": "回复上板",
 			"status": "已完成", "project": "AgentDeck", "worker": "AgentDeck-卡片自动化",
 			"session": "sess-1", "cwd": "/work", "updated_at": "2026-11-03 19:35",
 			"progress": "完成", "last_event": "A2A 收", "report_file": "report.md",

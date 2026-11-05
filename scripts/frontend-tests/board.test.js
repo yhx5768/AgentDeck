@@ -68,7 +68,7 @@ function main() {
     status_order: ['新建', '进行中', '待人工', '待验收', '已完成', '已取消'],
     counts: {},
     tasks: [
-      { id: 'T-1', icafe_id: 'YHX-1', title: '任务A', status: '进行中', project: 'cc-webui', worker: 'w1', tags: ['测试', '看板'], progress: '80%', updated_at: '2026-11-04 15:40' },
+      { id: 'T-1', title: '任务A', status: '进行中', project: 'cc-webui', worker: 'w1', tags: ['测试', '看板'], progress: '80%', updated_at: '2026-11-04 15:40' },
       { id: 'T-2', title: '任务B', status: '新建', project: 'other', updated_at: '2026-11-04 15:40' },
     ],
   };
@@ -82,7 +82,7 @@ function main() {
 
   const card = doc.querySelector('.board-card[data-task-id="T-1"]');
   check('卡片渲染', !!card);
-  check('卡片显示 icafe id', card.querySelector('.board-card-id').textContent === 'YHX-1');
+  check('卡片显示任务 id', card.querySelector('.board-card-id').textContent === 'T-1');
   check('卡片显示项目', card.querySelector('.board-project').textContent === 'cc-webui');
   check('卡片显示标题', card.querySelector('.board-card-title').textContent === '任务A');
   check('卡片显示 worker', card.querySelector('.board-card-meta').textContent.includes('w1'));

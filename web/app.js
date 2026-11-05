@@ -2727,7 +2727,7 @@ function boardTaskCard(task) {
   top.className = 'board-card-top';
   const id = document.createElement('span');
   id.className = 'board-card-id';
-  id.textContent = task.icafe_id || task.id || '';
+  id.textContent = task.id || '';
   const project = document.createElement('span');
   project.className = 'board-project';
   project.textContent = task.project || '未分类';
@@ -3084,7 +3084,6 @@ function boardRenderLinks(task) {
   };
   addItem('任务 id', task.id, 'ID');
   addItem('验证/进展报告', task.report_file, '文');
-  addItem('iCafe 卡片', task.icafe_id, '卡', task.url || '');
   addItem('会话 id', task.session, '会');
   addItem('工作目录', task.cwd, '目录');
   if (!count) links.append(boardMuted('暂无可关联内容'));
@@ -3115,7 +3114,7 @@ function boardOpenDrawer(task) {
     el.classList.toggle('board-card-selected', el.dataset.taskId === task.id);
   });
   const idEl = $('#board-drawer-id');
-  idEl.textContent = task.icafe_id || task.id || '本地任务';
+  idEl.textContent = task.id || '本地任务';
   const projectEl = $('#board-drawer-project');
   projectEl.textContent = task.project || '未分类';
   projectEl.title = task.project || '';
@@ -3155,7 +3154,6 @@ function boardTaskContext(task) {
   const lines = [
     '【来自看板任务抽屉】',
     `task_id: ${task.id || '—'}`,
-    `卡片: ${task.icafe_id || '—'}${task.url ? ' · ' + task.url : ''}`,
     `标题: ${task.full_title || task.title || '—'}`,
     `状态: ${task.status || '—'} · 项目: ${task.project || '—'}`,
     `worker: ${task.worker || '未派工'} · 会话: ${task.session || '—'}`,
