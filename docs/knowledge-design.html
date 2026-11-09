@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentDeck 资料空间 · 设计预览</title>
+<style>
+  :root {
+    --kb-bg: #ffffff;
+    --kb-surface: #f6f8fa;
+    --kb-surface-2: #eef2f6;
+    --kb-border: #d0d7de;
+    --kb-fg: #1f2328;
+    --kb-muted: #59636e;
+    --kb-accent: #0969da;
+    --kb-green: #1a7f37;
+    --kb-orange: #9a6700;
+    --kb-red: #cf222e;
+    --kb-purple: #8250df;
+    --kb-code: #f0f3f6;
+    --kb-shadow: 0 1px 2px rgba(31, 35, 40, .06), 0 8px 24px rgba(31, 35, 40, .06);
+    --kb-radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --kb-bg: #0d1117;
+      --kb-surface: #161b22;
+      --kb-surface-2: #21262d;
+      --kb-border: #30363d;
+      --kb-fg: #e6edf3;
+      --kb-muted: #8b949e;
+      --kb-accent: #58a6ff;
+      --kb-green: #3fb950;
+      --kb-orange: #d29922;
+      --kb-red: #f85149;
+      --kb-purple: #a371f7;
+      --kb-code: #161b22;
+      --kb-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    background: var(--background, var(--kb-bg));
+    color: var(--foreground, var(--kb-fg));
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent, var(--kb-accent)); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 12.5px;
+  }
+  code {
+    background: var(--code-bg, var(--kb-code));
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 6px;
+    padding: 1px 5px;
+  }
+  pre {
+    background: var(--code-bg, var(--kb-code));
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 12px;
+    padding: 16px;
+    overflow-x: auto;
+    line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 40px 22px 72px; }
+  .hero {
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(900px 420px at 8% -10%, color-mix(in srgb, var(--accent, var(--kb-accent)) 16%, transparent), transparent 60%),
+      radial-gradient(700px 380px at 100% 0%, color-mix(in srgb, var(--kb-purple) 14%, transparent), transparent 60%),
+      var(--surface, var(--kb-surface));
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 22px;
+    padding: 42px 38px 34px;
+    box-shadow: var(--kb-shadow);
+  }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted, var(--kb-muted));
+    border: 1px solid var(--border, var(--kb-border));
+    background: var(--background, var(--kb-bg));
+    border-radius: 999px;
+    padding: 5px 12px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent, var(--kb-accent)); }
+  h1 { font-size: clamp(30px, 4.6vw, 48px); line-height: 1.15; margin: 18px 0 12px; letter-spacing: -.02em; }
+  .lede { font-size: 16.5px; color: var(--muted, var(--kb-muted)); max-width: 780px; margin: 0; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    border-radius: 999px;
+    padding: 5px 11px;
+    border: 1px solid var(--border, var(--kb-border));
+    background: var(--background, var(--kb-bg));
+    color: var(--muted, var(--kb-muted));
+    white-space: nowrap;
+  }
+  .badge.strong { color: var(--accent, var(--kb-accent)); border-color: color-mix(in srgb, var(--accent, var(--kb-accent)) 40%, var(--border, var(--kb-border))); }
+  .badge.green { color: var(--kb-green); border-color: color-mix(in srgb, var(--kb-green) 40%, var(--border, var(--kb-border))); }
+  .badge.orange { color: var(--kb-orange); border-color: color-mix(in srgb, var(--kb-orange) 40%, var(--border, var(--kb-border))); }
+  .badge.red { color: var(--kb-red); border-color: color-mix(in srgb, var(--kb-red) 40%, var(--border, var(--kb-border))); }
+  section { margin-top: 46px; }
+  .section-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  .section-head h2 { font-size: 23px; margin: 0; letter-spacing: -.01em; }
+  .section-head .num {
+    font-size: 12px; font-weight: 700; color: var(--accent, var(--kb-accent));
+    border: 1px solid color-mix(in srgb, var(--accent, var(--kb-accent)) 35%, var(--border, var(--kb-border)));
+    border-radius: 8px; padding: 2px 8px;
+  }
+  .section-head p { margin: 0; color: var(--muted, var(--kb-muted)); font-size: 13.5px; }
+  .grid { display: grid; gap: 14px; }
+  .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .card {
+    background: var(--surface, var(--kb-surface));
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: var(--kb-radius);
+    padding: 18px;
+    box-shadow: var(--kb-shadow);
+  }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .card p { margin: 0; font-size: 13px; color: var(--muted, var(--kb-muted)); }
+  .card .tagline { display: block; margin-top: 10px; font-size: 12px; color: var(--accent, var(--kb-accent)); }
+  .card.accent { border-color: color-mix(in srgb, var(--accent, var(--kb-accent)) 45%, var(--border, var(--kb-border))); }
+  .card.warn { border-color: color-mix(in srgb, var(--kb-red) 35%, var(--border, var(--kb-border))); }
+  .kicker { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted, var(--kb-muted)); margin-bottom: 8px; }
+  .diagram {
+    background: var(--surface, var(--kb-surface));
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: var(--kb-radius);
+    padding: 14px;
+    box-shadow: var(--kb-shadow);
+  }
+  .diagram-scroll { overflow-x: auto; }
+  .diagram svg { width: 100%; min-width: 860px; height: auto; display: block; }
+  @media (min-width: 1040px) {
+    .diagram svg { min-width: 0; }
+  }
+  .caption { font-size: 12px; color: var(--muted, var(--kb-muted)); margin: 10px 4px 0; }
+  .flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: stretch; }
+  .step {
+    background: var(--surface, var(--kb-surface));
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 12px;
+    padding: 14px;
+    position: relative;
+  }
+  .step .n {
+    width: 24px; height: 24px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--accent, var(--kb-accent)); color: #fff;
+    font-size: 12px; font-weight: 700; margin-bottom: 8px;
+  }
+  .step h3 { margin: 0 0 4px; font-size: 13.5px; }
+  .step p { margin: 0; font-size: 12px; color: var(--muted, var(--kb-muted)); }
+  .step::after {
+    content: "→";
+    position: absolute; right: -10px; top: 50%; transform: translateY(-50%);
+    color: var(--muted, var(--kb-muted)); font-size: 14px;
+  }
+  .step:last-child::after { content: ""; }
+  .flow-note {
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: var(--muted, var(--kb-muted));
+    background: var(--surface, var(--kb-surface));
+    border: 1px dashed var(--border, var(--kb-border));
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .status-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+    border: 1px solid var(--border, var(--kb-border));
+    background: var(--background, var(--kb-bg));
+  }
+  .pill.draft { color: var(--kb-orange); border-color: color-mix(in srgb, var(--kb-orange) 45%, var(--border, var(--kb-border))); }
+  .pill.approved { color: var(--kb-green); border-color: color-mix(in srgb, var(--kb-green) 45%, var(--border, var(--kb-border))); }
+  .pill.stale { color: var(--kb-red); border-color: color-mix(in srgb, var(--kb-red) 45%, var(--border, var(--kb-border))); }
+  .pill.superseded, .pill.quarantined { color: var(--kb-purple); border-color: color-mix(in srgb, var(--kb-purple) 45%, var(--border, var(--kb-border))); }
+  .pill.rejected { color: var(--muted, var(--kb-muted)); }
+  .arrow { color: var(--muted, var(--kb-muted)); }
+  .table-scroll { overflow-x: auto; border: 1px solid var(--border, var(--kb-border)); border-radius: 12px; background: var(--surface, var(--kb-surface)); }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: 13px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border, var(--kb-border)); vertical-align: top; }
+  th { font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted, var(--kb-muted)); background: var(--surface-2, var(--kb-surface-2)); }
+  tr:last-child td { border-bottom: 0; }
+  td b { font-weight: 600; }
+  .check { color: var(--kb-green); font-weight: 700; }
+  .cross { color: var(--kb-red); font-weight: 700; }
+  .wire {
+    background: var(--surface, var(--kb-surface));
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: var(--kb-radius);
+    padding: 14px;
+    box-shadow: var(--kb-shadow);
+  }
+  .browser {
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--background, var(--kb-bg));
+  }
+  .browser-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 9px 12px;
+    background: var(--surface-2, var(--kb-surface-2));
+    border-bottom: 1px solid var(--border, var(--kb-border));
+  }
+  .browser-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--border, var(--kb-border)); display: block; }
+  .browser-bar span { margin-left: 8px; font-size: 11px; color: var(--muted, var(--kb-muted)); }
+  .app { display: grid; grid-template-columns: 148px 1fr; min-height: 430px; }
+  .rail { border-right: 1px solid var(--border, var(--kb-border)); padding: 12px 10px; background: var(--surface, var(--kb-surface)); }
+  .rail .item { height: 10px; border-radius: 999px; background: var(--border, var(--kb-border)); margin: 0 0 9px; opacity: .65; }
+  .rail .item.active { background: color-mix(in srgb, var(--accent, var(--kb-accent)) 55%, var(--border, var(--kb-border))); opacity: 1; }
+  .rail .label { font-size: 10px; color: var(--muted, var(--kb-muted)); margin: 2px 0 12px; letter-spacing: .06em; }
+  .kb-main { padding: 14px; }
+  .kb-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .kb-title { font-size: 15px; font-weight: 700; margin-right: auto; }
+  .input {
+    flex: 1 1 220px; min-width: 150px; height: 32px; border-radius: 8px;
+    border: 1px solid var(--border, var(--kb-border));
+    background: var(--background, var(--kb-bg));
+    color: var(--muted, var(--kb-muted));
+    display: flex; align-items: center; padding: 0 10px; font-size: 11.5px;
+  }
+  .btn {
+    height: 32px; padding: 0 11px; border-radius: 8px; display: inline-flex; align-items: center;
+    font-size: 11.5px; border: 1px solid var(--border, var(--kb-border));
+    background: var(--background, var(--kb-bg)); color: var(--fg, var(--kb-fg));
+    white-space: nowrap;
+  }
+  .btn.primary { background: var(--accent, var(--kb-accent)); border-color: var(--accent, var(--kb-accent)); color: #fff; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chip { font-size: 10.5px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border, var(--kb-border)); color: var(--muted, var(--kb-muted)); background: var(--background, var(--kb-bg)); }
+  .kb-body { display: grid; grid-template-columns: 1.15fr .95fr; gap: 10px; }
+  .list { display: grid; gap: 8px; }
+  .result {
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 10px; padding: 10px 11px; background: var(--background, var(--kb-bg));
+  }
+  .result.selected { border-color: color-mix(in srgb, var(--accent, var(--kb-accent)) 55%, var(--border, var(--kb-border))); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, var(--kb-accent)) 14%, transparent); }
+  .result .row { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+  .mini-badge { font-size: 9.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border, var(--kb-border)); color: var(--muted, var(--kb-muted)); }
+  .mini-badge.ok { color: var(--kb-green); border-color: color-mix(in srgb, var(--kb-green) 45%, var(--border, var(--kb-border))); }
+  .mini-badge.ai { color: var(--kb-purple); border-color: color-mix(in srgb, var(--kb-purple) 45%, var(--border, var(--kb-border))); }
+  .result .t { font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+  .result .s { font-size: 10.8px; color: var(--muted, var(--kb-muted)); }
+  .detail {
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 10px; background: var(--surface, var(--kb-surface)); padding: 11px;
+    font-size: 10.8px; color: var(--muted, var(--kb-muted));
+  }
+  .detail h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--fg, var(--kb-fg)); }
+  .detail .sec { margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border, var(--kb-border)); }
+  .detail .sec b { color: var(--fg, var(--kb-fg)); font-weight: 600; }
+  .drawer-inset {
+    margin-top: 12px;
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 12px;
+    background: var(--background, var(--kb-bg));
+    padding: 12px;
+  }
+  .drawer-inset .dt { font-size: 11px; font-weight: 700; color: var(--muted, var(--kb-muted)); margin-bottom: 8px; }
+  .drawer-inset .entry { display: flex; gap: 8px; align-items: flex-start; padding: 7px 0; border-top: 1px dashed var(--border, var(--kb-border)); }
+  .drawer-inset .entry:first-of-type { border-top: 0; }
+  .drawer-inset .entry .txt { font-size: 11px; color: var(--fg, var(--kb-fg)); }
+  .drawer-inset .entry .meta { font-size: 10px; color: var(--muted, var(--kb-muted)); }
+  .roadmap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .phase { position: relative; }
+  .phase .phase-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .phase .phase-head .tag {
+    font-size: 11px; font-weight: 700; color: #fff; background: var(--accent, var(--kb-accent));
+    border-radius: 7px; padding: 3px 8px;
+  }
+  .phase.p1 .phase-head .tag { background: var(--kb-orange); }
+  .phase.p2 .phase-head .tag { background: var(--kb-purple); }
+  .phase ul { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted, var(--kb-muted)); }
+  .phase li { margin: 5px 0; }
+  .phase .est { margin-top: 10px; font-size: 11.5px; color: var(--accent, var(--kb-accent)); }
+  .guard { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .guard .g {
+    border: 1px solid var(--border, var(--kb-border));
+    border-radius: 12px; padding: 14px; background: var(--surface, var(--kb-surface));
+  }
+  .guard .g b { display: block; font-size: 12.5px; margin-bottom: 4px; }
+  .guard .g span { font-size: 11.8px; color: var(--muted, var(--kb-muted)); }
+  .footer {
+    margin-top: 52px; padding-top: 18px;
+    border-top: 1px solid var(--border, var(--kb-border));
+    font-size: 12px; color: var(--muted, var(--kb-muted));
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  .callout {
+    border-left: 3px solid var(--accent, var(--kb-accent));
+    background: color-mix(in srgb, var(--accent, var(--kb-accent)) 7%, var(--surface, var(--kb-surface)));
+    border-radius: 0 10px 10px 0;
+    padding: 12px 14px;
+    font-size: 13px;
+    color: var(--muted, var(--kb-muted));
+  }
+  .callout b { color: var(--fg, var(--kb-fg)); }
+  .small { font-size: 12px; color: var(--muted, var(--kb-muted)); }
+  .nowrap { white-space: nowrap; }
+  @media (max-width: 900px) {
+    .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .step::after { content: ""; }
+    .kb-body { grid-template-columns: 1fr; }
+    .roadmap { grid-template-columns: 1fr; }
+    .guard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .app { grid-template-columns: 112px 1fr; }
+    .hero { padding: 30px 22px 26px; }
+    .wrap { padding: 26px 14px 54px; }
+  }
+  @media (max-width: 560px) {
+    .grid-4, .grid-3, .grid-2, .guard { grid-template-columns: 1fr; }
+    .flow { grid-template-columns: 1fr; }
+    .app { grid-template-columns: 1fr; }
+    .rail { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <span class="eyebrow"><span class="dot"></span> AgentDeck · Design Preview · 2026-11-09</span>
+    <h1>资料空间</h1>
+    <p class="lede">
+      把任务产物沉淀成<strong>可检索、可追溯、可审批</strong>的知识。
+      每条知识都能回答：从哪来、谁确认、现在还算不算数。
+    </p>
+    <div class="badges">
+      <span class="badge strong">KnowledgeEntry + FTS5</span>
+      <span class="badge">独立 data/knowledge.db</span>
+      <span class="badge green">自动只出 draft</span>
+      <span class="badge orange">人工/主 Agent 审批</span>
+      <span class="badge red">不扫描工作区</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <span class="num">01</span>
+      <h2>四个概念，别混</h2>
+      <p>知识不是台账，不是 memory，也不是原始文件。</p>
+    </div>
+    <div class="grid grid-4">
+      <article class="card accent">
+        <div class="kicker">Knowledge</div>
+        <h3>知识条目</h3>
+        <p>一条结论、方法、决策或资料 pointer；带来源、审批、过期状态。</p>
+        <span class="tagline">回答「以后还能用吗」</span>
+      </article>
+      <article class="card">
+        <div class="kicker">Ledger</div>
+        <h3>工作台账</h3>
+        <p>项目/事项的当前状态与时间线，持续更新，不作为可复用结论。</p>
+        <span class="tagline">回答「现在做到哪了」</span>
+      </article>
+      <article class="card">
+        <div class="kicker">Memory</div>
+        <h3>Agent 记忆</h3>
+        <p>用户偏好、长期事实、工作方法；启动即进上下文，小而精。</p>
+        <span class="tagline">回答「以后该怎么做」</span>
+      </article>
+      <article class="card">
+        <div class="kicker">Artifact</div>
+        <h3>原始产物</h3>
+        <p>HTML / Markdown / 文件 / 外链本体；append-only，是证据不是结论。</p>
+        <span class="tagline">回答「交付文件在哪」</span>
+      </article>
+    </div>
+    <div class="callout" style="margin-top:14px">
+      <b>判据：</b>现在做到哪 → 台账；以后遇到同类问题怎么做 → 知识；你以后都要这样 → memory；这次交付的文件本体 → artifact（知识只引用它）。
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="num">02</span>
+      <h2>架构与数据流</h2>
+      <p>只从任务产物和显式提交里采集，自动只写 draft。</p>
+    </div>
+    <div class="diagram">
+      <div class="diagram-scroll">
+      <svg viewBox="0 0 1040 540" role="img" aria-label="知识沉淀架构图">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+          <linearGradient id="storeGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--accent, #0969da)" stop-opacity=".14"/>
+            <stop offset="100%" stop-color="var(--accent, #0969da)" stop-opacity=".02"/>
+          </linearGradient>
+        </defs>
+        <style>
+          .box { fill: var(--surface, #f6f8fa); stroke: var(--border, #d0d7de); stroke-width: 1.2; rx: 10; }
+          .box-accent { fill: url(#storeGrad); stroke: var(--accent, #0969da); stroke-width: 1.4; rx: 12; }
+          .box-warn { fill: color-mix(in srgb, var(--kb-red) 8%, var(--surface, #f6f8fa)); stroke: var(--kb-red); stroke-width: 1.2; rx: 10; }
+          .lbl { fill: var(--fg, #1f2328); font-size: 13px; font-weight: 600; font-family: inherit; }
+          .sub { fill: var(--muted, #59636e); font-size: 10.5px; font-family: inherit; }
+          .tiny { fill: var(--muted, #59636e); font-size: 9.5px; font-family: inherit; }
+          .flowline { stroke: var(--muted, #59636e); stroke-width: 1.3; fill: none; marker-end: url(#arrow); color: var(--muted, #59636e); }
+          .flowline-accent { stroke: var(--accent, #0969da); stroke-width: 1.5; fill: none; marker-end: url(#arrow); color: var(--accent, #0969da); }
+          .dash { stroke-dasharray: 4 4; }
+        </style>
+
+        <text x="20" y="28" class="lbl">来源（只读）</text>
+        <text x="320" y="28" class="lbl">采集管线</text>
+        <text x="620" y="28" class="lbl">knowledge.db</text>
+        <text x="850" y="28" class="lbl">消费面</text>
+
+        <!-- sources -->
+        <rect class="box" x="20" y="48" width="230" height="62"/>
+        <text x="36" y="74" class="lbl">看板任务 / timeline</text>
+        <text x="36" y="92" class="sub">状态变化、决策、worker 回报</text>
+
+        <rect class="box" x="20" y="126" width="230" height="62"/>
+        <text x="36" y="152" class="lbl">task_artifacts</text>
+        <text x="36" y="170" class="sub">data/artifacts/ 下的托管字节</text>
+
+        <rect class="box" x="20" y="204" width="230" height="62"/>
+        <text x="36" y="230" class="lbl">用户 / worker 显式添加</text>
+        <text x="36" y="248" class="sub">knowledge_add、UI 新建</text>
+
+        <rect class="box" x="20" y="282" width="230" height="62"/>
+        <text x="36" y="308" class="lbl">日报 / 周报（P2）</text>
+        <text x="36" y="326" class="sub">时间窗内已完成任务汇总</text>
+
+        <!-- pipeline -->
+        <rect class="box" x="320" y="48" width="240" height="62"/>
+        <text x="336" y="74" class="lbl">触发 / 入队</text>
+        <text x="336" y="92" class="sub">knowledge_jobs（幂等、可恢复）</text>
+
+        <rect class="box" x="320" y="126" width="240" height="62"/>
+        <text x="336" y="152" class="lbl">抽取 + 敏感扫描</text>
+        <text x="336" y="170" class="sub">文本化、去脚本、脱敏、隔离</text>
+
+        <rect class="box" x="320" y="204" width="240" height="62"/>
+        <text x="336" y="230" class="lbl">去重 + 证据</text>
+        <text x="336" y="248" class="sub">dedupe_key / content_hash / quote</text>
+
+        <rect class="box" x="320" y="282" width="240" height="62"/>
+        <text x="336" y="308" class="lbl">draft + FTS 索引</text>
+        <text x="336" y="326" class="sub">默认只写 draft，不自动通过</text>
+
+        <!-- store -->
+        <rect class="box-accent" x="620" y="48" width="190" height="296"/>
+        <text x="638" y="76" class="lbl">knowledge.db</text>
+        <text x="638" y="96" class="tiny">SQLite + FTS5</text>
+        <line x1="638" y1="108" x2="792" y2="108" stroke="var(--border, #d0d7de)"/>
+        <text x="638" y="132" class="sub">knowledge_entries</text>
+        <text x="638" y="154" class="sub">knowledge_evidence</text>
+        <text x="638" y="176" class="sub">knowledge_tags</text>
+        <text x="638" y="198" class="sub">knowledge_relations</text>
+        <text x="638" y="220" class="sub">knowledge_revisions</text>
+        <text x="638" y="242" class="sub">knowledge_events（审计）</text>
+        <line x1="638" y1="254" x2="792" y2="254" stroke="var(--border, #d0d7de)"/>
+        <text x="638" y="278" class="sub" fill="var(--accent, #0969da)">knowledge_fts（CJK bigram）</text>
+        <text x="638" y="300" class="tiny">status: draft / approved / stale</text>
+        <text x="638" y="316" class="tiny">superseded / rejected / quarantined</text>
+
+        <!-- consumers -->
+        <rect class="box" x="850" y="48" width="170" height="58"/>
+        <text x="866" y="73" class="lbl">MCP 工具</text>
+        <text x="866" y="91" class="sub">search / get / add / review</text>
+
+        <rect class="box" x="850" y="122" width="170" height="58"/>
+        <text x="866" y="147" class="lbl">资料空间 UI</text>
+        <text x="866" y="165" class="sub">搜索 / 列表 / 详情 / 审核</text>
+
+        <rect class="box" x="850" y="196" width="170" height="58"/>
+        <text x="866" y="221" class="lbl">任务抽屉</text>
+        <text x="866" y="239" class="sub">「相关知识」</text>
+
+        <rect class="box" x="850" y="270" width="170" height="58"/>
+        <text x="866" y="295" class="lbl">主 Agent / worker</text>
+        <text x="866" y="313" class="sub">派工前检索、收尾沉淀</text>
+
+        <!-- arrows sources -> pipeline -->
+        <path class="flowline" d="M 250 79 L 320 79"/>
+        <path class="flowline" d="M 250 157 L 320 157"/>
+        <path class="flowline" d="M 250 235 L 320 235"/>
+        <path class="flowline" d="M 250 313 L 320 313"/>
+
+        <!-- pipeline vertical -->
+        <path class="flowline" d="M 440 110 L 440 126"/>
+        <path class="flowline" d="M 440 188 L 440 204"/>
+        <path class="flowline" d="M 440 266 L 440 282"/>
+
+        <!-- pipeline -> store -->
+        <path class="flowline-accent" d="M 560 313 L 620 300"/>
+
+        <!-- store -> consumers -->
+        <path class="flowline-accent" d="M 810 140 L 850 140"/>
+        <path class="flowline-accent" d="M 810 180 L 850 225"/>
+        <path class="flowline-accent" d="M 810 240 L 850 270"/>
+        <path class="flowline-accent" d="M 810 280 L 850 299"/>
+
+        <!-- feedback -->
+        <path class="flowline dash" d="M 935 328 C 935 400 440 410 440 350"/>
+        <text x="620" y="405" class="tiny">审批 / 复核 / 替代 → 状态与 FTS 更新</text>
+
+        <!-- forbidden -->
+        <rect class="box-warn" x="20" y="372" width="1000" height="70"/>
+        <text x="36" y="398" class="lbl" fill="var(--kb-red)">禁止采集（硬边界）</text>
+        <text x="36" y="418" class="sub">任意工作区文件 / 原始 transcript / data/events / CLI transcript / ~/.claude|qoder|minimax|codex / legacy report_file 路径 / 外链抓取</text>
+        <text x="36" y="434" class="tiny">只读：任务字段 + timeline、data/artifacts 下的托管 artifact、显式提交的内容。</text>
+
+        <!-- footer note -->
+        <text x="20" y="486" class="sub">artifact 字节仍在 data/artifacts/；knowledge 只存引用与提炼，不复制文件。</text>
+        <text x="20" y="508" class="tiny">FTS5 由 modernc.org/sqlite v1.34.4 提供；中文用应用侧 unigram + bigram 分词，解决 unicode61/trigram 两字查询问题。</text>
+      </svg>
+      </div>
+    </div>
+    <p class="caption">图：来源 → 采集管线 → knowledge.db → 消费面。红色区域是明确不读的数据。</p>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="num">03</span>
+      <h2>自动采集：从任务完成到搜索命中</h2>
+      <p>自动只写 draft；用户原话决策是唯一可自动 approved 的窄类。</p>
+    </div>
+    <div class="flow">
+      <div class="step">
+        <div class="n">1</div>
+        <h3>任务完成</h3>
+        <p>状态 → 待验收 / 已完成；采集器读取任务、timeline、artifact。</p>
+      </div>
+      <div class="step">
+        <div class="n">2</div>
+        <h3>抽取 + 脱敏</h3>
+        <p>Markdown/HTML/CSV/JSON 文本化；敏感串脱敏或隔离。</p>
+      </div>
+      <div class="step">
+        <div class="n">3</div>
+        <h3>去重 + 证据</h3>
+        <p>dedupe_key 命中就合并证据；否则新建 draft，写 evidence。</p>
+      </div>
+      <div class="step">
+        <div class="n">4</div>
+        <h3>审核</h3>
+        <p>主 Agent / 用户通过后变 approved；AI 摘要不能自动通过。</p>
+      </div>
+      <div class="step">
+        <div class="n">5</div>
+        <h3>检索复用</h3>
+        <p>worker 搜索到 approved 条目，带证据和 artifact 链接。</p>
+      </div>
+    </div>
+    <div class="flow-note">
+      <b>例子：</b>任务「梳理 SSE 回放与 rewind 的 seq 语义」完成 → 采集到结论「sendSeq 与存储 seq 无关，rewind 用 checkpoint uuid」→ 生成 draft
+      <code>K-20261109-183012-a1b2</code> → 主 Agent 搜索「SSE 重编号」命中 → 审核通过 → 第二天 worker 搜「重编号」直接复用。
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="num">04</span>
+      <h2>数据模型与状态机</h2>
+      <p>条目、证据、关系、版本、审计分开存；FTS 是派生索引。</p>
+    </div>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="kicker">KnowledgeEntry 关键字段</div>
+        <pre style="margin:10px 0 0"><code>id, title, summary, body
+project, tags[], owner, created_by
+status, confidence, sensitivity
+source_kind, source_task_id
+source_session_id, source_artifact_ids[]
+source_paths[]          # 只标注，不读文件
+dedupe_key, content_hash
+generated_by, ai_fields[]
+version, supersedes_id
+last_verified_at, valid_until
+reviewer, reviewed_at, review_reason
+created_at, updated_at, deleted_at</code></pre>
+      </div>
+      <div class="card">
+        <div class="kicker">状态机</div>
+        <div class="status-flow" style="margin:12px 0 10px">
+          <span class="pill draft">draft</span>
+          <span class="arrow">→</span>
+          <span class="pill approved">approved</span>
+          <span class="arrow">→</span>
+          <span class="pill stale">stale</span>
+          <span class="arrow">→</span>
+          <span class="pill superseded">superseded</span>
+        </div>
+        <div class="status-flow" style="margin-bottom:10px">
+          <span class="pill rejected">rejected</span>
+          <span class="arrow">·</span>
+          <span class="pill quarantined">quarantined</span>
+          <span class="small">敏感命中 → 隔离，不进 FTS，TTL 7 天</span>
+        </div>
+        <p>
+          默认搜索只返回 approved；draft 只有主 Agent / 创建者可见；stale 默认不返回，需显式 include_stale。
+          过期条件：last_verified_at 超期、valid_until 到期、来源任务/产物缺失。
+        </p>
+      </div>
+    </div>
+    <div class="table-scroll" style="margin-top:14px">
+      <table>
+        <thead>
+          <tr><th>对象</th><th>作用</th><th>权威性</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><b>knowledge_entries</b></td><td>知识卡当前版本与状态</td><td>当前投影</td></tr>
+          <tr><td><b>knowledge_evidence</b></td><td>任务 / 产物 / 会话 / 路径来源与引用</td><td>来源权威</td></tr>
+          <tr><td><b>knowledge_relations</b></td><td>related / supersedes / conflicts_with</td><td>关系权威</td></tr>
+          <tr><td><b>knowledge_revisions</b></td><td>每次编辑的旧版本</td><td>历史</td></tr>
+          <tr><td><b>knowledge_events</b></td><td>创建/审批/驳回/隔离等审计</td><td>不可变审计</td></tr>
+          <tr><td><b>knowledge_fts</b></td><td>标题/摘要/正文/标签的 CJK 分词索引</td><td>派生，可重建</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="num">05</span>
+      <h2>UI 低保真：资料空间 + 任务抽屉</h2>
+      <p>侧栏一级入口；任务抽屉只读展示「相关知识」。</p>
+    </div>
+    <div class="wire">
+      <div class="browser">
+        <div class="browser-bar">
+          <i></i><i></i><i></i>
+          <span>AgentDeck · 资料空间</span>
+        </div>
+        <div class="app">
+          <aside class="rail">
+            <div class="label">WORKSPACE</div>
+            <div class="item active"></div>
+            <div class="item"></div>
+            <div class="item"></div>
+            <div class="label" style="margin-top:18px">会话</div>
+            <div class="item"></div>
+            <div class="item"></div>
+            <div class="item"></div>
+            <div class="item"></div>
+          </aside>
+          <div class="kb-main">
+            <div class="kb-toolbar">
+              <span class="kb-title">资料空间</span>
+              <span class="input">搜索标题、结论、标签、来源任务…</span>
+              <span class="btn primary">+ 新建知识</span>
+            </div>
+            <div class="chips">
+              <span class="chip">项目 ▾</span>
+              <span class="chip">状态 ▾</span>
+              <span class="chip">标签 ▾</span>
+              <span class="chip">来源 ▾</span>
+              <span class="chip" style="margin-left:auto">已通过 128 · 待审 7</span>
+            </div>
+            <div class="kb-body">
+              <div class="list">
+                <div class="result selected">
+                  <div class="row">
+                    <span class="mini-badge ok">已通过</span>
+                    <span class="mini-badge ai">AI 摘要 · 已审核</span>
+                  </div>
+                  <div class="t">AgentDeck SSE 每个连接独立重编号 seq</div>
+                  <div class="s">SSE 的 sendSeq 与存储 seq 无关；rewind 用 checkpoint uuid。…</div>
+                  <div class="s" style="margin-top:4px">AgentDeck · SSE / rewind · 11-09</div>
+                </div>
+                <div class="result">
+                  <div class="row"><span class="mini-badge ok">已通过</span></div>
+                  <div class="t">rewind 是多步协调操作</div>
+                  <div class="s">先文件回滚、再截断 transcript、最后替换事件日志。…</div>
+                  <div class="s" style="margin-top:4px">AgentDeck · rewind · 11-08</div>
+                </div>
+                <div class="result">
+                  <div class="row"><span class="mini-badge">草稿</span></div>
+                  <div class="t">SSE 回放窗口与 pinned prompt</div>
+                  <div class="s">首屏窗口必须含最后一条 user 事件，否则悬浮条消失。…</div>
+                  <div class="s" style="margin-top:4px">AgentDeck · SSE / UI · 11-09</div>
+                </div>
+              </div>
+              <div class="detail">
+                <h4>AgentDeck SSE 每个连接独立重编号 seq</h4>
+                <div class="s">摘要 / 正文（Markdown）…</div>
+                <div class="sec"><b>来源</b><br>任务 T-20261109-… [打开看板]<br>产物 A-… report.md [打开] [下载]<br>会话 43b3… [打开]</div>
+                <div class="sec"><b>关联</b><br>related：rewind 是多步协调操作<br>supersedes：旧结论「SSE seq 即存储 seq」</div>
+                <div class="sec"><b>审核</b><br>[通过] [驳回] [标为过期]</div>
+                <div class="sec"><b>审计</b><br>创建 → 审核通过 → 版本 2</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="drawer-inset">
+        <div class="dt">看板任务抽屉 · 相关知识（只读）</div>
+        <div class="entry">
+          <span class="mini-badge ok">已通过</span>
+          <div><div class="txt">AgentDeck SSE 每个连接独立重编号 seq</div><div class="meta">来源：本任务 · 更新 11-09</div></div>
+        </div>
+        <div class="entry">
+          <span class="mini-badge">草稿</span>
+          <div><div class="txt">SSE 回放窗口与 pinned prompt</div><div class="meta">待审核 · 更新 11-09</div></div>
+        </div>
+        <div class="entry">
+          <span class="btn" style="height:26px;font-size:10.5px">从本任务提炼知识</span>
+          <span class="small" style="align-self:center">预填表单，不直接写库</span>
+        </div>
+      </div>
+    </div>
+    <p class="caption">知识页是 workspace 级视图，不绑定会话；任务抽屉复用看板抽屉的视觉语言，但知识详情有自己的 JS 状态。</p>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="num">06</span>
+      <h2>MCP 工具与权限</h2>
+      <p>Agent 优先；worker 可搜索、可写 draft，不可审批。</p>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>工具 / 操作</th><th>worker</th><th>主 Agent</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>knowledge_search</code></td><td class="check">✓</td><td class="check">✓</td><td>worker 只看 approved，排除 sensitive/secret</td></tr>
+          <tr><td><code>knowledge_get</code></td><td class="check">✓</td><td class="check">✓</td><td>自己创建的 draft 可按 id 读</td></tr>
+          <tr><td><code>knowledge_add</code></td><td class="check">✓</td><td class="check">✓</td><td>默认 draft；必须带 source_task_id 或明确 manual</td></tr>
+          <tr><td><code>knowledge_link</code>（related）</td><td class="check">✓</td><td class="check">✓</td><td>只加弱关联</td></tr>
+          <tr><td><code>knowledge_review</code></td><td class="cross">✗</td><td class="check">✓</td><td>两层闸门：工具表不暴露 + 服务端 requireMainAgent</td></tr>
+          <tr><td><code>knowledge_link</code>（supersedes）</td><td class="cross">✗</td><td class="check">✓</td><td>替代旧结论要主 Agent</td></tr>
+          <tr><td><code>knowledge_delete</code> / collect / backup</td><td class="cross">✗</td><td class="check">✓</td><td>删除、采集、备份是管理操作</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout" style="margin-top:14px">
+      <b>用法：</b>主 Agent 派工前 <code>knowledge_search</code>，收尾时 <code>knowledge_add</code>（带 task_id 和 artifact id）；worker 开始前搜索、结束后写 draft。
+      审批永远由主 Agent 或用户在 UI 完成。
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="num">07</span>
+      <h2>治理与安全</h2>
+      <p>宁少一条知识，不漏一个凭据。</p>
+    </div>
+    <div class="guard">
+      <div class="g"><b>敏感扫描</b><span>token / cookie / password / 私钥 / 高熵串；命中即脱敏隔离，不进 FTS。</span></div>
+      <div class="g"><b>采集边界</b><span>不扫工作区、不读原始 transcript、不读 legacy report_file 路径、不抓外链。</span></div>
+      <div class="g"><b>访问控制</b><span>所有 API 走 gateway token；审批走主 Agent 两层闸门；当前是单用户控制台。</span></div>
+      <div class="g"><b>审计</b><span>创建/编辑/审批/驳回/隔离/删除全记录；不把敏感原文写进审计。</span></div>
+      <div class="g"><b>保留期</b><span>draft 30 天、stale 180 天、隔离 7 天、软删 30 天；审计 1 年。</span></div>
+      <div class="g"><b>可撤回</b><span>驳回立即下架；purge 删正文/索引，保留审计元数据；误收凭据提示轮换。</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="num">08</span>
+      <h2>分阶段计划</h2>
+      <p>先把「draft → 审核 → approved → FTS 搜到」闭环做通。</p>
+    </div>
+    <div class="roadmap">
+      <article class="card phase">
+        <div class="phase-head"><span class="tag">P0</span><h3>最小可用</h3></div>
+        <ul>
+          <li>独立 knowledge.db + FTS5 + CJK 分词</li>
+          <li>手动 / 任务完成生成 draft</li>
+          <li>MCP search/get/add/link/review</li>
+          <li>资料空间页 + 任务抽屉「相关知识」</li>
+          <li>基础敏感扫描 + 隔离</li>
+        </ul>
+        <div class="est">≈ 8–12 人日</div>
+      </article>
+      <article class="card phase p1">
+        <div class="phase-head"><span class="tag">P1</span><h3>自动抽取 + 审批</h3></div>
+        <ul>
+          <li>Markdown/HTML/CSV/JSON 抽取</li>
+          <li>job 队列、重试、启动恢复</li>
+          <li>审批队列、stale 复核、审计 UI</li>
+          <li>相关条目建议、curator 摘要</li>
+          <li>可选的用户文件上传</li>
+        </ul>
+        <div class="est">≈ 12–18 人日</div>
+      </article>
+      <article class="card phase p2">
+        <div class="phase-head"><span class="tag">P2</span><h3>语义与分享</h3></div>
+        <ul>
+          <li>语义检索（先评测再决定）</li>
+          <li>周报/日报知识摘要</li>
+          <li>只读分享链接 / 深链完善</li>
+          <li>从 memory / work-tracking 手动导入</li>
+          <li>多用户 ACL（如产品化）</li>
+        </ul>
+        <div class="est">≈ 15–25 人日</div>
+      </article>
+    </div>
+    <div class="callout" style="margin-top:14px">
+      <b>为什么不先做向量库：</b>当前知识量级千条以内，FTS + 项目/标签/来源过滤够用；没有真实查询日志前，无法证明语义检索的收益。
+      触发重新评估：approved &gt; 5,000，或真实查询集 FTS 召回 &lt; 80%。
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="num">09</span>
+      <h2>验收口径</h2>
+      <p>可检查、可回归，不靠感觉。</p>
+    </div>
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>P0 必须全过</h3>
+        <ul class="small" style="margin:8px 0 0; padding-left:18px">
+          <li>中文 2 字、3 字查询都能命中</li>
+          <li>任务完成只生成 1 条 draft，重复触发不新增</li>
+          <li>worker 不能审批；主 Agent 可以</li>
+          <li>敏感串隔离且不出现在 FTS/worker 搜索</li>
+          <li>任务抽屉显示相关知识，点击可打开详情</li>
+          <li>canary 文件证明没有扫描工作区</li>
+          <li><code>go test ./...</code> 与前端测试全绿</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>P1 追加</h3>
+        <ul class="small" style="margin:8px 0 0; padding-left:18px">
+          <li>artifact 发布 → 1 条 draft；HTML 脚本不入正文</li>
+          <li>重复 artifact 不新建，证据合并</li>
+          <li>审批队列批量操作；stale 到期/复核</li>
+          <li>curator 超时不影响确定性 draft</li>
+          <li>备份 → 恢复 → 重建 FTS 后搜索一致</li>
+          <li>1 万条 entries 查询 P95 &lt; 100ms</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <span>AgentDeck 资料空间 · 设计预览 · 依据 <code>docs/knowledge-design.md</code></span>
+    <span>只做设计，不含生产代码。自包含页面，无外部请求。</span>
+  </footer>
+
+</div>
+</body>
+</html>
