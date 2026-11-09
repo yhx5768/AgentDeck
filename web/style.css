@@ -4717,6 +4717,7 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .board-artifact-badge { flex: none; font-size: 9px; line-height: 1.5; padding: 0 5px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); }
 .board-artifact-meta { margin-top: 2px; font-family: var(--font-mono); font-size: 10px; color: var(--dim); word-break: break-all; }
 .board-artifact-note { margin-top: 2px; font-size: 9.5px; color: var(--dim); opacity: .8; }
+.board-artifact-note-warn { color: var(--red); opacity: .9; }
 .board-artifact-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; margin-top: 6px; }
 .board-artifact-action { border: 1px solid var(--border); background: var(--bg); color: var(--dim); font-size: 9.5px; border-radius: 5px; padding: 1px 6px; cursor: pointer; text-decoration: none; line-height: 1.6; }
 .board-artifact-action:hover { color: var(--accent); border-color: var(--accent); }

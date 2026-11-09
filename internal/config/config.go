@@ -215,11 +215,13 @@ type Config struct {
 	DataDir      string `yaml:"data_dir"`
 	DefaultCwd   string `yaml:"default_cwd"`
 	// PublicBaseURL is the externally reachable base URL of this server
-	// (e.g. "https://agentdeck.example.com"), used to mint shareable board
-	// artifact URLs. Leave empty for same-origin browser use: artifact links
-	// then fall back to the request scheme/host. Remote workers or viewers must
-	// set it, because neither the listen address nor a loopback host is
-	// reachable from another machine.
+	// (e.g. "https://ccview.xpsl.soarx.cc"), used to mint shareable board
+	// artifact URLs. When empty, the server falls back to
+	// browser.trusted_origins[0] (if configured), then the request scheme/host
+	// (same-origin/LAN browser access), and finally the listen address.
+	// The listen address is a bind address and is not necessarily reachable
+	// from another machine: artifact URLs minted from it are marked
+	// local-only, so remote workers/viewers must configure public_base_url.
 	PublicBaseURL string `yaml:"public_base_url"`
 	// AgentBoardMockBusy turns the board drawer composer into a queue test
 	// harness: the UI keeps messages in the local pending queue instead of

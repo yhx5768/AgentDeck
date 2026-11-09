@@ -257,30 +257,80 @@ func TestAgentBoardArtifactPublicBaseURLAndURLKind(t *testing.T) {
 	createArtifactTestTask(t, s)
 	s.cm.Get().PublicBaseURL = "https://deck.example.com/"
 
-	payload, _ := json.Marshal(map[string]any{"kind": "html", "filename": "x.html", "content": "x"})
-	req := artifactReq(http.MethodPost, "http://ignored/api/agent-board/tasks/T-1/artifacts", bytes.NewReader(payload))
+	publishHTML := func(target string) map[string]any {
+		t.Helper()
+		payload, _ := json.Marshal(map[string]any{"kind": "html", "filename": "x.html", "content": "x"})
+		req := artifactReq(http.MethodPost, target, bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", "T-1")
+		rec := httptest.NewRecorder()
+		s.handleAgentBoardCreateArtifact(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("publish = %d %s", rec.Code, rec.Body.String())
+		}
+		var created struct {
+			Artifact map[string]any `json:"artifact"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &created)
+		return created.Artifact
+	}
+
+	artifact := publishHTML("http://ignored/api/agent-board/tasks/T-1/artifacts")
+	url := artifact["url"].(string)
+	if !strings.HasPrefix(url, "https://deck.example.com/api/agent-board/artifacts/") {
+		t.Fatalf("public_base_url not used: %q", url)
+	}
+	if artifact["url_source"] != "public_base_url" || artifact["url_local_only"] != false {
+		t.Fatalf("public_base_url source = %+v", artifact)
+	}
+
+	// browser.trusted_origins[0] is the fallback when public_base_url is unset.
+	// Browser.Enabled stays nil on purpose: the address is still readable and
+	// the browser security semantics are not involved.
+	s.cm.Get().PublicBaseURL = ""
+	s.cm.Get().Browser.TrustedOrigins = []string{"https://ccview.xpsl.soarx.cc"}
+	artifact = publishHTML("http://ignored/api/agent-board/tasks/T-1/artifacts")
+	if !strings.HasPrefix(artifact["url"].(string), "https://ccview.xpsl.soarx.cc/api/agent-board/artifacts/") {
+		t.Fatalf("trusted_origins fallback not used: %+v", artifact)
+	}
+	if artifact["url_source"] != "browser.trusted_origins" {
+		t.Fatalf("trusted_origins source = %+v", artifact)
+	}
+
+	// public_base_url still wins over trusted_origins.
+	s.cm.Get().PublicBaseURL = "https://explicit.example.com"
+	artifact = publishHTML("http://ignored/api/agent-board/tasks/T-1/artifacts")
+	if artifact["url_source"] != "public_base_url" {
+		t.Fatalf("priority = %+v", artifact)
+	}
+
+	// Then the request host.
+	s.cm.Get().PublicBaseURL = ""
+	s.cm.Get().Browser.TrustedOrigins = nil
+	artifact = publishHTML("http://deck.local/api/agent-board/tasks/T-1/artifacts")
+	if artifact["url_source"] != "request" || !strings.HasPrefix(artifact["url"].(string), "http://deck.local/") {
+		t.Fatalf("request fallback = %+v", artifact)
+	}
+
+	// Invalid trusted origins are ignored instead of minting unusable links.
+	s.cm.Get().Browser.TrustedOrigins = []string{"not-an-origin", "https://good.example.com/"}
+	artifact = publishHTML("http://deck.local/api/agent-board/tasks/T-1/artifacts")
+	if artifact["url_source"] != "browser.trusted_origins" || !strings.HasPrefix(artifact["url"].(string), "https://good.example.com/") {
+		t.Fatalf("invalid origin handling = %+v", artifact)
+	}
+
+	// kind=url stores the external link and redirects from the id route.
+	payload, _ := json.Marshal(map[string]any{"kind": "url", "title": "设计稿", "url": "https://example.com/design"})
+	req := artifactReq(http.MethodPost, "http://deck.local/api/agent-board/tasks/T-1/artifacts", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", "T-1")
 	rec := httptest.NewRecorder()
 	s.handleAgentBoardCreateArtifact(rec, req)
-	var created struct {
-		Artifact map[string]any `json:"artifact"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &created)
-	url := created.Artifact["url"].(string)
-	if !strings.HasPrefix(url, "https://deck.example.com/api/agent-board/artifacts/") {
-		t.Fatalf("public_base_url not used: %q", url)
-	}
-
-	// kind=url stores the external link and redirects from the id route.
-	payload, _ = json.Marshal(map[string]any{"kind": "url", "title": "设计稿", "url": "https://example.com/design"})
-	req = artifactReq(http.MethodPost, "http://deck.local/api/agent-board/tasks/T-1/artifacts", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.SetPathValue("id", "T-1")
-	rec = httptest.NewRecorder()
-	s.handleAgentBoardCreateArtifact(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("url publish = %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Artifact map[string]any `json:"artifact"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	id := created.Artifact["id"].(string)
@@ -324,6 +374,9 @@ func TestAgentdeckArtifactPublishToolAvailableToWorker(t *testing.T) {
 	}
 	if !strings.Contains(out, "\"source_session\": \"worker\"") {
 		t.Fatalf("source_session default missing: %s", out)
+	}
+	if !strings.Contains(out, "\"url_source\": \"listen\"") || !strings.Contains(out, "\"url_local_only\": true") {
+		t.Fatalf("listen fallback must be marked local-only: %s", out)
 	}
 
 	// base64 content is decoded before storage.

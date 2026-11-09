@@ -3052,6 +3052,11 @@ function boardArtifactItem(task, artifact) {
     note.className = 'board-artifact-note';
     note.textContent = '旧 report_file 路径（未托管）';
     main.append(note);
+  } else if (artifact.url_local_only) {
+    const note = document.createElement('div');
+    note.className = 'board-artifact-note board-artifact-note-warn';
+    note.textContent = '⚠ 仅本机/局域网可达（未配置 public_base_url）';
+    main.append(note);
   }
 
   item.append(icon, main);

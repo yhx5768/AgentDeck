@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -71,10 +72,28 @@ func (s *Server) artifactsRoot() string {
 	return filepath.Join(s.cfg().DataDir, "artifacts")
 }
 
-// artifactPublicBase returns the base URL used to mint artifact links.
-func (s *Server) artifactPublicBase(r *http.Request) string {
-	if base := strings.TrimSpace(s.cfg().PublicBaseURL); base != "" {
-		return strings.TrimRight(base, "/")
+// artifactBaseURL returns the base URL used to mint artifact links and the
+// source layer that produced it. Priority:
+//
+//  1. config.public_base_url — the explicit externally-reachable address.
+//  2. browser.trusted_origins[0] — a deployment's public origin already
+//     declared for the browser-input Origin check. It is only a fallback: its
+//     original security semantics are unchanged, and Browser.Enabled is
+//     deliberately irrelevant (a disabled browser panel still leaves the
+//     deployment address readable in config).
+//  3. the request's scheme/host (same-origin / LAN browser access).
+//  4. the listen address (in-process MCP calls). This is a bind address, not
+//     necessarily reachable from another machine, so callers mark the URL
+//     "local only".
+func (s *Server) artifactBaseURL(r *http.Request) (base, source string) {
+	cfg := s.cfg()
+	if value, ok := normalizeBaseURL(cfg.PublicBaseURL); ok {
+		return value, "public_base_url"
+	}
+	for _, origin := range cfg.Browser.TrustedOrigins {
+		if value, ok := normalizeBaseURL(origin); ok {
+			return value, "browser.trusted_origins"
+		}
 	}
 	if r != nil && strings.TrimSpace(r.Host) != "" {
 		scheme := "http"
@@ -84,37 +103,59 @@ func (s *Server) artifactPublicBase(r *http.Request) string {
 		if proto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); proto == "http" || proto == "https" {
 			scheme = proto
 		}
-		return scheme + "://" + r.Host
+		return scheme + "://" + r.Host, "request"
 	}
 	// In-process MCP calls have no client host. Fall back to the listen
-	// address, normalizing wildcard binds to loopback so the link is usable.
-	host, port, err := net.SplitHostPort(strings.TrimSpace(s.cfg().Listen))
+	// address, normalizing wildcard binds to loopback so the link is usable
+	// locally. Remote viewers need public_base_url (or trusted_origins).
+	host, port, err := net.SplitHostPort(strings.TrimSpace(cfg.Listen))
 	if err != nil {
-		return "http://127.0.0.1:8321"
+		return "http://127.0.0.1:8321", "listen"
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	return "http://" + net.JoinHostPort(host, port)
+	return "http://" + net.JoinHostPort(host, port), "listen"
+}
+
+// normalizeBaseURL accepts an absolute http(s) base URL and strips trailing
+// slashes. Empty or non-http(s) values are ignored (fall through to the next
+// source) instead of minting unusable links.
+func normalizeBaseURL(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", false
+	}
+	return strings.TrimRight(value, "/"), true
 }
 
 // decorateArtifact mints the public URL for a hosted artifact (external URLs
-// and legacy report_file entries keep their stored/no URL).
-func (s *Server) decorateArtifact(r *http.Request, artifact map[string]any) {
+// and legacy report_file entries keep their stored/no URL). It returns the
+// URL source layer ("" when nothing was minted) so task-level responses can
+// expose an artifact_url_source debugging field.
+func (s *Server) decorateArtifact(r *http.Request, artifact map[string]any) string {
 	if artifact == nil {
-		return
+		return ""
 	}
 	if legacy, _ := artifact["legacy"].(bool); legacy {
-		return
+		return ""
 	}
 	if kind, _ := artifact["kind"].(string); kind == "url" {
-		return
+		return ""
 	}
 	id, _ := artifact["id"].(string)
 	if id == "" {
-		return
+		return ""
 	}
-	artifact["url"] = s.artifactPublicBase(r) + "/api/agent-board/artifacts/" + url.PathEscape(id)
+	base, source := s.artifactBaseURL(r)
+	artifact["url"] = base + "/api/agent-board/artifacts/" + url.PathEscape(id)
+	artifact["url_source"] = source
+	artifact["url_local_only"] = source == "listen"
+	return source
 }
 
 func (s *Server) decorateTaskArtifacts(r *http.Request, task map[string]any) {
@@ -122,8 +163,14 @@ func (s *Server) decorateTaskArtifacts(r *http.Request, task map[string]any) {
 	if !ok {
 		return
 	}
+	source := ""
 	for _, artifact := range list {
-		s.decorateArtifact(r, artifact)
+		if got := s.decorateArtifact(r, artifact); got != "" {
+			source = got
+		}
+	}
+	if source != "" {
+		task["artifact_url_source"] = source
 	}
 }
 
@@ -340,6 +387,11 @@ func (s *Server) agentdeckPublishArtifact(sessionID string, args map[string]any)
 	artifact, _, err := s.publishArtifact(s.boardDB, nil, taskID, up)
 	if err != nil {
 		return "", err
+	}
+	if source, _ := artifact["url_source"].(string); source == "listen" {
+		log.Printf("artifact_publish: artifact URL fell back to the listen address (%v); "+
+			"set public_base_url (or browser.trusted_origins) for remote access",
+			artifact["url"])
 	}
 	s.broadcastAgentBoard()
 	raw, err := json.MarshalIndent(map[string]any{

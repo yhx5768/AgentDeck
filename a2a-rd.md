@@ -185,10 +185,13 @@ board 工具**——远端 worker 必须能把自己的产物传上来，所以�
   落 `<data_dir>/artifacts/<task>/<artifact>/<safe-filename>`，不读调用方本机路径。
 - 单产物上限 10 MiB；文件名去 basename/控制字符，路径穿越与非法 artifact id 拒绝。
   每次发布生成新 artifact（append-only），重复上传不会覆盖旧产物。
-- 返回 artifact 元数据与可分享 URL；URL 的 base 来自 `config.yaml` 的
-  `public_base_url`（远端场景必须配），否则回退请求 scheme/host（同源浏览器）或
-  listen 地址（进程内 MCP 调用）。**token 不写进 artifact 记录**：浏览器用登录 cookie，
-  外部脚本按需临时追加 `?token=`。
+- 返回 artifact 元数据与可分享 URL；URL base 优先级：① `config.yaml` 的
+  `public_base_url`（远端场景首选）→ ② `browser.trusted_origins[0]`（部署地址的
+  fallback；只读该配置，不改写原字段、不依赖 `browser.enabled`，原浏览器 Origin
+  校验语义不变）→ ③ 请求 scheme/host（同源/LAN）→ ④ listen 地址（进程内 MCP；
+  仅是绑定地址，产物标 `url_local_only` 并写日志提示）。响应里的 `url_source` /
+  `artifact_url_source` 标明实际用了哪一层。**token 不写进 artifact 记录**：浏览器用
+  登录 cookie，外部脚本按需临时追加 `?token=`。
 - HTTP 等价入口（远端 worker 可用 curl）：`POST /api/agent-board/tasks/{id}/artifacts`
   支持 JSON、`multipart/form-data`（`file` 字段）和 raw body（元数据走 query），
   三种形态复用同一套校验/落盘逻辑。

@@ -156,7 +156,18 @@ function main() {
   check('旧 report_file 兜底展示', fallback && fallback.textContent.includes('reports/old.md')
     && fallback.querySelector('.board-copy-btn').textContent === '复制路径');
 
-  // 5. 外链产物
+  // 5. listen 兜底的产物标记「仅本机/局域网」
+  renderOverview(baseTask({
+    artifacts: [{
+      id: 'A-local', task_id: 'T-1', title: '本机产物', kind: 'html', filename: 'local.html',
+      url: 'http://127.0.0.1:8321/api/agent-board/artifacts/A-local',
+      url_source: 'listen', url_local_only: true,
+    }],
+  }));
+  const localNote = doc.querySelector('#board-drawer-artifacts .board-artifact-note-warn');
+  check('listen 兜底提示仅本机可达', localNote && localNote.textContent.includes('仅本机/局域网可达'));
+
+  // 6. 外链产物
   renderOverview(baseTask({
     artifacts: [{
       id: 'A-3', task_id: 'T-1', title: '设计稿', kind: 'url', filename: 'link',
@@ -169,7 +180,7 @@ function main() {
   check('外链不提供下载/预览',
     ![...urlItem.querySelectorAll('.board-artifact-action')].some((el) => el.textContent === '下载' || el.textContent === '预览'));
 
-  // 6. HTML 预览 sandbox：不能有 allow-same-origin
+  // 7. HTML 预览 sandbox：不能有 allow-same-origin
   openPreview({
     id: 'A-1', title: '验收报告', kind: 'html',
     url: 'http://deck.local/api/agent-board/artifacts/A-1',
@@ -188,7 +199,7 @@ function main() {
   check('关闭后卸载 iframe 并隐藏',
     mask.classList.contains('hidden') && !mask.querySelector('iframe'));
 
-  // 7. 关联页也列出产物
+  // 8. 关联页也列出产物
   renderLinks(baseTask({
     artifacts: [{
       id: 'A-1', task_id: 'T-1', title: '验收报告', kind: 'html', filename: 'report.html',
