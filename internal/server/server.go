@@ -29,6 +29,7 @@ import (
 	"cc-webui/internal/claudehist"
 	"cc-webui/internal/codexhist"
 	"cc-webui/internal/config"
+	"cc-webui/internal/knowledge"
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/runner"
@@ -173,6 +174,12 @@ type Server struct {
 	boardDBErr  error
 	boardDBOnce sync.Once
 
+	// knowledgeDB is the independent curated-knowledge store. It references
+	// board tasks/artifacts by id and keeps its own FTS5 index.
+	knowledgeDB     *knowledge.Store
+	knowledgeDBErr  error
+	knowledgeDBOnce sync.Once
+
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
 	httpSrv *http.Server
@@ -217,6 +224,7 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 	}
 	s.routes()
 	s.initAgentBoardDB()
+	s.initKnowledgeDB()
 	// The runner detects worker incidents/escalations and hands them here; the
 	// stall watchdog needs the notifier, so wire both before starting it.
 	mgr.SetNotifier(s.workerNotifier())
@@ -252,6 +260,13 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/agent-board/tasks/{id}/worker", s.auth(s.handleAgentBoardBindWorker))
 	s.mux.Handle("GET /api/agent-board/workers", s.auth(s.handleAgentBoardWorkers))
 	s.mux.Handle("POST /api/agent-board/backup", s.auth(s.handleAgentBoardBackup))
+
+	// Curated knowledge (docs/knowledge-design.md P0).
+	s.mux.Handle("GET /api/knowledge", s.auth(s.handleKnowledgeList))
+	s.mux.Handle("POST /api/knowledge", s.auth(s.handleKnowledgeCreate))
+	s.mux.Handle("POST /api/knowledge/collect", s.auth(s.handleKnowledgeCollect))
+	s.mux.Handle("GET /api/knowledge/{id}", s.auth(s.handleKnowledgeGet))
+	s.mux.Handle("PATCH /api/knowledge/{id}", s.auth(s.handleKnowledgeUpdate))
 	s.mux.Handle("GET /api/sessions", s.auth(s.handleListSessions))
 	s.mux.Handle("POST /api/sessions", s.auth(s.handleCreateSession))
 	s.mux.Handle("GET /api/sessions/{id}", s.auth(s.handleGetSession))
@@ -3097,6 +3112,7 @@ func (s *Server) Run() error {
 // the caller can then close the pooled `opencode serve` children cleanly.
 func (s *Server) Shutdown(ctx context.Context) error {
 	defer s.closeAgentBoardDB()
+	defer s.closeKnowledgeDB()
 	srv := s.httpServer()
 	if srv == nil {
 		if s.browser != nil {

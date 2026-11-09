@@ -109,6 +109,48 @@ var Tools = []Tool{
 		}, "task_id"),
 	},
 	{
+		Name: "knowledge_search",
+		Description: "Search the AgentDeck knowledge base. Workers see approved entries only " +
+			"(sensitive/quarantined rows are hidden); the main agent can include drafts/stale/sensitive. " +
+			"Chinese two-character queries work (unigram+bigram FTS5 tokenizer).",
+		InputSchema: obj(map[string]any{
+			"query":             str("Free-text query (title/summary/body/tags)."),
+			"project":           str("Filter by project."),
+			"tag":               str("Filter by one tag."),
+			"status":            str("approved (default) | draft | stale | all. Draft/stale/all require the main agent."),
+			"source_task_id":    str("Only entries collected from / attached to this board task."),
+			"limit":             map[string]any{"type": "integer", "description": "Max results (default 20, max 50)."},
+			"offset":            map[string]any{"type": "integer", "description": "Pagination offset."},
+			"include_drafts":    map[string]any{"type": "boolean", "description": "Main agent only: include drafts."},
+			"include_stale":     map[string]any{"type": "boolean", "description": "Main agent only: include stale entries."},
+			"include_sensitive": map[string]any{"type": "boolean", "description": "Main agent only: include sensitive rows."},
+		}),
+	},
+	{
+		Name:        "knowledge_get",
+		Description: "Fetch one knowledge entry with sources/evidence. Workers may read approved entries and their own drafts; sensitive/quarantined entries are main-agent only.",
+		InputSchema: obj(map[string]any{"id": str("Knowledge entry id (K-...).")}, "id"),
+	},
+	{
+		Name: "knowledge_add",
+		Description: "Add a knowledge draft. Workers MUST pass source_task_id (and should pass source_artifact_ids); " +
+			"drafts are reviewed by the main agent before workers can search them. The store dedupes on project+title+body " +
+			"and returns duplicate=true with the existing id. Sensitive text is redacted and quarantined.",
+		InputSchema: obj(map[string]any{
+			"title":               str("Title (required)."),
+			"body":                str("Markdown body."),
+			"summary":             str("One-paragraph summary."),
+			"project":             str("Project; defaults to the source task's project."),
+			"tags":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (max 20)."},
+			"source_task_id":      str("Source board task id. Required for workers."),
+			"source_artifact_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Artifacts that back this entry; must belong to source_task_id."},
+			"source_paths":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Path labels only; the server never reads them."},
+			"confidence":          map[string]any{"type": "integer", "description": "0-100."},
+			"sensitivity":         str("public | internal | sensitive | secret."),
+			"status":              str("draft (default) or approved (main agent only)."),
+		}, "title"),
+	},
+	{
 		Name:        "stop_session",
 		Description: "Interrupt the running turn on a session (does not delete it).",
 		InputSchema: obj(map[string]any{
@@ -191,6 +233,42 @@ var BoardTools = []Tool{
 	},
 }
 
+// KnowledgeAdminTools are main-agent-only knowledge management tools. They are
+// advertised only when CC_WEBUI_A2A_KNOWLEDGE_ADMIN=1 and are re-checked by the
+// server, the same two-layer gate as the board tools.
+var KnowledgeAdminTools = []Tool{
+	{
+		Name: "knowledge_review",
+		Description: "Review a knowledge entry: approve, reject, mark stale, or restore. " +
+			"Only the main agent can review; AI-generated drafts are never auto-approved.",
+		InputSchema: obj(map[string]any{
+			"id":      str("Knowledge entry id (required)."),
+			"action":  str("approve | reject | stale | restore | draft."),
+			"reason":  str("Review reason / user confirmation quote."),
+			"title":   str("Optional edited title."),
+			"summary": str("Optional edited summary."),
+			"body":    str("Optional edited Markdown body."),
+			"tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		}, "id", "action"),
+	},
+	{
+		Name: "knowledge_collect",
+		Description: "Scan board tasks in 待验收 / 已完成 and generate one draft per task from task metadata and hosted artifact metadata. " +
+			"Idempotent per task; never reads a workspace file, transcript, or legacy report_file path.",
+		InputSchema: obj(map[string]any{}),
+	},
+}
+
+// IsKnowledgeAdminTool reports whether name is a main-agent-only knowledge tool.
+func IsKnowledgeAdminTool(name string) bool {
+	for _, t := range KnowledgeAdminTools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // IsBoardTool reports whether name is one of the main-agent-only board tools.
 func IsBoardTool(name string) bool {
 	for _, t := range BoardTools {
@@ -255,11 +333,15 @@ func RunMCPProxy() {
 		case "ping":
 			writeRPC(out, req.ID, map[string]any{}, nil)
 		case "tools/list":
-			tools := Tools
+			tools := append([]Tool(nil), Tools...)
 			if os.Getenv("CC_WEBUI_A2A_BOARD") != "" {
 				// Main-agent-only board tools ride the same server; the env is set
 				// only when the spawning session is the workspace main agent.
-				tools = append(append(make([]Tool, 0, len(Tools)+len(BoardTools)), Tools...), BoardTools...)
+				tools = append(tools, BoardTools...)
+			}
+			if os.Getenv("CC_WEBUI_A2A_KNOWLEDGE_ADMIN") != "" {
+				// Knowledge review/collect is main-agent only, same pattern.
+				tools = append(tools, KnowledgeAdminTools...)
 			}
 			writeRPC(out, req.ID, map[string]any{"tools": tools}, nil)
 		case "tools/call":

@@ -103,7 +103,44 @@ func (s *Server) agentdeckToolCall(sessionID, name string, args map[string]any) 
 		}
 		return s.agentdeckBoardCall(name, args)
 	}
+	// Knowledge review/collect is main-agent only, with the same two-layer gate
+	// as the board tools (tool list + server-side main_agent re-check).
+	if a2a.IsKnowledgeAdminTool(name) {
+		if err := s.requireMainAgent(sessionID); err != nil {
+			return "", err
+		}
+		actor := s.knowledgeActorForMCP(sessionID)
+		switch name {
+		case "knowledge_review":
+			id := stringArg(args, "id")
+			if id == "" {
+				return "", fmt.Errorf("knowledge_review requires 'id'")
+			}
+			result, err := s.knowledgeReviewData(actor, id, args)
+			return jsonResult(result, err)
+		case "knowledge_collect":
+			result, err := s.knowledgeCollectData(actor)
+			return jsonResult(result, err)
+		}
+		return "", fmt.Errorf("unknown knowledge admin tool: %s", name)
+	}
 	switch name {
+	case "knowledge_search":
+		actor := s.knowledgeActorForMCP(sessionID)
+		result, err := s.knowledgeSearchData(actor, knowledgeSearchParamsFromArgs(args))
+		return jsonResult(result, err)
+	case "knowledge_get":
+		actor := s.knowledgeActorForMCP(sessionID)
+		id := stringArg(args, "id")
+		if id == "" {
+			return "", fmt.Errorf("knowledge_get requires 'id'")
+		}
+		result, err := s.knowledgeGetData(actor, id)
+		return jsonResult(result, err)
+	case "knowledge_add":
+		actor := s.knowledgeActorForMCP(sessionID)
+		result, err := s.knowledgeAddData(actor, args)
+		return jsonResult(result, err)
 	case "list_sessions":
 		return s.a2aListSessionsJSON()
 	case "send_message":

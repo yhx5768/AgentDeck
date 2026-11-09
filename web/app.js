@@ -681,6 +681,9 @@ function renderIcons(root) {
     'message-circle-question', // 待回答 toast 的问号图标（§11，一直漏了，白名单外的 data-lucide 会渲染成空壳）
     'sliders-horizontal',
     'scroll-text', // 角色提示编辑器入口（composer 左下）
+    // 资料空间（知识库）
+    'book-open', 'clock', 'tag', 'shield', 'sparkles', 'history',
+    'check-circle', 'x-circle',
   ];
   // lucide 自动 kebab→Pascal，所以 icons map 的 key 也用 PascalCase
   const toPascal = (s) =>
@@ -2609,6 +2612,8 @@ async function openSession(id) {
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const knowledgeView = $('#knowledge-view');
+  if (knowledgeView) knowledgeView.classList.add('hidden');
   relocatePermCards();
   $('#chat-view').classList.remove('hidden');
   renderGoalBar();
@@ -2940,6 +2945,16 @@ function boardRenderOverview(task) {
       artifacts.append(item);
     } else {
       artifacts.append(boardMuted('暂无产物'));
+    }
+  }
+
+  const knowledge = $('#board-drawer-knowledge');
+  if (knowledge) {
+    knowledge.innerHTML = '';
+    if (typeof renderBoardKnowledge === 'function') {
+      renderBoardKnowledge(task);
+    } else {
+      knowledge.append(boardMuted('暂无相关知识'));
     }
   }
 
@@ -8395,6 +8410,8 @@ async function openNewSessionView(cwd) {
   nsPendingCwd = cwd || '';
   $('#chat-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const knowledgeView = $('#knowledge-view');
+  if (knowledgeView) knowledgeView.classList.add('hidden');
   relocatePermCards();
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.remove('hidden');
@@ -8866,6 +8883,8 @@ function hideAllViews() {
   $('#chat-view').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const knowledgeView = $('#knowledge-view');
+  if (knowledgeView) knowledgeView.classList.add('hidden');
   closeGroupMemberPanel();
   closeGroupMentionPopup();
 }

@@ -61,6 +61,7 @@ func (s *Server) handleAgentBoardDB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.decorateBoardSnapshot(r, snapshot)
+	s.decorateBoardKnowledge(r, snapshot)
 	writeJSON(w, http.StatusOK, snapshot)
 }
 
@@ -79,6 +80,7 @@ func (s *Server) handleAgentBoardGetTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.decorateTaskArtifacts(r, task)
+	s.decorateTaskKnowledge(r, task)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task": task})
 }
 

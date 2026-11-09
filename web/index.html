@@ -31,6 +31,7 @@
     <div class="sidebar-header">
       <span class="logo">AgentDeck</span>
       <span class="header-btns">
+        <button id="btn-knowledge" class="icon-btn" title="资料空间（知识库）"><i data-lucide="book-open"></i></button>
         <button id="btn-notes" class="icon-btn" title="待办备忘"><i data-lucide="list-todo"></i></button>
         <button id="btn-stats" class="icon-btn" title="使用统计"><i data-lucide="bar-chart-3"></i></button>
         <button id="btn-settings" class="icon-btn" title="设置"><i data-lucide="settings"></i></button>
@@ -211,6 +212,10 @@
               <div id="board-drawer-artifacts" class="board-pane-card"></div>
             </div>
             <div class="board-pane-section">
+              <div class="board-pane-title">相关知识 <span id="board-drawer-knowledge-count" class="board-drawer-tab-count"></span></div>
+              <div id="board-drawer-knowledge" class="board-pane-card"></div>
+            </div>
+            <div class="board-pane-section">
               <div class="board-pane-title">基础信息</div>
               <div id="board-drawer-meta" class="board-drawer-meta"></div>
             </div>
@@ -299,6 +304,50 @@
     </div>
 
     <!-- 群聊视图：多成员并行时间线，工具细节去成员会话看 -->
+    <!-- 资料空间：workspace 级知识库视图（不绑定单个会话） -->
+    <div id="knowledge-view" class="hidden">
+      <header id="knowledge-header">
+        <div class="knowledge-title-row">
+          <button id="knowledge-back" class="icon-btn" title="返回"><i data-lucide="arrow-left"></i></button>
+          <h2>资料空间</h2>
+          <span id="knowledge-counts" class="knowledge-counts"></span>
+          <span class="knowledge-spacer"></span>
+          <button id="knowledge-collect" class="ghost-btn" title="扫描看板中待验收/已完成任务，生成知识草稿">从看板采集</button>
+          <button id="knowledge-new" class="primary-btn"><i data-lucide="plus"></i> 新建知识</button>
+        </div>
+        <div class="knowledge-filters">
+          <div class="knowledge-search"><i data-lucide="search"></i><input id="knowledge-q" placeholder="搜索标题、摘要、正文、标签…" autocomplete="off"></div>
+          <select id="knowledge-project" title="按项目筛选"><option value="">全部项目</option></select>
+          <select id="knowledge-status" title="按状态筛选">
+            <option value="all">全部</option>
+            <option value="approved">已通过</option>
+            <option value="draft">草稿</option>
+            <option value="stale">可能过期</option>
+          </select>
+          <span id="knowledge-task-chip" class="knowledge-task-chip hidden"></span>
+        </div>
+      </header>
+      <div id="knowledge-main">
+        <div id="knowledge-list-wrap">
+          <div id="knowledge-list"></div>
+          <div id="knowledge-empty" class="knowledge-empty hidden"></div>
+        </div>
+        <aside id="knowledge-detail" class="hidden" aria-label="知识详情">
+          <div id="knowledge-detail-head">
+            <span id="knowledge-detail-kicker"></span>
+            <button id="knowledge-detail-close" class="icon-btn" title="关闭"><i data-lucide="x"></i></button>
+          </div>
+          <h3 id="knowledge-detail-title"></h3>
+          <div id="knowledge-detail-meta"></div>
+          <div id="knowledge-detail-actions"></div>
+          <div id="knowledge-detail-body" class="md"></div>
+          <div id="knowledge-detail-sources"></div>
+          <div id="knowledge-detail-relations"></div>
+          <div id="knowledge-detail-audit"></div>
+        </aside>
+      </div>
+    </div>
+
     <div id="group-view" class="hidden">
       <header id="group-header-bar">
         <div class="title-row">
@@ -650,6 +699,25 @@
   </div>
 </div>
 
+<!-- Knowledge create modal -->
+<div id="modal-knowledge" class="modal hidden">
+  <div class="modal-card wide knowledge-form-card">
+    <h3>新建知识</h3>
+    <label>标题 <input id="knowledge-form-title" spellcheck="false" placeholder="一句话结论"></label>
+    <label>摘要 <textarea id="knowledge-form-summary" rows="2" placeholder="列表里显示的一段话摘要"></textarea></label>
+    <label>正文（Markdown） <textarea id="knowledge-form-body" rows="8" placeholder="结论、证据、影响…"></textarea></label>
+    <div class="knowledge-form-row">
+      <label>项目 <input id="knowledge-form-project" placeholder="如 AgentDeck"></label>
+      <label>标签（逗号分隔） <input id="knowledge-form-tags" placeholder="SSE, rewind"></label>
+    </div>
+    <label>来源任务 <input id="knowledge-form-task" spellcheck="false" placeholder="可选，如 T-..."></label>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close>取消</button>
+      <button class="primary-btn" id="knowledge-form-save">保存草稿</button>
+    </div>
+  </div>
+</div>
+
 <!-- Import modal -->
 <div id="modal-import" class="modal hidden">
   <div class="modal-card wide import-modal">
@@ -830,6 +898,7 @@
 
 <script src="/trajectory.js"></script>
 <script src="/app.js"></script>
+<script src="/knowledge.js"></script>
 <script src="/workspace.js"></script>
 <script src="/browser.js"></script>
 </body>

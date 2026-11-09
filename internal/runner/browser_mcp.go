@@ -97,6 +97,7 @@ func (m *Manager) agentdeckMCPInfo(sessionID string) (mcpServerConfig, bool) {
 		if m.st != nil {
 			if sess := m.st.Get(sessionID); sess != nil && sess.MainAgent {
 				env["CC_WEBUI_A2A_BOARD"] = "1"
+				env["CC_WEBUI_A2A_KNOWLEDGE_ADMIN"] = "1"
 			}
 		}
 	}

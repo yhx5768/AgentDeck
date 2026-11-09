@@ -436,7 +436,8 @@ func (r *taskRow) toMap(events []map[string]any, artifacts []map[string]any) map
 		"id": r.id, "source": r.source, "title": r.title,
 		"full_title": r.title, "status": r.status, "project": r.project, "owner": r.owner,
 		"worker": r.assignee, "session": r.session, "cwd": r.cwd, "updated_at": r.updatedAt,
-		"progress": r.progress, "last_event": r.lastEvent, "report_file": r.reportFile,
+		"description": r.description,
+		"progress":    r.progress, "last_event": r.lastEvent, "report_file": r.reportFile,
 		"tags": tags, "timeline": events, "artifacts": artifacts,
 	}
 	if r.statusReason != "" {
