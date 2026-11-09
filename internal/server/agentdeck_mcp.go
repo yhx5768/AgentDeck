@@ -28,7 +28,7 @@ func (s *Server) handleInternalAgentdeckMCP(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	session := strings.TrimSpace(r.Header.Get("X-CC-Webui-Session"))
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 4*1024*1024))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxArtifactBodyBytes))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
 		return
@@ -78,6 +78,10 @@ func (s *Server) callHandler(h http.HandlerFunc, method, path string, body any, 
 		rdr = bytes.NewReader(raw)
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	// In-process calls have no real client host; clear the placeholder so
+	// handlers that mint absolute URLs fall back to config/listen instead of
+	// emitting http://example.com.
+	req.Host = ""
 	for k, v := range pathVals {
 		req.SetPathValue(k, v)
 	}
@@ -114,6 +118,10 @@ func (s *Server) agentdeckToolCall(sessionID, name string, args map[string]any) 
 		query, _ := args["query"].(string)
 		session, _ := args["session"].(string)
 		return s.handleSearchMessages(query, session, intArg(args, "limit"))
+	case "artifact_publish":
+		// Not a board tool: workers on remote machines must be able to publish
+		// artifacts too. The server still validates the task id and payload.
+		return s.agentdeckPublishArtifact(sessionID, args)
 	case "new_session":
 		code, body := s.callHandler(s.handleCreateSession, http.MethodPost, "/api/sessions", args, nil)
 		return resultText(code, body, "")

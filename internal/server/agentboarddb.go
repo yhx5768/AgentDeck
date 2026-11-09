@@ -60,6 +60,7 @@ func (s *Server) handleAgentBoardDB(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取看板数据库失败: "+err.Error())
 		return
 	}
+	s.decorateBoardSnapshot(r, snapshot)
 	writeJSON(w, http.StatusOK, snapshot)
 }
 
@@ -77,6 +78,7 @@ func (s *Server) handleAgentBoardGetTask(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusInternalServerError, "读取任务失败: "+err.Error())
 		return
 	}
+	s.decorateTaskArtifacts(r, task)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task": task})
 }
 
@@ -99,6 +101,7 @@ func (s *Server) handleAgentBoardCreateTask(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusBadRequest, "创建任务失败: "+err.Error())
 		return
 	}
+	s.decorateTaskArtifacts(r, task)
 	s.broadcastAgentBoard()
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "task": task})
 }
@@ -126,6 +129,7 @@ func (s *Server) handleAgentBoardUpdateTask(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusBadRequest, "更新任务失败: "+err.Error())
 		return
 	}
+	s.decorateTaskArtifacts(r, task)
 	s.broadcastAgentBoard()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task": task})
 }
@@ -159,6 +163,7 @@ func (s *Server) handleAgentBoardBindWorker(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusInternalServerError, "读取任务失败: "+err.Error())
 		return
 	}
+	s.decorateTaskArtifacts(r, task)
 	s.broadcastAgentBoard()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task": task})
 }

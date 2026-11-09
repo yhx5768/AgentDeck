@@ -12,6 +12,13 @@ data_dir: "./data"
 # 新建会话时的默认工作目录
 default_cwd: "~"
 
+# 对外可访问的 base URL，用于生成看板产物的分享链接（HTML 页面等）。
+# 空值 = 用请求的 scheme/host 兜底，只适合同源浏览器访问；
+# 远端 worker / 别的机器要看产物时必须显式配置，例如：
+#   public_base_url: "https://agentdeck.example.com"
+# 产物链接本身不带 token：浏览器用登录 cookie，脚本/外部访问可临时追加 ?token=。
+# public_base_url: "https://agentdeck.example.com"
+
 # 主 Agent 看板自动使用 <data_dir>/agent-board.db，无需配置。
 # 首次启动（DB 文件不存在）会尝试一次性导入 <data_dir>/agent-board.local.json
 # 和本机 routing-table；文件不存在则直接新建空库。

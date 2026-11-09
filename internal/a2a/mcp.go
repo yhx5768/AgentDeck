@@ -91,6 +91,24 @@ var Tools = []Tool{
 		}, "id"),
 	},
 	{
+		Name: "artifact_publish",
+		Description: "Publish an artifact (HTML page, markdown, file, or external URL) on a board task. " +
+			"HTML is hosted by AgentDeck as a shareable page (sandboxed, own URL); the task's 产物与证据 panel updates immediately. " +
+			"Content is uploaded inline — this works from a worker on another machine. Returns the artifact metadata and URL. " +
+			"For binary content pass encoding=base64; for kind=url pass url instead of content.",
+		InputSchema: obj(map[string]any{
+			"task_id":        str("Board task id to attach the artifact to (required)."),
+			"title":          str("Human-readable title; defaults to the filename."),
+			"kind":           str("html | markdown | file | url. Defaults to inferred from filename/mime."),
+			"filename":       str("Safe filename; defaults to index.html / artifact.md / artifact.bin / link."),
+			"content":        str("Artifact content: text for html/markdown, or base64 when encoding=base64. Omit for kind=url."),
+			"encoding":       str("utf8 (default) or base64."),
+			"mime":           str("Optional MIME type override."),
+			"source_session": str("Session id/address that produced the artifact; defaults to the caller."),
+			"url":            str("External http(s) URL when kind=url."),
+		}, "task_id"),
+	},
+	{
 		Name:        "stop_session",
 		Description: "Interrupt the running turn on a session (does not delete it).",
 		InputSchema: obj(map[string]any{
@@ -131,6 +149,7 @@ var BoardTools = []Tool{
 			"owner":       str("Owner."),
 			"progress":    str("Progress text."),
 			"cwd":         str("Workspace directory."),
+			"report_file": str("Legacy single report path (prefer artifact_publish for new artifacts)."),
 			"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags."},
 			"priority":    map[string]any{"type": "integer", "description": "Priority (1 high … 3 low; default 2)."},
 		}, "title"),
@@ -145,6 +164,7 @@ var BoardTools = []Tool{
 			"last_event":    str("One-line summary of the latest event."),
 			"status_reason": str("Reason for the current status."),
 			"worker":        str("Bound worker address name."),
+			"report_file":   str("Legacy single report path (prefer artifact_publish for new artifacts)."),
 			"archived":      map[string]any{"type": "boolean", "description": "Archive (hide from the board)."},
 		}, "id"),
 	},

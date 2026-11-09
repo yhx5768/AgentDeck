@@ -815,6 +815,19 @@
 <!-- 待回答提问浮层（页内，不依赖通知授权；由 app.js 的 pushToast 填充） -->
 <div id="toast-layer" aria-live="polite"></div>
 
+<!-- 看板产物预览：HTML 走 sandboxed iframe（无 allow-same-origin），Markdown 走 md() 渲染。 -->
+<div id="board-artifact-preview" class="board-artifact-preview hidden" role="dialog" aria-modal="true"
+     aria-label="产物预览">
+  <div class="board-artifact-preview-bar">
+    <span id="board-artifact-preview-title" class="board-artifact-preview-title"></span>
+    <a id="board-artifact-preview-open" class="board-artifact-preview-btn" href="#" target="_blank"
+       rel="noopener">新窗口打开</a>
+    <button id="board-artifact-preview-close" class="board-artifact-preview-btn" type="button">关闭</button>
+  </div>
+  <div id="board-artifact-preview-body" class="board-artifact-preview-body"></div>
+</div>
+
+
 <script src="/trajectory.js"></script>
 <script src="/app.js"></script>
 <script src="/workspace.js"></script>

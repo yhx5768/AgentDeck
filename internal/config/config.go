@@ -214,6 +214,13 @@ type Config struct {
 	GatewayToken string `yaml:"gateway_token"`
 	DataDir      string `yaml:"data_dir"`
 	DefaultCwd   string `yaml:"default_cwd"`
+	// PublicBaseURL is the externally reachable base URL of this server
+	// (e.g. "https://agentdeck.example.com"), used to mint shareable board
+	// artifact URLs. Leave empty for same-origin browser use: artifact links
+	// then fall back to the request scheme/host. Remote workers or viewers must
+	// set it, because neither the listen address nor a loopback host is
+	// reachable from another machine.
+	PublicBaseURL string `yaml:"public_base_url"`
 	// AgentBoardMockBusy turns the board drawer composer into a queue test
 	// harness: the UI keeps messages in the local pending queue instead of
 	// posting them. Test previews set this; production leaves it false.
@@ -391,6 +398,9 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("CC_WEBUI_DATA_DIR"); v != "" {
 		cfg.DataDir = v
+	}
+	if v := os.Getenv("CC_WEBUI_PUBLIC_BASE_URL"); v != "" {
+		cfg.PublicBaseURL = v
 	}
 
 	if cfg.GatewayToken == "" {

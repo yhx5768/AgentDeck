@@ -80,8 +80,9 @@ Another agent session sent you a message. It is not from the user; ...
 代理，转发到回环 `POST /api/internal/agentdeck/mcp`（Bearer = gateway token），
 与 browser MCP 同一套管线。工具：`list_sessions` / `send_message` /
 `read_session_messages` / `search_messages` / `new_session` / `get_session` /
-`stop_session`。实现是**在进程内调用既有 HTTP handler**（`callHandler`），校验/落库
-单一来源（读/搜两个直接调 `replayEvents`，见 §5.5）。
+`stop_session` / `artifact_publish`。实现是**在进程内调用既有 HTTP handler**（`callHandler`），
+校验/落库单一来源（读/搜两个直接调 `replayEvents`，见 §5.5；`artifact_publish`
+复用产物发布逻辑，见 §5.8）。
 
 ### 5.2 注入方式（五引擎）
 
@@ -171,6 +172,33 @@ runner 是监督者、一直活着，能看见「轮次报错 / 进程静默 / �
 
 配置在 `main_agent.notify`（`enabled` / `stall_minutes` / `worker_cooldown_minutes` /
 `hourly_cap`，`enabled` nil = 开）。没有主 Agent 时什么都不发生，所以默认开是安全的。
+
+### 5.8 产物发布（`artifact_publish`，所有会话）
+
+看板的「产物与证据」不再只有 legacy `report_file`：`artifact_publish`
+（`task_id` / `title` / `kind` / `filename` / `content` / `encoding` / `mime` /
+`source_session` / `url`）把 HTML、Markdown、任意文件或外链挂到一张卡上。**它不是
+board 工具**——远端 worker 必须能把自己的产物传上来，所以对**所有会话**暴露，服务端
+只校验 task 存在与 payload（不按 `main_agent` 拦截）。
+
+- 内容**内联上传**（`content`，二进制用 `encoding=base64`；也接受 `data:` URL），服务端
+  落 `<data_dir>/artifacts/<task>/<artifact>/<safe-filename>`，不读调用方本机路径。
+- 单产物上限 10 MiB；文件名去 basename/控制字符，路径穿越与非法 artifact id 拒绝。
+  每次发布生成新 artifact（append-only），重复上传不会覆盖旧产物。
+- 返回 artifact 元数据与可分享 URL；URL 的 base 来自 `config.yaml` 的
+  `public_base_url`（远端场景必须配），否则回退请求 scheme/host（同源浏览器）或
+  listen 地址（进程内 MCP 调用）。**token 不写进 artifact 记录**：浏览器用登录 cookie，
+  外部脚本按需临时追加 `?token=`。
+- HTTP 等价入口（远端 worker 可用 curl）：`POST /api/agent-board/tasks/{id}/artifacts`
+  支持 JSON、`multipart/form-data`（`file` 字段）和 raw body（元数据走 query），
+  三种形态复用同一套校验/落盘逻辑。
+- 托管：`GET /api/agent-board/artifacts/{id}`（`?download=1` 强制下载；`kind=url` 302）。
+  所有产物响应都带 `X-Content-Type-Options: nosniff` 与 CSP `sandbox allow-scripts …`
+  （无 `allow-same-origin`，HTML 之外的 SVG/XHTML 等活动文档同样被隔离），抽屉预览的
+  iframe 也不给 `allow-same-origin`，双重保证产物拿不到 AgentDeck 同源 cookie/DOM。
+- 旧 `report_file` 保留：任务响应里的 `artifacts[]` 会附加一条 `legacy:true` 的合成
+  产物（只展示路径，不复制、不托管）；`board_create` / `board_update` 也补回了
+  `report_file` 字段以兼容旧调用。
 
 ## 6. opencode 作为主 Agent
 

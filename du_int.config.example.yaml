@@ -17,6 +17,10 @@ data_dir: "./data"
 # 新建会话时的默认工作目录
 default_cwd: "~"
 
+# 对外可访问的 base URL，用于生成看板产物的分享链接（HTML 页面等）。
+# 远端 worker / 别的机器要访问产物时必须显式配置；留空只用请求 host 兜底。
+# public_base_url: "https://agentdeck.example.com"
+
 # 每一轮都往 system prompt 追加「本界面能把整页 HTML 渲染成活的页面」的约定，
 # 让模型把图表/仪表盘直接输出成 ```html 围栏。注释掉 = 开（默认），设 false 关闭。
 # ducc（claude 引擎）走 --append-system-prompt；ducx（codex 引擎）走

@@ -32,9 +32,39 @@ func TestIsBoardTool(t *testing.T) {
 			t.Fatalf("IsBoardTool(%q) = false", name)
 		}
 	}
-	for _, name := range []string{"list_sessions", "send_message", "board", ""} {
+	// artifact_publish is available to every session (workers on remote
+	// machines publish their own output), so it must NOT be main-agent-only.
+	for _, name := range []string{"list_sessions", "send_message", "artifact_publish", "board", ""} {
 		if IsBoardTool(name) {
 			t.Fatalf("IsBoardTool(%q) = true", name)
+		}
+	}
+}
+
+func TestArtifactPublishToolAndLegacyReportFileSchema(t *testing.T) {
+	found := false
+	for _, tool := range Tools {
+		if tool.Name != "artifact_publish" {
+			continue
+		}
+		found = true
+		props := tool.InputSchema["properties"].(map[string]any)
+		for _, key := range []string{"task_id", "title", "kind", "filename", "content", "encoding", "mime", "source_session", "url"} {
+			if _, ok := props[key]; !ok {
+				t.Fatalf("artifact_publish missing property %q", key)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("artifact_publish not in Tools")
+	}
+	for _, tool := range BoardTools {
+		if tool.Name != "board_create" && tool.Name != "board_update" {
+			continue
+		}
+		props := tool.InputSchema["properties"].(map[string]any)
+		if _, ok := props["report_file"]; !ok {
+			t.Fatalf("%s missing compatibility report_file property", tool.Name)
 		}
 	}
 }

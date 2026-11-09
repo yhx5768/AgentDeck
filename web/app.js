@@ -2916,9 +2916,13 @@ function boardRenderOverview(task) {
   const artifacts = $('#board-drawer-artifacts');
   if (artifacts) {
     artifacts.innerHTML = '';
-    if (task.report_file) {
+    const list = Array.isArray(task.artifacts) ? task.artifacts : [];
+    if (list.length) {
+      list.forEach((artifact) => artifacts.append(boardArtifactItem(task, artifact)));
+    } else if (task.report_file) {
+      // Older servers only expose report_file; keep the legacy presentation.
       const item = document.createElement('div');
-      item.className = 'board-artifact';
+      item.className = 'board-artifact board-artifact-legacy';
       const icon = document.createElement('span');
       icon.className = 'board-artifact-icon';
       icon.textContent = '文';
@@ -2928,7 +2932,7 @@ function boardRenderOverview(task) {
       title.className = 'board-artifact-title';
       title.textContent = '验证/进展报告';
       const path = document.createElement('div');
-      path.className = 'board-artifact-path';
+      path.className = 'board-artifact-meta';
       path.textContent = task.report_file;
       path.title = task.report_file;
       main.append(title, path);
@@ -2972,6 +2976,171 @@ function boardMuted(text) {
   el.className = 'board-pane-muted';
   el.textContent = text;
   return el;
+}
+
+// ---------- 看板产物（多产物 + HTML 预览） ----------
+
+function boardArtifactSize(size) {
+  const n = Number(size) || 0;
+  if (n <= 0) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1).replace(/\.0$/, '') + ' KB';
+  return (n / 1024 / 1024).toFixed(1).replace(/\.0$/, '') + ' MB';
+}
+
+function boardArtifactKindLabel(artifact) {
+  const map = { html: 'HTML', markdown: 'Markdown', url: '链接', file: '文件' };
+  return map[artifact && artifact.kind] || '文件';
+}
+
+function boardArtifactPreviewable(artifact) {
+  return !!(artifact && !artifact.legacy && artifact.url
+    && (artifact.kind === 'html' || artifact.kind === 'markdown'));
+}
+
+function boardArtifactAction(label, href, download) {
+  const a = document.createElement('a');
+  a.className = 'board-artifact-action';
+  a.href = download ? href + (href.includes('?') ? '&' : '?') + 'download=1' : href;
+  a.textContent = label;
+  if (download) {
+    a.setAttribute('download', '');
+  } else {
+    a.target = '_blank';
+    a.rel = 'noopener';
+  }
+  return a;
+}
+
+function boardArtifactItem(task, artifact) {
+  const item = document.createElement('div');
+  item.className = 'board-artifact' + (artifact.legacy ? ' board-artifact-legacy' : '');
+  if (artifact.id) item.dataset.artifactId = artifact.id;
+
+  const icon = document.createElement('span');
+  icon.className = 'board-artifact-icon';
+  icon.textContent = artifact.kind === 'html' ? 'H' : artifact.kind === 'markdown' ? 'M'
+    : artifact.kind === 'url' ? '链' : '文';
+
+  const main = document.createElement('div');
+  main.className = 'board-artifact-main';
+  const head = document.createElement('div');
+  head.className = 'board-artifact-head';
+  const title = document.createElement('div');
+  title.className = 'board-artifact-title';
+  title.textContent = artifact.title || artifact.filename || '未命名产物';
+  title.title = title.textContent;
+  const badge = document.createElement('span');
+  badge.className = 'board-artifact-badge';
+  badge.textContent = boardArtifactKindLabel(artifact);
+  head.append(title, badge);
+
+  const meta = document.createElement('div');
+  meta.className = 'board-artifact-meta';
+  const bits = [];
+  if (artifact.filename) bits.push(artifact.filename);
+  const size = boardArtifactSize(artifact.size);
+  if (size) bits.push(size);
+  if (artifact.source_session) bits.push('来源 ' + artifact.source_session);
+  if (artifact.created_at) bits.push(artifact.created_at);
+  meta.textContent = bits.join(' · ');
+  meta.title = meta.textContent;
+  main.append(head, meta);
+
+  if (artifact.legacy) {
+    const note = document.createElement('div');
+    note.className = 'board-artifact-note';
+    note.textContent = '旧 report_file 路径（未托管）';
+    main.append(note);
+  }
+
+  item.append(icon, main);
+
+  const actions = document.createElement('div');
+  actions.className = 'board-artifact-actions';
+  if (artifact.legacy) {
+    if (artifact.storage_path) actions.append(boardCopyButton(artifact.storage_path, '复制路径'));
+  } else if (artifact.kind === 'url') {
+    if (artifact.url) {
+      actions.append(boardArtifactAction('打开', artifact.url));
+      actions.append(boardCopyButton(artifact.url, '复制链接'));
+    }
+  } else if (artifact.url) {
+    actions.append(boardArtifactAction('打开', artifact.url));
+    if (boardArtifactPreviewable(artifact)) {
+      const preview = document.createElement('button');
+      preview.type = 'button';
+      preview.className = 'board-artifact-action';
+      preview.textContent = '预览';
+      preview.onclick = (e) => {
+        e.stopPropagation();
+        boardOpenArtifactPreview(artifact);
+      };
+      actions.append(preview);
+    }
+    actions.append(boardArtifactAction('下载', artifact.url, true));
+    actions.append(boardCopyButton(artifact.url, '复制链接'));
+  }
+  if (actions.children.length) main.append(actions);
+  return item;
+}
+
+let boardPreviewArtifact = null;
+
+function boardOpenArtifactPreview(artifact) {
+  const mask = $('#board-artifact-preview');
+  const body = $('#board-artifact-preview-body');
+  if (!mask || !body || !artifact || !artifact.url) return;
+  boardPreviewArtifact = artifact;
+  const title = $('#board-artifact-preview-title');
+  if (title) title.textContent = artifact.title || artifact.filename || '产物预览';
+  const open = $('#board-artifact-preview-open');
+  if (open) open.href = artifact.url;
+  body.innerHTML = '';
+  if (artifact.kind === 'html') {
+    const frame = document.createElement('iframe');
+    frame.className = 'board-artifact-frame';
+    // allow-scripts 但不给 allow-same-origin：页面处于不透明源，拿不到
+    // AgentDeck 的 cookie/localStorage/DOM。服务端另发 CSP sandbox 兜底。
+    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
+    frame.title = artifact.title || 'HTML 产物预览';
+    frame.src = artifact.url;
+    body.append(frame);
+  } else {
+    const loading = boardMuted('加载中…');
+    body.append(loading);
+    fetch(artifact.url, { credentials: 'same-origin' })
+      .then((resp) => {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.text();
+      })
+      .then((text) => {
+        if (boardPreviewArtifact !== artifact) return;
+        const doc = document.createElement('div');
+        doc.className = 'md board-artifact-markdown';
+        doc.innerHTML = md(text, { artifacts: false });
+        body.innerHTML = '';
+        body.append(doc);
+      })
+      .catch((err) => {
+        if (boardPreviewArtifact !== artifact) return;
+        body.innerHTML = '';
+        body.append(boardMuted('预览失败：' + (err && err.message ? err.message : err)));
+      });
+  }
+  mask.classList.remove('hidden');
+  document.body.classList.add('board-preview-open');
+}
+
+function boardCloseArtifactPreview() {
+  const mask = $('#board-artifact-preview');
+  if (!mask) return;
+  boardPreviewArtifact = null;
+  mask.classList.add('hidden');
+  const body = $('#board-artifact-preview-body');
+  if (body) body.innerHTML = ''; // 卸载 iframe / 取消未完成的加载
+  document.body.classList.remove('board-preview-open');
 }
 
 function boardEventAvatar(kind) {
@@ -3084,6 +3253,12 @@ function boardRenderLinks(task) {
   };
   addItem('任务 id', task.id, 'ID');
   addItem('验证/进展报告', task.report_file, '文');
+  (Array.isArray(task.artifacts) ? task.artifacts : []).forEach((artifact) => {
+    if (artifact.legacy) return;
+    addItem(artifact.title || artifact.filename || '产物',
+      artifact.url || artifact.filename || '',
+      boardArtifactKindLabel(artifact), artifact.url || '');
+  });
   addItem('会话 id', task.session, '会');
   addItem('工作目录', task.cwd, '目录');
   if (!count) links.append(boardMuted('暂无可关联内容'));
@@ -3097,6 +3272,7 @@ function boardRenderRaw(task) {
 }
 
 function boardCloseDrawer() {
+  boardCloseArtifactPreview();
   state.boardSelectedId = null;
   const drawer = $('#board-drawer');
   const mask = $('#board-drawer-mask');
@@ -3273,6 +3449,23 @@ async function boardSendToMain() {
       if (!state.boardMockBusy && !isRunning()) flushPending();
     });
   }
+})();
+
+// 产物预览：全屏遮罩 + sandboxed iframe / Markdown 渲染。
+(() => {
+  const mask = $('#board-artifact-preview');
+  if (!mask) return;
+  const close = $('#board-artifact-preview-close');
+  if (close) close.addEventListener('click', boardCloseArtifactPreview);
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask) boardCloseArtifactPreview();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !mask.classList.contains('hidden')) {
+      e.preventDefault();
+      boardCloseArtifactPreview();
+    }
+  });
 })();
 
 // 任务抽屉宽度：拖拽/键盘调整，localStorage 持久化。默认 620px，

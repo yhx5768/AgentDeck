@@ -31,7 +31,7 @@ var statusOrder = []string{"新建", "进行中", "待人工", "待验收", "已
 
 const schema = `
 CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('version', '1')
+INSERT INTO schema_meta(key, value) VALUES ('version', '2')
   ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -61,6 +61,28 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, archived);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project, archived);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee, archived);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at DESC);
+
+-- task_artifacts is the multi-artifact model behind the drawer's "产物与证据"
+-- panel. A task may publish many artifacts (HTML pages, markdown, files, or
+-- external URLs). The file bytes themselves live under <data_dir>/artifacts/;
+-- storage_path is relative to that root and is only resolved by the server.
+-- report_file (tasks) stays for compatibility and is exposed as a synthetic
+-- legacy artifact when non-empty.
+CREATE TABLE IF NOT EXISTS task_artifacts (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  title TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'file',
+  mime TEXT NOT NULL DEFAULT '',
+  filename TEXT NOT NULL DEFAULT '',
+  size INTEGER NOT NULL DEFAULT 0,
+  storage_path TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  source_session TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_task ON task_artifacts(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_artifacts_created ON task_artifacts(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS task_events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,6 +277,18 @@ func intFromAny(value any, fallback int) int {
 	return fallback
 }
 
+func int64FromAny(value any, fallback int64) int64 {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case float64:
+		return int64(typed)
+	}
+	return fallback
+}
+
 func boolInt(value bool) int {
 	if value {
 		return 1
@@ -386,18 +420,24 @@ func (s *Store) getTaskLocked(id string) (*taskRow, error) {
 	return scanTask(s.db.QueryRow(taskSelect+" WHERE id=?", id))
 }
 
-func (r *taskRow) toMap(events []map[string]any) map[string]any {
+func (r *taskRow) toMap(events []map[string]any, artifacts []map[string]any) map[string]any {
 	var tags []string
 	_ = json.Unmarshal([]byte(r.labels), &tags)
 	if tags == nil {
 		tags = []string{}
+	}
+	if legacy := legacyReportArtifact(r); legacy != nil {
+		artifacts = append(artifacts, legacy)
+	}
+	if artifacts == nil {
+		artifacts = []map[string]any{}
 	}
 	task := map[string]any{
 		"id": r.id, "source": r.source, "title": r.title,
 		"full_title": r.title, "status": r.status, "project": r.project, "owner": r.owner,
 		"worker": r.assignee, "session": r.session, "cwd": r.cwd, "updated_at": r.updatedAt,
 		"progress": r.progress, "last_event": r.lastEvent, "report_file": r.reportFile,
-		"tags": tags, "timeline": events,
+		"tags": tags, "timeline": events, "artifacts": artifacts,
 	}
 	if r.statusReason != "" {
 		task["status_reason"] = r.statusReason
@@ -433,6 +473,183 @@ func (s *Store) taskEvents(taskID string) ([]map[string]any, error) {
 	return events, rows.Err()
 }
 
+// TaskArtifact is one row of task_artifacts.
+type TaskArtifact struct {
+	ID, TaskID, Title, Kind, MIME, Filename, StoragePath, URL, SourceSession, CreatedAt string
+	Size                                                                                int64
+}
+
+func (a *TaskArtifact) toMap() map[string]any {
+	return map[string]any{
+		"id": a.ID, "task_id": a.TaskID, "title": a.Title, "kind": a.Kind,
+		"mime": a.MIME, "filename": a.Filename, "size": a.Size,
+		"storage_path": a.StoragePath, "url": a.URL,
+		"source_session": a.SourceSession, "created_at": a.CreatedAt,
+	}
+}
+
+const artifactSelect = `SELECT id,task_id,title,kind,mime,filename,size,storage_path,url,
+	source_session,created_at FROM task_artifacts`
+
+func scanArtifact(scanner interface{ Scan(...any) error }) (*TaskArtifact, error) {
+	artifact := &TaskArtifact{}
+	err := scanner.Scan(&artifact.ID, &artifact.TaskID, &artifact.Title, &artifact.Kind,
+		&artifact.MIME, &artifact.Filename, &artifact.Size, &artifact.StoragePath,
+		&artifact.URL, &artifact.SourceSession, &artifact.CreatedAt)
+	return artifact, err
+}
+
+// GetArtifact returns one artifact record (no task join, no URL decoration —
+// the server owns public URL minting).
+func (s *Store) GetArtifact(id string) (*TaskArtifact, error) {
+	return scanArtifact(s.db.QueryRow(artifactSelect+" WHERE id=?", id))
+}
+
+func (s *Store) taskArtifacts(taskID string) ([]map[string]any, error) {
+	rows, err := s.db.Query(artifactSelect+" WHERE task_id=? ORDER BY rowid ASC", taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		artifact, err := scanArtifact(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, artifact.toMap())
+	}
+	return out, rows.Err()
+}
+
+// allArtifacts groups every artifact by task id (one query for Snapshot).
+func (s *Store) allArtifacts() (map[string][]map[string]any, error) {
+	rows, err := s.db.Query(artifactSelect + " ORDER BY rowid ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]map[string]any{}
+	for rows.Next() {
+		artifact, err := scanArtifact(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[artifact.TaskID] = append(out[artifact.TaskID], artifact.toMap())
+	}
+	return out, rows.Err()
+}
+
+// legacyReportArtifact synthesizes an artifact for a task's legacy report_file
+// path so old cards still light up the artifacts panel. It is display-only:
+// nothing is copied, no URL is minted, and the path is not validated (it may
+// live on a worker's machine).
+func legacyReportArtifact(r *taskRow) map[string]any {
+	path := strings.TrimSpace(r.reportFile)
+	if path == "" {
+		return nil
+	}
+	name := strings.ReplaceAll(path, "\\", "/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" {
+		name = path
+	}
+	kind := "file"
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".html", ".htm":
+		kind = "html"
+	case ".md", ".markdown":
+		kind = "markdown"
+	}
+	return map[string]any{
+		"id": "legacy-report", "task_id": r.id, "title": "验证/进展报告（旧）",
+		"kind": kind, "mime": "", "filename": name, "size": int64(0),
+		"storage_path": path, "url": "", "source_session": "",
+		"created_at": r.updatedAt, "legacy": true,
+	}
+}
+
+var artifactKinds = map[string]bool{"html": true, "markdown": true, "file": true, "url": true}
+
+func validArtifactID(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// CreateArtifact records one artifact for a task. The caller (server) has
+// already written the bytes to stable storage when storage_path is set; for
+// kind=url the external URL is stored instead. Duplicate publishes are
+// append-only: every publish gets a fresh id so a re-upload can never clobber
+// an earlier artifact.
+func (s *Store) CreateArtifact(input map[string]any) (map[string]any, error) {
+	taskID := inputString(input, "task_id")
+	if taskID == "" {
+		return nil, fmt.Errorf("task_id required")
+	}
+	id := inputString(input, "id")
+	if id == "" {
+		id = "A-" + time.Now().Format("20060102-150405.000000")
+	}
+	if !validArtifactID(id) {
+		return nil, fmt.Errorf("invalid artifact id")
+	}
+	kind := strings.ToLower(defaultString(inputString(input, "kind"), "file"))
+	if !artifactKinds[kind] {
+		return nil, fmt.Errorf("unsupported artifact kind: %s", kind)
+	}
+	title := inputString(input, "title")
+	filename := inputString(input, "filename")
+	if title == "" {
+		title = filename
+	}
+	storagePath := inputString(input, "storage_path")
+	externalURL := inputString(input, "url")
+	if kind == "url" && externalURL == "" {
+		return nil, fmt.Errorf("url required for kind=url")
+	}
+	if kind != "url" && storagePath == "" {
+		return nil, fmt.Errorf("storage_path required for hosted artifacts")
+	}
+	at := now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var exists int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM tasks WHERE id=?", taskID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists == 0 {
+		return nil, fmt.Errorf("task not found")
+	}
+	_, err := s.db.Exec(`INSERT INTO task_artifacts(id,task_id,title,kind,mime,filename,size,
+		storage_path,url,source_session,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		id, taskID, title, kind, inputString(input, "mime"), filename,
+		int64FromAny(input["size"], 0), storagePath, externalURL,
+		inputString(input, "source_session"), at)
+	if err != nil {
+		return nil, err
+	}
+	_, _ = s.insertEventTx(taskID, at, "产物", "system",
+		fmt.Sprintf("新增产物：%s（%s）", title, filename), "", "local", 0)
+	_, _ = s.db.Exec(`UPDATE tasks SET last_event=?, updated_at=CASE WHEN ? > updated_at THEN ? ELSE updated_at END WHERE id=?`,
+		"产物", at, at, taskID)
+	artifact, err := s.GetArtifact(id)
+	if err != nil {
+		return nil, err
+	}
+	return artifact.toMap(), nil
+}
+
 func (s *Store) Snapshot() (map[string]any, error) {
 	// Archived tasks are hidden from the board (and its counts) — the read-only
 	// UI has no "show archived" toggle, so surfacing them only inflates the
@@ -461,12 +678,16 @@ func (s *Store) Snapshot() (map[string]any, error) {
 	tasks := make([]any, 0, len(taskRows))
 	counts := map[string]int{}
 	projectSet := map[string]bool{}
+	artifactsByTask, err := s.allArtifacts()
+	if err != nil {
+		return nil, err
+	}
 	for _, row := range taskRows {
 		events, err := s.taskEvents(row.id)
 		if err != nil {
 			return nil, err
 		}
-		tasks = append(tasks, row.toMap(events))
+		tasks = append(tasks, row.toMap(events, artifactsByTask[row.id]))
 		counts[row.status]++
 		if row.project != "" {
 			projectSet[row.project] = true
@@ -497,7 +718,11 @@ func (s *Store) GetTask(id string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return row.toMap(events), nil
+	artifacts, err := s.taskArtifacts(id)
+	if err != nil {
+		return nil, err
+	}
+	return row.toMap(events, artifacts), nil
 }
 
 // TaskForSession returns the board task whose bound worker session is
@@ -521,7 +746,11 @@ func (s *Store) TaskForSession(sessionID string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return row.toMap(events), nil
+	artifacts, err := s.taskArtifacts(row.id)
+	if err != nil {
+		return nil, err
+	}
+	return row.toMap(events, artifacts), nil
 }
 
 func (s *Store) CreateTask(input map[string]any) (map[string]any, error) {
