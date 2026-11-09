@@ -1,5 +1,6 @@
 // 看板「产物与证据」前端回归：多产物列表（标题/类型/大小/来源/时间）、
-// 打开/预览/下载/复制链接、legacy report_file 兼容、HTML 预览的 sandbox 边界。
+// 打开/预览/下载/复制链接、legacy report_file 兼容、HTML 预览的 sandbox 边界，
+// 以及 Markdown 预览复用 ws-md 排版 + 宽表横向滚动容器。
 //
 // 局限：jsdom 不做布局，只能钉 DOM 契约；真实 iframe 加载与移动端排版用
 // headless Chrome 另验。
@@ -59,13 +60,14 @@ function boardCopyButton(text, label = '复制') {
   b.dataset.value = text;
   return b;
 }
-function md(text) { return text; }
+function md(text) { return window.__mdHTML != null ? window.__mdHTML : text; }
 ${grabFn('boardMuted')}
 ${grabFn('boardArtifactSize')}
 ${grabFn('boardArtifactKindLabel')}
 ${grabFn('boardArtifactPreviewable')}
 ${grabFn('boardArtifactAction')}
 ${grabFn('boardArtifactItem')}
+${grabFn('boardWrapArtifactTables')}
 ${grabFn('boardOpenArtifactPreview')}
 ${grabFn('boardCloseArtifactPreview')}
 ${grabFn('boardRenderOverview')}
@@ -95,9 +97,8 @@ function baseTask(extra) {
   }, extra || {});
 }
 
-function main() {
+async function main() {
   console.log('看板产物列表');
-
   // 1. 空状态
   renderOverview(baseTask());
   check('空状态显示「暂无产物」',
@@ -199,6 +200,43 @@ function main() {
   check('关闭后卸载 iframe 并隐藏',
     mask.classList.contains('hidden') && !mask.querySelector('iframe'));
 
+  // 7b. Markdown 预览：复用 ws-md 正文排版，宽表由外层容器横向滚动
+  w.__mdHTML = '<h1>标题</h1>'
+    + '<table><thead><tr><th>机器</th><th>状态</th></tr></thead>'
+    + '<tbody><tr><td>node03</td><td>offline</td></tr></tbody></table>'
+    + '<pre><code>very/long/path/that/needs/horizontal/scroll</code></pre>';
+  w.fetch = () => Promise.resolve({ ok: true, text: () => Promise.resolve('# README') });
+  openPreview({
+    id: 'A-md', title: 'README', kind: 'markdown',
+    url: 'http://deck.local/api/agent-board/artifacts/A-md',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const mdDoc = mask.querySelector('.board-artifact-markdown');
+  check('Markdown 预览容器存在', !!mdDoc);
+  check('Markdown 预览复用 ws-md 排版', mdDoc && mdDoc.classList.contains('ws-md'));
+  const tableWrap = mdDoc && mdDoc.querySelector('.board-artifact-table-wrap');
+  check('宽表套横向滚动容器', !!(tableWrap && tableWrap.querySelector('table')));
+  check('表格没有被改成 display:block',
+    !tableWrap || !/display\s*:\s*block/.test(tableWrap.querySelector('table').getAttribute('style') || ''));
+  closePreview();
+  w.__mdHTML = null;
+
+  const css = fs.readFileSync(path.join(WEB, 'style.css'), 'utf8');
+  check('CSS: 宽表滚动容器 overflow-x:auto',
+    /\.board-artifact-markdown \.board-artifact-table-wrap\s*\{[^}]*overflow-x:\s*auto/s.test(css));
+  check('CSS: th 不换行',
+    /\.board-artifact-markdown th\s*\{[^}]*white-space:\s*nowrap/s.test(css));
+  check('CSS: td word-break:normal',
+    /\.board-artifact-markdown td\s*\{[^}]*word-break:\s*normal/s.test(css));
+  check('CSS: 单元格行内 code 可断行',
+    /\.board-artifact-markdown td code\s*\{[^}]*overflow-wrap:\s*anywhere/s.test(css));
+  check('CSS: ws-md 提供标题/表格基础排版',
+    /\.ws-md h1, \.ws-md h2, \.ws-md h3,/.test(css)
+    && /\.ws-md table \{ border-collapse: collapse/.test(css)
+    && /\.ws-md th, \.ws-md td \{/.test(css));
+  check('CSS: GFM 任务列表规则',
+    /\.board-artifact-markdown li:has\(> input\[type="checkbox"\]\)/.test(css));
+
   // 8. 关联页也列出产物
   renderLinks(baseTask({
     artifacts: [{
@@ -215,4 +253,7 @@ function main() {
   process.exit(failed ? 1 : 0);
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

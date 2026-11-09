@@ -3092,6 +3092,19 @@ function boardArtifactItem(task, artifact) {
 
 let boardPreviewArtifact = null;
 
+// Wide GFM tables need their own horizontal scroller. Putting overflow on the
+// table itself (display:block) breaks table layout, so wrap each table in a
+// block box instead; CSS gives that box overflow-x:auto.
+function boardWrapArtifactTables(root) {
+  root.querySelectorAll('table').forEach((table) => {
+    if (table.parentElement && table.parentElement.classList.contains('board-artifact-table-wrap')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'board-artifact-table-wrap';
+    table.parentNode.insertBefore(wrap, table);
+    wrap.appendChild(table);
+  });
+}
+
 function boardOpenArtifactPreview(artifact) {
   const mask = $('#board-artifact-preview');
   const body = $('#board-artifact-preview-body');
@@ -3123,8 +3136,11 @@ function boardOpenArtifactPreview(artifact) {
       .then((text) => {
         if (boardPreviewArtifact !== artifact) return;
         const doc = document.createElement('div');
-        doc.className = 'md board-artifact-markdown';
+        // ws-md 是工作区阅读视图的 Markdown 正文排版（标题/列表/表格/代码块/
+        // 引用等），这里直接复用，避免另抄一份会漂移的规则。
+        doc.className = 'md board-artifact-markdown ws-md';
         doc.innerHTML = md(text, { artifacts: false });
+        boardWrapArtifactTables(doc);
         body.innerHTML = '';
         body.append(doc);
       })
