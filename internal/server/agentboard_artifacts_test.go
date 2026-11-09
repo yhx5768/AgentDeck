@@ -288,12 +288,15 @@ func TestAgentBoardArtifactPublicBaseURLAndURLKind(t *testing.T) {
 	// Browser.Enabled stays nil on purpose: the address is still readable and
 	// the browser security semantics are not involved.
 	s.cm.Get().PublicBaseURL = ""
-	s.cm.Get().Browser.TrustedOrigins = []string{"https://ccview.xpsl.soarx.cc"}
+	s.cm.Get().Browser.TrustedOrigins = []string{"https://ccview.xpsl.soarx.cc/"}
 	artifact = publishHTML("http://ignored/api/agent-board/tasks/T-1/artifacts")
 	if !strings.HasPrefix(artifact["url"].(string), "https://ccview.xpsl.soarx.cc/api/agent-board/artifacts/") {
 		t.Fatalf("trusted_origins fallback not used: %+v", artifact)
 	}
-	if artifact["url_source"] != "browser.trusted_origins" {
+	if strings.Contains(artifact["url"].(string), "ccview.xpsl.soarx.cc//") {
+		t.Fatalf("trusted origin trailing slash not normalized: %+v", artifact)
+	}
+	if artifact["url_source"] != "trusted_origins" {
 		t.Fatalf("trusted_origins source = %+v", artifact)
 	}
 
@@ -312,11 +315,15 @@ func TestAgentBoardArtifactPublicBaseURLAndURLKind(t *testing.T) {
 		t.Fatalf("request fallback = %+v", artifact)
 	}
 
-	// Invalid trusted origins are ignored instead of minting unusable links.
-	s.cm.Get().Browser.TrustedOrigins = []string{"not-an-origin", "https://good.example.com/"}
-	artifact = publishHTML("http://deck.local/api/agent-board/tasks/T-1/artifacts")
-	if artifact["url_source"] != "browser.trusted_origins" || !strings.HasPrefix(artifact["url"].(string), "https://good.example.com/") {
-		t.Fatalf("invalid origin handling = %+v", artifact)
+	// Only trusted_origins[0] is considered, and it must be a bare http(s)
+	// origin: an invalid/path-bearing first entry falls through to the request
+	// layer instead of minting an unusable link (later entries are not used).
+	for _, origin := range []string{"not-an-origin", "ftp://good.example.com", "https://good.example.com/path", "https://good.example.com/?x=1"} {
+		s.cm.Get().Browser.TrustedOrigins = []string{origin, "https://good.example.com"}
+		artifact = publishHTML("http://deck.local/api/agent-board/tasks/T-1/artifacts")
+		if artifact["url_source"] != "request" || !strings.HasPrefix(artifact["url"].(string), "http://deck.local/") {
+			t.Fatalf("invalid trusted origin %q must fall back to request: %+v", origin, artifact)
+		}
 	}
 
 	// kind=url stores the external link and redirects from the id route.
@@ -354,6 +361,40 @@ func TestAgentBoardArtifactPublicBaseURLAndURLKind(t *testing.T) {
 	s.handleAgentBoardCreateArtifact(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("file url status = %d", rec.Code)
+	}
+}
+
+func TestAgentdeckArtifactPublishUsesTrustedOrigins(t *testing.T) {
+	s, _ := boardMCPServer(t)
+	createArtifactTestTask(t, s)
+	// Browser.Enabled stays nil: the address is usable even when the browser
+	// panel is off.
+	s.cm.Get().Browser.TrustedOrigins = []string{"https://ccview.xpsl.soarx.cc/"}
+
+	out, err := s.agentdeckToolCall("worker", "artifact_publish", map[string]any{
+		"task_id": "T-1", "kind": "html", "filename": "x.html", "content": "<h1>x</h1>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "\"url\": \"https://ccview.xpsl.soarx.cc/api/agent-board/artifacts/") {
+		t.Fatalf("artifact_publish did not use trusted_origins: %s", out)
+	}
+	if !strings.Contains(out, "\"url_source\": \"trusted_origins\"") {
+		t.Fatalf("artifact_publish source = %s", out)
+	}
+
+	// public_base_url still wins over the trusted-origin fallback.
+	s.cm.Get().PublicBaseURL = "https://explicit.example.com"
+	out, err = s.agentdeckToolCall("worker", "artifact_publish", map[string]any{
+		"task_id": "T-1", "kind": "html", "filename": "y.html", "content": "<h1>y</h1>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "\"url\": \"https://explicit.example.com/api/agent-board/artifacts/") ||
+		!strings.Contains(out, "\"url_source\": \"public_base_url\"") {
+		t.Fatalf("artifact_publish priority = %s", out)
 	}
 }
 

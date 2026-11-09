@@ -80,19 +80,20 @@ func (s *Server) artifactsRoot() string {
 //     declared for the browser-input Origin check. It is only a fallback: its
 //     original security semantics are unchanged, and Browser.Enabled is
 //     deliberately irrelevant (a disabled browser panel still leaves the
-//     deployment address readable in config).
+//     deployment address readable in config). Only the first entry is
+//     considered, and it must be a bare http(s) origin (no path/query).
 //  3. the request's scheme/host (same-origin / LAN browser access).
 //  4. the listen address (in-process MCP calls). This is a bind address, not
 //     necessarily reachable from another machine, so callers mark the URL
 //     "local only".
 func (s *Server) artifactBaseURL(r *http.Request) (base, source string) {
 	cfg := s.cfg()
-	if value, ok := normalizeBaseURL(cfg.PublicBaseURL); ok {
+	if value, ok := normalizePublicBaseURL(cfg.PublicBaseURL); ok {
 		return value, "public_base_url"
 	}
-	for _, origin := range cfg.Browser.TrustedOrigins {
-		if value, ok := normalizeBaseURL(origin); ok {
-			return value, "browser.trusted_origins"
+	if len(cfg.Browser.TrustedOrigins) > 0 {
+		if value, ok := normalizeTrustedOrigin(cfg.Browser.TrustedOrigins[0]); ok {
+			return value, "trusted_origins"
 		}
 	}
 	if r != nil && strings.TrimSpace(r.Host) != "" {
@@ -118,10 +119,11 @@ func (s *Server) artifactBaseURL(r *http.Request) (base, source string) {
 	return "http://" + net.JoinHostPort(host, port), "listen"
 }
 
-// normalizeBaseURL accepts an absolute http(s) base URL and strips trailing
-// slashes. Empty or non-http(s) values are ignored (fall through to the next
-// source) instead of minting unusable links.
-func normalizeBaseURL(value string) (string, bool) {
+// normalizePublicBaseURL accepts an absolute http(s) base URL and strips
+// trailing slashes. A path prefix is allowed (reverse-proxy subpath). Empty or
+// non-http(s) values are ignored (fall through to the next source) instead of
+// minting unusable links.
+func normalizePublicBaseURL(value string) (string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", false
@@ -131,6 +133,28 @@ func normalizeBaseURL(value string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimRight(value, "/"), true
+}
+
+// normalizeTrustedOrigin accepts only a bare http(s) origin
+// (scheme://host[:port]); a configured path/query/fragment/userinfo is
+// rejected so the browser-input trust list cannot silently become an
+// arbitrary base URL. The origin is returned normalized (no trailing slash).
+func normalizeTrustedOrigin(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", false
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", false
+	}
+	return parsed.Scheme + "://" + parsed.Host, true
 }
 
 // decorateArtifact mints the public URL for a hosted artifact (external URLs

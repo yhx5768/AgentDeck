@@ -20,6 +20,7 @@ default_cwd: "~"
 # 对外可访问的 base URL，用于生成看板产物的分享链接（HTML 页面等）。
 # 优先级：public_base_url → browser.trusted_origins[0] → 请求 scheme/host
 #         → listen（仅本机/局域网，产物会标记 local_only）。
+# trusted_origins[0] 必须是纯 http(s) origin（不含 path/query）；非法值直接回退下一层。
 # 远端 worker / 别的机器要访问产物时建议显式配置。
 # public_base_url: "https://ccview.xpsl.soarx.cc"
 
