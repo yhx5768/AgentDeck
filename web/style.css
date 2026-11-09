@@ -4730,6 +4730,26 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .board-artifact-preview-body { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
 .board-artifact-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
 .board-artifact-markdown { max-width: 900px; margin: 0 auto; padding: 24px 20px calc(24px + env(safe-area-inset-bottom, 0px)); }
+/* Markdown 正文排版复用 .ws-md（工作区阅读视图那套：标题层级、列表、表格边框/
+   padding、行内 code、pre、blockquote、hr、img），这里只补预览窗口特有的规则。
+   宽表由 JS 套一层 .board-artifact-table-wrap 承载横向滚动——绝不能给 table
+   加 display:block，那会破坏表格布局。 */
+.board-artifact-markdown .board-artifact-table-wrap {
+  max-width: 100%;
+  margin: var(--sp-3) 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.board-artifact-markdown .board-artifact-table-wrap table { margin: 0; }
+.board-artifact-markdown th { white-space: nowrap; }
+.board-artifact-markdown td { word-break: normal; overflow-wrap: break-word; }
+/* 单元格里的长路径（通常是行内 code）允许在任意位置断行；这不会改变 td 的
+   word-break:normal，只让两列表格在手机上不必横向滚动。 */
+.board-artifact-markdown td code { overflow-wrap: anywhere; }
+/* GFM 任务列表：marked 不给 li 加类，用 :has() 认领带复选框的项；去掉项目符号，
+   复选框与文字对齐（:has 与页面已有的 color-mix 同属现代浏览器基线）。 */
+.board-artifact-markdown li:has(> input[type="checkbox"]) { list-style: none; }
+.board-artifact-markdown li > input[type="checkbox"] { margin-right: 6px; vertical-align: middle; }
 body.board-preview-open { overflow: hidden; }
 .board-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
 .board-stat { border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 9px; background: var(--bg2); }
