@@ -293,6 +293,10 @@ func (s *Server) handleAgentBoardArtifact(w http.ResponseWriter, r *http.Request
 	if contentType == "" {
 		contentType = artifactMIME(artifact.Kind, artifact.Filename, "")
 	}
+	// Existing records may predate the write-side normalization and store
+	// "text/markdown" without a charset; normalize on read as well. This does
+	// not touch the stored row.
+	contentType = withUTF8Charset(contentType)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
@@ -683,10 +687,37 @@ func pathWithin(root, path string) bool {
 	return absPath == absRoot || strings.HasPrefix(absPath, absRoot+string(os.PathSeparator))
 }
 
+// withUTF8Charset appends charset=utf-8 to text/* media types that do not
+// declare a charset. Without it, browsers apply their default encoding to
+// inline-served artifacts (a UTF-8 markdown file renders as mojibake). An
+// explicit charset is preserved, and non-text types are untouched.
+func withUTF8Charset(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	mediaType, params, err := mime.ParseMediaType(value)
+	if err != nil {
+		// Malformed but caller-supplied: only append when it is clearly text/*
+		// and does not already declare a charset.
+		if strings.HasPrefix(strings.ToLower(value), "text/") && !strings.Contains(strings.ToLower(value), "charset=") {
+			return value + "; charset=utf-8"
+		}
+		return value
+	}
+	if !strings.HasPrefix(strings.ToLower(mediaType), "text/") {
+		return value
+	}
+	if _, ok := params["charset"]; ok {
+		return value
+	}
+	return value + "; charset=utf-8"
+}
+
 func artifactMIME(kind, filename, provided string) string {
 	// application/octet-stream is the multipart default, not a real hint.
 	if value := strings.TrimSpace(provided); value != "" && !strings.EqualFold(value, "application/octet-stream") {
-		return value
+		return withUTF8Charset(value)
 	}
 	switch kind {
 	case "html":
@@ -697,7 +728,7 @@ func artifactMIME(kind, filename, provided string) string {
 		return ""
 	}
 	if value := mime.TypeByExtension(strings.ToLower(filepath.Ext(filename))); value != "" {
-		return value
+		return withUTF8Charset(value)
 	}
 	return "application/octet-stream"
 }

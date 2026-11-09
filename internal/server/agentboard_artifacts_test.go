@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -361,6 +362,128 @@ func TestAgentBoardArtifactPublicBaseURLAndURLKind(t *testing.T) {
 	s.handleAgentBoardCreateArtifact(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("file url status = %d", rec.Code)
+	}
+}
+
+func TestArtifactTextCharset(t *testing.T) {
+	s, _ := boardMCPServer(t)
+	createArtifactTestTask(t, s)
+
+	post := func(payload map[string]any) map[string]any {
+		t.Helper()
+		raw, _ := json.Marshal(payload)
+		req := artifactReq(http.MethodPost, "http://deck.local/api/agent-board/tasks/T-1/artifacts", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", "T-1")
+		rec := httptest.NewRecorder()
+		s.handleAgentBoardCreateArtifact(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("publish = %d %s", rec.Code, rec.Body.String())
+		}
+		var created struct {
+			Artifact map[string]any `json:"artifact"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+			t.Fatal(err)
+		}
+		return created.Artifact
+	}
+	getContentType := func(id string) string {
+		t.Helper()
+		req := artifactReq(http.MethodGet, "http://deck.local/api/agent-board/artifacts/"+id, nil)
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		s.handleAgentBoardArtifact(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("serve %s = %d %s", id, rec.Code, rec.Body.String())
+		}
+		return rec.Header().Get("Content-Type")
+	}
+
+	for _, tc := range []struct {
+		name, kind, filename, provided, want string
+	}{
+		{"markdown without charset", "markdown", "report.md", "text/markdown", "text/markdown; charset=utf-8"},
+		{"plain without charset", "file", "notes.txt", "text/plain", "text/plain; charset=utf-8"},
+		{"csv without charset", "file", "data.csv", "text/csv", "text/csv; charset=utf-8"},
+		{"explicit charset preserved", "file", "gbk.csv", "text/csv; charset=gbk", "text/csv; charset=gbk"},
+		{"binary unchanged", "file", "blob.bin", "application/octet-stream", "application/octet-stream"},
+		{"html default", "html", "page.html", "", "text/html; charset=utf-8"},
+		{"html provided without charset", "html", "page2.html", "text/html", "text/html; charset=utf-8"},
+		{"html charset not duplicated", "html", "page3.html", "text/html; charset=utf-8", "text/html; charset=utf-8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			artifact := post(map[string]any{
+				"kind": tc.kind, "filename": tc.filename, "mime": tc.provided,
+				"content": "标题 / text content",
+			})
+			if got := fmt.Sprint(artifact["mime"]); got != tc.want {
+				t.Fatalf("stored mime = %q, want %q", got, tc.want)
+			}
+			got := getContentType(fmt.Sprint(artifact["id"]))
+			if got != tc.want {
+				t.Fatalf("response Content-Type = %q, want %q", got, tc.want)
+			}
+			t.Logf("stored mime=%q response Content-Type=%q",
+				fmt.Sprint(artifact["mime"]), got)
+		})
+	}
+}
+
+// Older rows may store "text/markdown" without a charset; the serve path must
+// normalize them without rewriting the row.
+func TestArtifactServeNormalizesLegacyTextCharset(t *testing.T) {
+	s, _ := boardMCPServer(t)
+	createArtifactTestTask(t, s)
+
+	for _, tc := range []struct {
+		id, filename, kind, mime, want string
+	}{
+		{"A-old-md", "old.md", "markdown", "text/markdown", "text/markdown; charset=utf-8"},
+		{"A-old-csv", "old.csv", "file", "text/csv", "text/csv; charset=utf-8"},
+		{"A-old-bin", "old.bin", "file", "application/octet-stream", "application/octet-stream"},
+	} {
+		rel := filepath.Join("T-1", tc.id, tc.filename)
+		abs := filepath.Join(s.artifactsRoot(), rel)
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := []byte("# 旧记录\n\n中文正文\n")
+		if err := os.WriteFile(abs, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.boardDB.CreateArtifact(map[string]any{
+			"id": tc.id, "task_id": "T-1", "title": tc.id, "kind": tc.kind,
+			"mime": tc.mime, "filename": tc.filename, "size": len(body),
+			"storage_path": rel,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		req := artifactReq(http.MethodGet, "http://deck.local/api/agent-board/artifacts/"+tc.id, nil)
+		req.SetPathValue("id", tc.id)
+		rec := httptest.NewRecorder()
+		s.handleAgentBoardArtifact(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("serve %s = %d %s", tc.id, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != tc.want {
+			t.Fatalf("%s Content-Type = %q, want %q", tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestAgentdeckArtifactPublishTextCharset(t *testing.T) {
+	s, _ := boardMCPServer(t)
+	createArtifactTestTask(t, s)
+	out, err := s.agentdeckToolCall("worker", "artifact_publish", map[string]any{
+		"task_id": "T-1", "kind": "markdown", "filename": "r.md",
+		"mime": "text/markdown", "content": "# 标题",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"mime": "text/markdown; charset=utf-8"`) {
+		t.Fatalf("artifact_publish mime = %s", out)
 	}
 }
 
