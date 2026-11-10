@@ -4493,6 +4493,33 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
+/* 抽屉 composer 的附件行：复用主 composer 的缩略图/文件 chip，尺寸调小
+   以免挤占抽屉高度。 */
+.board-composer-attached { gap: 6px; }
+.board-composer-attached:not(:empty) { margin-bottom: 7px; }
+.board-composer-attached .attached-thumb { width: 56px; height: 56px; }
+.board-composer-attached .attached-file {
+  height: 32px;
+  min-width: 150px;
+  max-width: 220px;
+  /* 给右上角的移除按钮留位，避免压住文件大小 */
+  padding-right: 22px;
+}
+.board-composer-attached .attached-file .af-icon { width: 14px; height: 14px; }
+.board-composer-attach {
+  flex: none;
+  align-self: flex-end;
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 50%;
+  background: transparent; color: var(--dim);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.board-composer-attach:hover { background: var(--bg3); color: var(--fg); }
+.board-composer-attach:disabled { color: var(--dot-off); cursor: not-allowed; }
+.board-composer-attach:disabled:hover { background: transparent; }
+.board-composer-attach svg { width: 16px; height: 16px; }
 #board-composer-input {
   flex: 1;
   min-width: 0;
