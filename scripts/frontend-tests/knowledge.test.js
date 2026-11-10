@@ -8,6 +8,7 @@ const WEB = path.resolve(__dirname, '../../web');
 const appSrc = fs.readFileSync(path.join(WEB, 'app.js'), 'utf8');
 const kbSrc = fs.readFileSync(path.join(WEB, 'knowledge.js'), 'utf8');
 const indexSrc = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');
+const styleSrc = fs.readFileSync(path.join(WEB, 'style.css'), 'utf8');
 
 function grabFn(src, name) {
   let s = src.indexOf('function ' + name + '(');
@@ -156,7 +157,7 @@ ${grabFn(kbSrc, 'renderBoardKnowledge')}
 window.__kb = {
   kbState, kbRenderList, kbRenderDetail, renderBoardKnowledge, kbStatusLabel,
   kbCountText, kbUpdateFacets, kbShowLoading, kbShowError, kbShowEmpty,
-  kbTypeLabel, kbVerificationLabel, kbUpdateContext, switchChatTab, syncMainAgentTabs,
+  kbTypeLabel, kbVerificationLabel, kbUpdateContext, kbCloseDetail, switchChatTab, syncMainAgentTabs,
 };
 `);
 
@@ -347,6 +348,16 @@ check('看板抽屉无相关知识显示空态', () => {
   const box = doc.querySelector('#board-drawer-knowledge');
   assert(box.textContent.includes('暂无相关知识'));
   assert(box.textContent.includes('从本任务提炼知识'));
+});
+
+check('列表/详情按设计稿 1.15:.95 分栏', () => {
+  assert(styleSrc.includes('grid-template-columns: minmax(0, 1.15fr) minmax(0, .95fr)'), 'missing 1.15:.95 grid');
+  assert(styleSrc.includes('#knowledge-main.kb-split'), 'missing split class');
+  assert(!styleSrc.includes('width: min(460px, 44vw)'), 'fixed 460px detail width should be gone');
+  assert(kbSrc.includes("classList.add('kb-split')"), 'detail should activate split');
+  doc.querySelector('#knowledge-main').classList.add('kb-split');
+  kb.kbCloseDetail();
+  assert(!doc.querySelector('#knowledge-main').classList.contains('kb-split'), 'closing detail should remove split');
 });
 
 check('上下文显示 mainAgent + 会话名', () => {

@@ -22,7 +22,7 @@
 - `switchChatTab('knowledge')`：显示 `#knowledge-view`，隐藏消息区/轨迹/看板/composer；切走时关闭详情并清掉选中态。知识库不再是覆盖层/独立 workspace 页。
 - 顶部 header：标题 + `mainAgent · 会话名` + 统计 chips（已通过/草稿/可能过期，可点击筛选）+ 搜索 + 项目/状态/**类型**/**验证状态**筛选 + 「从看板采集」「新建知识」；无独立返回按钮（tab 切换即可）。
 - 新建表单：标题/摘要/正文/项目/标签/来源任务 + **类型、验证状态、适用范围、最后验证时间**；详情页展示同样的字段和证据引用。
-- 桌面：左侧卡片列表（状态/**验证状态**/**类型**/项目/来源任务/更新时间/标题/摘要/标签），右侧详情面板（正文 Markdown、来源任务与 artifact、证据、**类型/验证状态/适用范围/最后验证时间**、审批/过期动作）；选中卡片有左侧 accent 边和描边。
+- 桌面：按设计稿 `grid-template-columns: minmax(0,1.15fr) minmax(0,.95fr)`（约 54.8:45.2）分栏，内容区 `max-width:1280px` 居中；左侧卡片列表（状态/**验证状态**/**类型**/项目/来源任务/更新时间/标题/摘要/标签），右侧详情面板（正文 Markdown、来源任务与 artifact、证据、**类型/验证状态/适用范围/最后验证时间**、审批/过期动作）；详情宽度随容器变化，不再固定 460px。选中卡片有左侧 accent 边和描边。
 - 移动端（≤900px）：列表全宽；详情为全屏 sheet（右上角关闭），避免页面级横向溢出和嵌套滚动。
 - 加载/空/错误三态：列表加载中、无结果空态、请求失败带「重试」。
 - 看板抽屉「查看全部」→ 切到资料空间 tab 并带 `source_task_id` 过滤（header 显示可清除的任务 chip）；「从本任务提炼知识」→ 打开新建知识 modal。
@@ -186,7 +186,8 @@ rm -rf data-demo
   - 深链 `?knowledge=<id>&theme=dark` 自动打开 mainAgent 资料空间 tab 和详情。
   - 1440/1024/768/390 × light/dark：`scrollWidth == innerWidth`（无横向溢出）；0 console error / runtime exception。
   - 类型/验证筛选：环境地图 + 已验证 → 3 条编译集群种子；种子详情显示类型/验证状态/适用范围/最后验证时间，来源与证据列出路径和引用。
-  - 新增/更新的 jsdom 共 14 项通过（tab 显隐、active、看板→知识切换、加载/空/错误态、来源任务 chip、类型/验证徽标等）。
+  - 列表/详情比例：1792px 内容区 1280px，列表 701px / 详情 579px = 54.8:45.2；1440px 内容区 1155px，列表 633px / 详情 523px = 54.8:45.2。修改前 1792px 为列表约 993px / 详情 456px（68.5:31.5，详情固定 460px）。
+  - 新增/更新的 jsdom 共 15 项通过（tab 显隐、active、看板→知识切换、加载/空/错误态、来源任务 chip、类型/验证徽标、1.15:.95 分栏契约等）。
   - Go 测试新增 `TestStoreTypeVerificationScope`（类型/验证过滤）与 `TestMigrationAddsTypeColumns`（旧库自动补列）；worker 写入的 verification 强制 unverified。
 - 演示数据：collect 产出 65 条 draft + 3 条 quarantined；另播种 11 条编译集群种子（全部 approved/tested，见 §7.1）。自动采集仍只出 draft，种子是人工审核后的演示数据。
 

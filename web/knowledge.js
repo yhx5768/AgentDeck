@@ -377,6 +377,8 @@ function kbDetailEls() {
 function kbCloseDetail() {
   const el = kbEl('#knowledge-detail');
   if (el) el.classList.remove('open');
+  const main = kbEl('#knowledge-main');
+  if (main) main.classList.remove('kb-split');
   kbState.selectedId = null;
   document.querySelectorAll('.kb-item.selected').forEach((item) => item.classList.remove('selected'));
 }
@@ -395,6 +397,8 @@ async function kbOpenDetail(id, keep) {
   if (!els.detail) return;
   els.detail.classList.remove('hidden');
   els.detail.classList.add('open');
+  const main = kbEl('#knowledge-main');
+  if (main) main.classList.add('kb-split');
   if (!keep) {
     els.title.textContent = '加载中…';
     els.meta.textContent = '';
@@ -732,6 +736,8 @@ function kbOnTabHide() {
     detail.classList.remove('open');
     detail.classList.add('hidden');
   }
+  const main = kbEl('#knowledge-main');
+  if (main) main.classList.remove('kb-split');
   kbState.selectedId = null;
   document.querySelectorAll('.kb-item.selected').forEach((item) => item.classList.remove('selected'));
 }

@@ -4828,6 +4828,10 @@ body.board-preview-open { overflow: hidden; }
   align-items: center;
   gap: var(--sp-3);
   flex-wrap: wrap;
+  width: 100%;
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
 }
 .knowledge-heading {
   display: flex;
@@ -4878,6 +4882,10 @@ body.board-preview-open { overflow: hidden; }
   gap: var(--sp-2);
   flex-wrap: wrap;
   margin-top: var(--sp-2);
+  width: 100%;
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
 }
 .knowledge-search {
   flex: 1 1 320px;
@@ -4924,10 +4932,23 @@ body.board-preview-open { overflow: hidden; }
   cursor: pointer;
   white-space: nowrap;
 }
-#knowledge-main { flex: 1; min-height: 0; display: flex; }
-#knowledge-list-wrap {
+#knowledge-main {
   flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+/* 设计稿比例：列表 1.15fr / 详情 .95fr（≈55:45）；只有详情打开时才分栏。 */
+#knowledge-main.kb-split {
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, .95fr);
+}
+#knowledge-list-wrap {
   min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--sp-4) var(--sp-5) var(--sp-6);
 }
@@ -5069,9 +5090,9 @@ body.board-preview-open { overflow: hidden; }
 }
 .kb-muted { color: var(--dim); font-size: var(--fs-sm); padding: var(--sp-2) 0; }
 #knowledge-detail {
-  flex: 0 0 auto;
-  width: min(460px, 44vw);
+  width: auto;
   min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   border-left: 1px solid var(--border);
@@ -5230,13 +5251,11 @@ body.board-preview-open { overflow: hidden; }
 .knowledge-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); }
 .knowledge-form-card textarea { resize: vertical; min-height: 60px; }
 
-@media (max-width: 1000px) {
-  #knowledge-detail { width: min(420px, 46vw); }
-}
 @media (max-width: 900px) {
   #knowledge-header { padding: var(--sp-2) var(--sp-4); }
   #knowledge-list-wrap { padding: var(--sp-3) var(--sp-3) var(--sp-8); }
-  #knowledge-main { display: block; overflow: hidden; }
+  #knowledge-main,
+  #knowledge-main.kb-split { display: block; overflow: hidden; max-width: none; margin: 0; }
   #knowledge-list-wrap { height: 100%; }
   #knowledge-detail {
     position: fixed;
