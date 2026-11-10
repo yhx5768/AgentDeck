@@ -7224,6 +7224,40 @@ function renderBoardMockBusyToggle() {
   if (box) box.checked = !!state.boardMockBusy;
 }
 
+// 任务 ID 太长时中间省略，保留可辨认的头尾；完整值放 title。
+function middleEllipsis(value, max = 34) {
+  const text = String(value || '');
+  if (text.length <= max) return text;
+  const head = Math.ceil((max - 1) / 2);
+  const tail = Math.floor((max - 1) / 2);
+  return text.slice(0, head) + '…' + text.slice(-tail);
+}
+
+// 排队项的预览正文：看板抽屉入队时带 bodyText（用户原文），优先用它；
+// 旧队列项没有 bodyText 时剥掉注入的【来自看板任务抽屉】/task_id:/--- 上下文，
+// 避免与任务 chip 重复。
+function pendingPreviewText(item) {
+  if (!item) return '';
+  const body = (item.bodyText || '').trim();
+  if (body) return body;
+  let text = (item.text || '').trim();
+  if (item.taskId && text) {
+    const sep = text.match(/\n---\s*\n/);
+    if (sep) {
+      text = text.slice(sep.index + sep[0].length);
+    } else {
+      text = text
+        .replace(/^【来自看板任务抽屉】\s*\n?/, '')
+        .replace(/^task_id:.*\n?/m, '');
+    }
+    text = text.trim();
+  }
+  if (text) return text;
+  const attachments = ((item.images && item.images.length) || 0)
+    + ((item.files && item.files.length) || 0);
+  return attachments ? `(仅附件 · ${attachments} 个)` : '';
+}
+
 function renderPendingBubble() {
   const sid = state.current && state.current.id;
   const q = pendingItems(sid);
@@ -7240,11 +7274,19 @@ function renderPendingBubble() {
   card.insertBefore(el, card.firstChild);
   el.textContent = '';
 
+  // 头部只保留一个主信息（待发送 N 条），提交时机降级成辅助说明；
+  // 「全部取消」放右侧但弱化，避免和标题抢视觉。
   const head = document.createElement('div');
   head.className = 'pb-head';
   const tag = document.createElement('span');
   tag.className = 'pb-tag';
-  tag.textContent = `待发送 ${q.length} 条 · 本轮结束后逐条提交`;
+  const title = document.createElement('span');
+  title.className = 'pb-title';
+  title.textContent = `待发送 ${q.length} 条`;
+  const sub = document.createElement('span');
+  sub.className = 'pb-sub';
+  sub.textContent = '本轮结束后逐条提交';
+  tag.append(title, sub);
   const cancelAll = document.createElement('button');
   cancelAll.className = 'pb-cancel-all';
   cancelAll.type = 'button';
@@ -7255,46 +7297,67 @@ function renderPendingBubble() {
   const list = document.createElement('div');
   list.className = 'pb-list';
   q.forEach((item, index) => {
+    // 三列：序号 / 内容（任务 chip + 正文）/ 状态与操作。内容列 minmax(0,1fr)
+    // 保证长 ID 和长正文只会内部截断，不会把状态挤出视野。
     const row = document.createElement('div');
-    row.className = 'pb-item';
+    row.className = 'pb-item' + (item.status === 'error' ? ' has-error' : '');
     const idx = document.createElement('span');
     idx.className = 'pb-index';
     idx.textContent = String(index + 1);
-    const task = document.createElement('span');
+
+    const main = document.createElement('div');
+    main.className = 'pb-main';
     if (item.taskId) {
+      const meta = document.createElement('div');
+      meta.className = 'pb-meta';
+      const task = document.createElement('span');
       task.className = 'pb-task';
-      task.textContent = item.taskId;
       task.title = item.taskId;
+      const taskLabel = document.createElement('span');
+      taskLabel.className = 'pb-task-label';
+      taskLabel.textContent = '看板任务';
+      const taskId = document.createElement('span');
+      taskId.className = 'pb-task-id';
+      taskId.textContent = middleEllipsis(item.taskId);
+      task.append(taskLabel, taskId);
+      meta.append(task);
+      main.append(meta);
     }
-    const text = document.createElement('span');
+    const text = document.createElement('div');
     text.className = 'pb-text';
-    const label = item.text
-      || ((item.images && item.images.length) || (item.files && item.files.length) ? '(仅附件)' : '');
+    const label = pendingPreviewText(item);
     text.textContent = label;
-    text.title = label;
+    if (label) text.title = label;
+    main.append(text);
+
+    const side = document.createElement('div');
+    side.className = 'pb-side';
     const badge = document.createElement('span');
     badge.className = 'pb-state ' + (item.status || 'queued');
     badge.textContent = item.status === 'sending' ? '发送中'
       : item.status === 'error' ? '失败' : '排队';
     if (item.status === 'error' && item.error) badge.title = item.error;
-    row.append(idx);
-    if (item.taskId) row.append(task);
-    row.append(text, badge);
+    side.append(badge);
     if (item.status === 'error') {
       const retry = document.createElement('button');
       retry.className = 'pb-retry';
       retry.type = 'button';
       retry.textContent = '重试';
       retry.onclick = () => retryPending(item.id);
-      row.append(retry);
+      side.append(retry);
     }
-    const cancel = document.createElement('button');
-    cancel.className = 'pb-cancel';
-    cancel.type = 'button';
-    cancel.title = '取消这条待发送并回填输入框';
-    cancel.textContent = '×';
-    cancel.onclick = () => cancelPending(item.id);
-    if (item.status !== 'sending') row.append(cancel);
+    if (item.status !== 'sending') {
+      const cancel = document.createElement('button');
+      cancel.className = 'pb-cancel';
+      cancel.type = 'button';
+      cancel.title = '取消这条待发送并回填输入框';
+      cancel.setAttribute('aria-label', '取消这条待发送');
+      cancel.textContent = '×';
+      cancel.onclick = () => cancelPending(item.id);
+      side.append(cancel);
+    }
+
+    row.append(idx, main, side);
     list.append(row);
   });
   el.append(head, list);

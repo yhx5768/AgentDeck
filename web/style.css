@@ -1334,9 +1334,11 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   margin: var(--sp-1) var(--sp-1) 0 0;
 }
 
-/* Pending (held) message chip: docked at the top of the composer card while a
+/* Pending (held) message queue: docked at the top of the composer card while a
    turn is running, auto-submitted when the turn ends. Dashed border + dimmed
-   tag signal "not yet sent", distinct from the live input below it. */
+   surface signal "not yet sent". Each row is a 3-column grid (index / content /
+   status+actions) so a long task id or message truncates inside the content
+   column instead of squeezing the controls. */
 .pending-bubble {
   margin: 0 0 var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
@@ -1349,17 +1351,32 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 }
 .pending-bubble .pb-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--sp-2);
+  min-width: 0;
+  padding: 0 var(--sp-1);
 }
 .pending-bubble .pb-tag {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
   flex: 1;
   min-width: 0;
-  white-space: nowrap;
+  text-transform: none;
+}
+.pending-bubble .pb-title {
+  flex: none;
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.pending-bubble .pb-sub {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-transform: none;
-  font-weight: 500;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--dim);
 }
 .pending-bubble .pb-cancel-all {
   flex: none;
@@ -1368,87 +1385,171 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   color: var(--dim);
   font-size: 10px;
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 1px 4px;
+  border-radius: var(--r-sm);
+  opacity: .75;
+  transition: color var(--t-fast), background var(--t-fast), opacity var(--t-fast);
 }
-.pending-bubble .pb-cancel-all:hover { color: var(--red); }
+.pending-bubble .pb-cancel-all:hover {
+  color: var(--red);
+  background: var(--danger-bg);
+  opacity: 1;
+}
 .pending-bubble .pb-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-  max-height: 150px;
+  gap: 1px;
+  margin-top: var(--sp-2);
+  max-height: 168px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .pending-bubble .pb-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 3px 0 0;
-  border-top: 1px dashed var(--border);
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-2);
+  padding: 5px var(--sp-1);
+  border-radius: var(--r-md);
+  transition: background var(--t-fast);
 }
-.pending-bubble .pb-item:first-child { border-top: 0; padding-top: 2px; }
+.pending-bubble .pb-item + .pb-item {
+  border-top: 1px dashed var(--border);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+.pending-bubble .pb-item:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
 .pending-bubble .pb-index {
-  flex: none;
   width: 16px;
   text-align: right;
   font-size: 10px;
-  color: var(--faint);
-  line-height: 1.8;
+  color: var(--dim);
+  opacity: .6;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
 }
+.pending-bubble .pb-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pending-bubble .pb-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+/* 任务/来源上下文：小号 muted chip，不再用亮蓝大 pill。ID 由 JS 中间省略，
+   外层再有 ellipsis 兜底，长 ID 不会撑宽整行。 */
 .pending-bubble .pb-task {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg3);
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 16px;
+}
+.pending-bubble .pb-task-label {
   flex: none;
+  color: var(--dim);
+}
+.pending-bubble .pb-task-label::after {
+  content: "·";
+  margin-left: 4px;
+  opacity: .6;
+}
+.pending-bubble .pb-task-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  line-height: 1.8;
-  color: var(--accent);
-  background: var(--accent-dim);
-  border-radius: var(--r-sm);
-  padding: 0 5px;
+  font-size: 10px;
+  color: var(--dim);
 }
 .pending-bubble .pb-text {
-  flex: 1;
   min-width: 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
   color: var(--fg);
   font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
+.pending-bubble .pb-side {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 18px;
+  flex: none;
+}
 .pending-bubble .pb-state {
   flex: none;
+  border: 1px solid transparent;
   border-radius: var(--r-full);
   padding: 0 6px;
   font-size: 10px;
-  line-height: 1.7;
+  line-height: 16px;
+  white-space: nowrap;
 }
-.pending-bubble .pb-state.queued { color: var(--dim); background: var(--bg3); }
+.pending-bubble .pb-state.queued { color: var(--dim); background: transparent; border-color: var(--border); }
 .pending-bubble .pb-state.sending { color: var(--accent); background: var(--accent-dim); }
-.pending-bubble .pb-state.error { color: var(--red); background: var(--danger-bg); }
+.pending-bubble .pb-state.error { color: var(--red); background: var(--danger-bg); border-color: var(--danger-border); }
 .pending-bubble .pb-retry {
   flex: none;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--accent);
-  border-radius: 5px;
-  padding: 0 5px;
+  border-radius: var(--r-sm);
+  padding: 0 4px;
   font-size: 10px;
+  line-height: 16px;
   cursor: pointer;
 }
+.pending-bubble .pb-retry:hover { background: var(--accent-dim); }
 .pending-bubble .pb-cancel {
   flex: none;
-  width: 20px; height: 20px;
+  width: 18px; height: 18px;
   display: inline-flex; align-items: center; justify-content: center;
   border: none; border-radius: 50%;
   background: transparent; color: var(--dim);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
-  transition: background var(--t-fast), color var(--t-fast);
+  opacity: .55;
+  transition: background var(--t-fast), color var(--t-fast), opacity var(--t-fast);
 }
+.pending-bubble .pb-item:hover .pb-cancel,
+.pending-bubble .pb-item:focus-within .pb-cancel,
+.pending-bubble .pb-item.has-error .pb-cancel { opacity: 1; }
 .pending-bubble .pb-cancel:hover { background: var(--bg3); color: var(--fg); }
+@media (hover: none) {
+  .pending-bubble .pb-cancel { opacity: .8; }
+}
+@media (max-width: 480px) {
+  .pending-bubble { padding: var(--sp-2); }
+  .pending-bubble .pb-head { align-items: center; }
+  /* 窄屏优先保留标题和状态，隐藏辅助说明与 chip 的「看板任务」前缀。 */
+  .pending-bubble .pb-sub,
+  .pending-bubble .pb-task-label { display: none; }
+  .pending-bubble .pb-item {
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+    gap: var(--sp-1);
+    padding: var(--sp-1) 2px;
+  }
+  .pending-bubble .pb-list { max-height: 200px; }
+}
 
 /* Task list panel: docked at the top of the composer card (below the pending
    chip), fed by TaskCreate/TaskUpdate tool calls (legacy TodoWrite as
