@@ -14,8 +14,8 @@ const kbState = {
   selectedId: null,
   loading: false,
   requestSeq: 0,
-  returnView: 'empty',
   pending: false,
+  preserveTask: false,
 };
 
 function kbEl(sel) {
@@ -100,9 +100,42 @@ function kbCountText() {
   return parts.join(' · ') || '暂无知识';
 }
 
+function kbStatChip(label, count, status) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'kb-stat' + (kbState.status === status ? ' active' : '');
+  button.textContent = label + ' ' + count;
+  button.title = '筛选' + label;
+  button.onclick = () => {
+    kbState.status = status;
+    const sel = kbEl('#knowledge-status');
+    if (sel) sel.value = status;
+    kbLoad();
+  };
+  return button;
+}
+
 function kbUpdateFacets() {
-  const counts = kbEl('#knowledge-counts');
-  if (counts) counts.textContent = kbCountText();
+  const stats = kbEl('#knowledge-stats');
+  if (stats) {
+    stats.innerHTML = '';
+    const counts = kbState.counts || {};
+    const chips = [
+      ['已通过', counts.approved || 0, 'approved'],
+      ['草稿', counts.draft || 0, 'draft'],
+      ['可能过期', counts.stale || 0, 'stale'],
+    ];
+    if (!counts.approved && !counts.draft && !counts.stale) {
+      const none = document.createElement('span');
+      none.className = 'kb-stat muted';
+      none.textContent = '暂无知识';
+      stats.append(none);
+    } else {
+      chips.forEach(([label, count, status]) => {
+        if (count > 0) stats.append(kbStatChip(label, count, status));
+      });
+    }
+  }
   const sel = kbEl('#knowledge-project');
   if (sel) {
     const current = kbState.project;
@@ -135,10 +168,40 @@ function kbUpdateTaskChip() {
   kbUpdateFacets();
 }
 
-function kbShowEmpty(message) {
-  const empty = kbEl('#knowledge-empty');
+function kbHideListStates() {
+  ['#knowledge-list-loading', '#knowledge-list-error', '#knowledge-empty'].forEach((sel) => {
+    const el = kbEl(sel);
+    if (el) el.classList.add('hidden');
+  });
+}
+
+function kbShowLoading() {
+  kbHideListStates();
   const list = kbEl('#knowledge-list');
   if (list) list.innerHTML = '';
+  const loading = kbEl('#knowledge-list-loading');
+  if (loading) loading.classList.remove('hidden');
+}
+
+function kbShowError(message) {
+  kbHideListStates();
+  const list = kbEl('#knowledge-list');
+  if (list) list.innerHTML = '';
+  const error = kbEl('#knowledge-list-error');
+  if (!error) return;
+  error.innerHTML = '';
+  const text = document.createElement('div');
+  text.className = 'kb-error-text';
+  text.textContent = message;
+  error.append(text, kbAction('重试', () => kbLoad(), 'primary'));
+  error.classList.remove('hidden');
+}
+
+function kbShowEmpty(message) {
+  kbHideListStates();
+  const list = kbEl('#knowledge-list');
+  if (list) list.innerHTML = '';
+  const empty = kbEl('#knowledge-empty');
   if (empty) {
     empty.textContent = message;
     empty.classList.remove('hidden');
@@ -147,8 +210,8 @@ function kbShowEmpty(message) {
 
 function kbRenderList() {
   const list = kbEl('#knowledge-list');
-  const empty = kbEl('#knowledge-empty');
   if (!list) return;
+  kbHideListStates();
   list.innerHTML = '';
   if (!kbState.entries.length) {
     kbShowEmpty(kbState.q
@@ -156,7 +219,6 @@ function kbRenderList() {
       : '还没有知识。完成任务后可从看板采集草稿，也可以点「新建知识」。');
     return;
   }
-  if (empty) empty.classList.add('hidden');
   const total = document.createElement('div');
   total.className = 'kb-total';
   total.textContent = `结果 ${kbState.total} 条`;
@@ -182,6 +244,13 @@ function kbRenderItem(entry) {
     project.className = 'kb-project';
     project.textContent = entry.project;
     head.append(project);
+  }
+  if (entry.source_task_id) {
+    const source = document.createElement('span');
+    source.className = 'kb-source-chip';
+    source.textContent = '任务 ' + entry.source_task_id;
+    source.title = '来源任务 ' + entry.source_task_id;
+    head.append(source);
   }
   const updated = document.createElement('span');
   updated.className = 'kb-updated';
@@ -220,6 +289,7 @@ function kbRenderItem(entry) {
 async function kbLoad() {
   const seq = ++kbState.requestSeq;
   kbState.loading = true;
+  kbShowLoading();
   const params = new URLSearchParams();
   if (kbState.q.trim()) params.set('q', kbState.q.trim());
   if (kbState.project) params.set('project', kbState.project);
@@ -238,7 +308,7 @@ async function kbLoad() {
     if (kbState.selectedId) kbOpenDetail(kbState.selectedId, true);
   } catch (err) {
     if (seq !== kbState.requestSeq) return;
-    kbShowEmpty('读取知识失败：' + (err && err.message ? err.message : err));
+    kbShowError('读取知识失败：' + (err && err.message ? err.message : err));
   } finally {
     if (seq === kbState.requestSeq) kbState.loading = false;
   }
@@ -373,7 +443,8 @@ function kbRenderDetail(entry) {
     els.actions.append(kbAction('复制 ID', () => kbCopyText(entry.id)));
   }
 
-  els.body.innerHTML = md(entry.body || entry.summary || '（无正文）', { artifacts: false });
+  els.body.innerHTML = '<div class="kb-section-title">正文</div>'
+    + md(entry.body || entry.summary || '（无正文）', { artifacts: false });
 
   els.sources.innerHTML = '';
   const sourceTitle = document.createElement('div');
@@ -554,36 +625,50 @@ async function kbCollect() {
   }
 }
 
-function kbReturnView() {
-  if (kbState.returnView === 'chat') {
-    const chat = kbEl('#chat-view');
-    if (chat) chat.classList.remove('hidden');
-  } else if (kbState.returnView === 'group') {
-    const group = kbEl('#group-view');
-    if (group) group.classList.remove('hidden');
-  } else if (kbState.returnView === 'new') {
-    const view = kbEl('#new-session-view');
-    if (view) view.classList.remove('hidden');
-  } else {
-    const empty = kbEl('#empty-state');
-    if (empty) empty.classList.remove('hidden');
+function kbUpdateContext() {
+  const context = kbEl('#knowledge-context');
+  if (!context) return;
+  const sess = state.current;
+  if (!sess) {
+    context.textContent = 'mainAgent';
+    context.title = '';
+    return;
   }
+  const name = sess.name || '未命名会话';
+  context.textContent = 'mainAgent · ' + name;
+  context.title = '当前主 Agent 会话：' + name
+    + (sess.peer_name && sess.peer_name !== 'mainAgent' ? '（地址 ' + sess.peer_name + '）' : '');
 }
 
-function openKnowledge(opts = {}) {
-  const view = kbEl('#knowledge-view');
-  if (!view) return;
-  if (!kbEl('#chat-view').classList.contains('hidden')) kbState.returnView = 'chat';
-  else if (!kbEl('#group-view').classList.contains('hidden')) kbState.returnView = 'group';
-  else if (!kbEl('#new-session-view').classList.contains('hidden')) kbState.returnView = 'new';
-  else kbState.returnView = 'empty';
-  ['#empty-state', '#chat-view', '#new-session-view', '#group-view'].forEach((sel) => {
-    const el = kbEl(sel);
-    if (el) el.classList.add('hidden');
-  });
-  view.classList.remove('hidden');
-  if (opts.taskId) kbState.sourceTask = opts.taskId;
-  else if (opts.clearTask) kbState.sourceTask = '';
+// Called by switchChatTab('knowledge') in app.js. Clearing sourceTask here is
+// what makes a direct tab click show the whole library; board drawer
+// "查看全部" sets preserveTask before switching.
+function kbOnTabShow() {
+  if (!kbState.preserveTask) kbState.sourceTask = '';
+  kbState.preserveTask = false;
+  kbUpdateContext();
+  kbLoad();
+}
+
+function kbOnTabHide() {
+  const detail = kbEl('#knowledge-detail');
+  if (detail) {
+    detail.classList.remove('open');
+    detail.classList.add('hidden');
+  }
+  kbState.selectedId = null;
+  document.querySelectorAll('.kb-item.selected').forEach((item) => item.classList.remove('selected'));
+}
+
+function openKnowledgeTab(opts = {}) {
+  if (!state.current || !state.current.main_agent) return false;
+  if (opts.taskId) {
+    kbState.sourceTask = opts.taskId;
+    kbState.preserveTask = true;
+  } else if (opts.clearTask !== false) {
+    kbState.sourceTask = '';
+  }
+  if (opts.id) kbState.selectedId = opts.id;
   if (opts.status) {
     kbState.status = opts.status;
     const sel = kbEl('#knowledge-status');
@@ -594,27 +679,16 @@ function openKnowledge(opts = {}) {
     const sel = kbEl('#knowledge-project');
     if (sel) sel.value = opts.project;
   }
-  kbUpdateFacets();
-  kbLoad();
-  if (opts.id) kbOpenDetail(opts.id);
-}
-
-function closeKnowledge() {
-  const view = kbEl('#knowledge-view');
-  if (!view) return;
-  view.classList.add('hidden');
-  kbCloseDetail();
-  const detail = kbEl('#knowledge-detail');
-  if (detail) detail.classList.add('hidden');
-  kbReturnView();
+  switchChatTab('knowledge');
+  return true;
 }
 
 function openKnowledgeEntry(id) {
-  openKnowledge({ id });
+  return openKnowledgeTab({ id });
 }
 
 function openKnowledgeForTask(taskId) {
-  openKnowledge({ taskId });
+  return openKnowledgeTab({ taskId });
 }
 
 function openKnowledgeCompose(task) {
@@ -623,7 +697,6 @@ function openKnowledgeCompose(task) {
 
 async function kbOpenBoardTask(taskId) {
   if (!state.current || !state.current.main_agent || !taskId) return;
-  closeKnowledge();
   switchChatTab('board');
   await boardShow(true);
   const data = state.agentBoard;
@@ -658,7 +731,7 @@ function renderBoardKnowledge(task) {
       meta.textContent = (item.project ? item.project + ' · ' : '') + (item.updated_at || '');
       main.append(title, meta);
       row.append(badge, main);
-      row.onclick = () => openKnowledge({ id: item.id });
+      row.onclick = () => openKnowledgeEntry(item.id);
       box.append(row);
     });
   }
@@ -666,17 +739,23 @@ function renderBoardKnowledge(task) {
   actions.className = 'kb-related-actions';
   actions.append(kbAction('从本任务提炼知识', () => openKnowledgeCompose(task)));
   if (list.length) {
-    actions.append(kbAction('查看全部', () => openKnowledge({ taskId: task.id })));
+    actions.append(kbAction('查看全部', () => openKnowledgeForTask(task.id)));
   }
   box.append(actions);
 }
 
 // ---------- wiring ----------
 (function kbWire() {
-  const openBtn = kbEl('#btn-knowledge');
-  if (openBtn) openBtn.onclick = () => openKnowledge();
-  const back = kbEl('#knowledge-back');
-  if (back) back.onclick = () => closeKnowledge();
+  const kbTab = kbEl('#chat-tab-knowledge');
+  if (kbTab) {
+    // Replace app.js's generic tab handler so a direct tab click clears the
+    // task filter; board drawer "查看全部" calls openKnowledgeForTask instead.
+    kbTab.onclick = () => {
+      kbState.preserveTask = false;
+      kbState.sourceTask = '';
+      switchChatTab('knowledge');
+    };
+  }
   const closeDetail = kbEl('#knowledge-detail-close');
   if (closeDetail) closeDetail.onclick = () => {
     kbCloseDetail();
@@ -719,11 +798,13 @@ function renderBoardKnowledge(task) {
       detail.classList.add('hidden');
       return;
     }
-    closeKnowledge();
+    switchChatTab('chat');
   });
 })();
 
-// Deep link: /?knowledge=1 opens the list; /?knowledge=<id> opens one entry.
+// Deep link: /?knowledge=1 opens the tab; /?knowledge=<id> opens one entry.
+// The target must be a main-agent session because the knowledge tab is only
+// rendered for main agents.
 // ?theme=dark|light is a test/verification convenience shared with the rest of
 // the console (the normal theme toggle still persists to localStorage).
 (function kbBoot() {
@@ -734,7 +815,28 @@ function renderBoardKnowledge(task) {
   }
   if (!params.has('knowledge')) return;
   const value = params.get('knowledge') || '';
-  const open = () => openKnowledge({ id: value && value !== '1' ? value : '' });
+  const wantId = value && value !== '1' ? value : '';
+  const open = async () => {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      if (state.current && state.current.main_agent) break;
+      const main = (state.sessions || []).find((s) => s.main_agent);
+      if (main) {
+        try { await openSession(main.id); } catch (err) {}
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    if (!state.current || !state.current.main_agent) {
+      alert('资料空间需要主 Agent 会话；当前没有可用的 mainAgent。');
+      return;
+    }
+    switchChatTab('knowledge');
+    if (wantId) {
+      kbState.selectedId = wantId;
+      kbOpenDetail(wantId);
+    }
+  };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', open);
   else setTimeout(open, 250);
 })();

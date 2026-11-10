@@ -15,7 +15,7 @@
 4. **不扫描工作区**。只读任务字段/timeline、任务已托管的 artifact 字节、用户/worker 显式提交的内容。`source_paths` 只是来源标注，服务端永不按路径去读文件。
 5. **检索先做扎实**：FTS5 + 应用侧 CJK 分词（unigram + bigram）+ 结构化过滤（项目/标签/状态/来源任务/时间）。**P0/P1 不引入向量库**；先量化和验证召回，再决定是否加语义检索。
 6. **Agent 优先、UI 为辅**：MCP 提供 `knowledge_search` / `knowledge_get` / `knowledge_add` / `knowledge_link` / `knowledge_review`；主 Agent 在派工前搜索、收尾后写 draft；worker 可搜索、可写 draft、不可审批。
-7. **分阶段**：P0 手动/任务完成 draft + FTS5 搜索 + 任务抽屉「相关知识」；P1 artifact 自动抽取 + 审批队列 + 独立资料空间页；P2 语义检索/周报摘要/分享链接。
+7. **分阶段**：P0 手动/任务完成 draft + FTS5 搜索 + mainAgent 资料空间 tab + 任务抽屉「相关知识」；P1 artifact 自动抽取 + 审批队列；P2 语义检索/周报摘要/分享链接。
 
 ---
 
@@ -817,25 +817,27 @@ sequenceDiagram
 
 ### 5.1 入口与信息架构
 
-**推荐：workspace 级「资料空间」页面，而不是会话内的第 4 个 tab。**
+**最终决定（2026-11-10 用户反馈）：绑定 mainAgent 会话，作为「看板」右侧的「资料空间」tab。**
 
-理由：
+用户原话：「资料空间这个前端还是需要再设计下，另外不要放在右上角了，跟mainAgent 做绑定吧看板右侧再加个tab 为资料空间」。这替代了早期「workspace 级独立页面 + 侧栏入口」的建议。理由：
 
-- 知识是跨会话、跨项目的，不应该绑定某个会话；
-- 现有 `chat-tabs`（对话/轨迹/看板）是会话视图的一部分，看板还只对主 Agent 显示；把知识塞进去会让「没有会话时打不开」；
-- 顶部 `main` 已有 `#empty-state` / `#new-session-view` / `#group-view` / `#chat-view` 的切换模式，加一个 `#knowledge-view` 最自然。
+- 知识采集/审批本来就是主 Agent 的工作；和 mainAgent 绑定后，权限模型与看板一致；
+- tab 内切换比覆盖层更符合主界面信息架构，不打断会话；
+- 不需要「没有会话时打开知识库」；非 mainAgent 会话隐藏该 tab。
 
 **入口：**
 
-1. 侧栏 header 加 `#btn-knowledge`（书本图标）——任何视图下都能打开。
-2. 任务抽屉「相关知识」里的条目/「查看全部」——带 `source_task_id` 过滤打开。
-3. 看板工具栏可选加一个「知识」按钮（与侧栏重复，P1 再评估）。
+1. `#chat-tabs` 内「看板」右侧加「资料空间」tab，仅 `main_agent` 会话显示；非 mainAgent 隐藏。
+2. 看板任务抽屉「相关知识」的条目 → 切到资料空间 tab 并打开详情；「查看全部」→ 切 tab 并带 `source_task_id` 过滤；「从本任务提炼知识」→ 新建知识 modal。
+3. 侧栏右上角 `#btn-knowledge` 已删除。
 4. 主 Agent 的 MCP 工具是 Agent 侧入口，不依赖 UI。
 
 **视图切换：**
 
-- `openKnowledge(id?)`：隐藏 `#empty-state` / `#new-session-view` / `#group-view` / `#chat-view`，显示 `#knowledge-view`；记住 `state.lastView` 供返回。
-- `openSession()` 等现有函数要补一句隐藏 `#knowledge-view`，否则从知识页点会话会叠两层。
+- `switchChatTab('knowledge')`：显示 `#knowledge-view`，隐藏消息区/轨迹/看板/composer；切走时关闭详情并清空选中态。
+- `syncMainAgentTabs` 同时控制 board 和 knowledge：非 mainAgent 隐藏两个 tab，若当前停在其中则回「对话」。
+- 进入 mainAgent 会话默认仍是「对话」，点「资料空间」才加载。
+- 深链 `?knowledge=1` / `?knowledge=<id>` 先定位 mainAgent 会话，再打开 tab/详情。
 - 返回按钮：有 `lastView` 就回去，否则回 empty state。
 - 移动端：侧栏抽屉关闭后知识页占满宽度；不新增内层滚动容器，列表自身滚动，详情用全屏 sheet。
 

@@ -13,8 +13,19 @@
 | API | `GET /api/knowledge`、`GET /api/knowledge/{id}`、`POST /api/knowledge`、`PATCH /api/knowledge/{id}`、`POST /api/knowledge/collect` |
 | MCP | `knowledge_search` / `knowledge_get` / `knowledge_add`（所有会话）；`knowledge_review` / `knowledge_collect`（仅主 Agent，沿用 env + `requireMainAgent` 两层闸门） |
 | 采集 | `POST /api/knowledge/collect` 扫描看板 `待验收/已完成` 任务，生成每任务 1 条 draft；按 task 幂等；只读看板字段 + 已托管 artifact 元数据；敏感命中 quarantined；不读工作区/transcript/legacy report_file 路径 |
-| UI | 侧栏一级「资料空间」页（列表 / 搜索 / 项目+状态筛选 / 详情 / 审批 / 从看板采集 / 新建知识）；看板任务抽屉「相关知识」（只读，最多 3 条 + 查看全部 + 从本任务提炼）；移动端详情全屏；深浅色跟随现有主题；新增 `knowledge.js` 与图标白名单 |
+| UI | mainAgent 会话的「资料空间」tab（与「看板」同级，2026-11-10 按用户反馈从独立页/侧栏入口改为 tab 绑定）；桌面列表+详情两栏，移动端详情全屏 sheet；搜索、项目/状态筛选、审批、从看板采集、新建；看板任务抽屉「相关知识」（只读，最多 3 条 + 查看全部切 tab + 从本任务提炼）；深浅色跟随现有主题；`knowledge.js` |
 | 测试 | Go 单测（tokenizer/FTS/去重/敏感/collect/权限/HTTP）；前端 jsdom 8 项；CDP 真浏览器验证 1440/1024/768/390 × light/dark，0 console error、无横向溢出 |
+
+### 1.1 UI 结构（2026-11-10 重设计）
+
+- 入口：`#chat-tabs` 内的「资料空间」tab，位于「看板」右侧；只有 `main_agent` 会话显示（`syncMainAgentTabs` 同时控制 board/knowledge，非 mainAgent 隐藏两个 tab，若停在其中则回「对话」）。侧栏右上角入口已删除。
+- `switchChatTab('knowledge')`：显示 `#knowledge-view`，隐藏消息区/轨迹/看板/composer；切走时关闭详情并清掉选中态。知识库不再是覆盖层/独立 workspace 页。
+- 顶部 header：标题 + `mainAgent · 会话名` + 统计 chips（已通过/草稿/可能过期，可点击筛选）+ 搜索 + 项目/状态筛选 + 「从看板采集」「新建知识」；无独立返回按钮（tab 切换即可）。
+- 桌面：左侧卡片列表（状态/项目/来源任务/更新时间/标题/摘要/标签），右侧详情面板（正文 Markdown、来源任务与 artifact、证据、审批/过期动作）；选中卡片有左侧 accent 边和描边。
+- 移动端（≤900px）：列表全宽；详情为全屏 sheet（右上角关闭），避免页面级横向溢出和嵌套滚动。
+- 加载/空/错误三态：列表加载中、无结果空态、请求失败带「重试」。
+- 看板抽屉「查看全部」→ 切到资料空间 tab 并带 `source_task_id` 过滤（header 显示可清除的任务 chip）；「从本任务提炼知识」→ 打开新建知识 modal。
+- 深链 `?knowledge=1` / `?knowledge=<id>`：先定位 mainAgent 会话，再切到资料空间 tab；`<id>` 直接打开详情。`?theme=dark|light` 仍用于预览验证。
 
 ## 2. 未实现 / TODO
 
@@ -95,7 +106,7 @@ worker 的 `knowledge_add` 提示：`title` 必填，`summary`/`body` 至少一�
 
 ## 6. 测试实例
 
-- 数据目录：`./data-demo`（从生产 `data/agent-board.db` 用 `sqlite3 .backup` 做的一致性快照；`data/artifacts` 复制；`db.json` 手工 seed 了一个 `main_agent` 演示会话 `资料空间演示`）。
+- 数据目录：`./data-demo`（从生产 `data/agent-board.db` 用 `sqlite3 .backup` 做的一致性快照；`data/artifacts` 复制；`db.json` 手工 seed 了两个会话：`main_agent` 的「资料空间演示」和非 main 的「Worker 演示」，用于验证 tab 显隐）。
 - 监听：`0.0.0.0:8327`。
 - URL：`http://xpsl.soarx.cc:8327/`（未登录 302 到 `/login.html`；用当前 `config.yaml` 的 `gateway_token` 登录；token 不进仓库/不写进本文）。
 - 服务单元：`cc-webui-knowledge-demo.service`（`systemd-run --user`，transient）。
@@ -132,11 +143,13 @@ rm -rf data-demo
 - `go test ./internal/knowledge/ ./internal/server/`：通过。
 - `go test ./...`：`internal/knowledge`、`server`、`a2a` 等通过；`internal/runner` 的 `TestServeKeyIsCompact` 在当前 shell 的 ambient 凭据 env（`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL`/`DUCC_AUTH_TOKEN`/`SN_API_KEY`/`SN_BASE_URL`）下会因 key 段数 >8 失败；用 `env -i HOME=$HOME PATH=$PATH ... go test ./internal/runner/ -run TestServeKeyIsCompact` 通过，属既有环境敏感测试，与本次改动无关。
 - `./scripts/frontend-tests/run.sh`：全部通过（含新增 `knowledge.test.js` 8 项）。
-- CDP 真浏览器（Playwright headless_shell）：
-  - 资料空间列表 50 条/页；搜索「浏览器」→ 8 条命中。
-  - 详情页标题/来源/证据/artifact 链接正常；`knowledge-detail` 在 1440/1024/768/390、light/dark 下 `scrollWidth == innerWidth`（无横向溢出）。
-  - 看板任务 `YHX-TODO-780` 抽屉「相关知识 (1)」显示 approved 条目 + 「从本任务提炼知识」「查看全部」。
-  - 0 个 console error / runtime exception。
+- CDP 真浏览器（Playwright headless_shell，2026-11-10 UI 重设计后）：
+  - mainAgent 会话显示「看板 | 资料空间」两个 tab，默认 active 是「对话」；非 main 会话两个 tab 都隐藏，且从资料空间切回「对话」。
+  - 资料空间 tab：active 正确，列表 50 条/页；搜索「浏览器」→ 8 条命中；详情标题/来源/证据/artifact 链接正常。
+  - 看板任务 `YHX-TODO-780` 抽屉「相关知识 (1)」显示 approved 条目；点「查看全部」切到资料空间 tab，任务 chip 为「来源任务 YHX-TODO-780 ×」，结果 1 条。
+  - 深链 `?knowledge=<id>&theme=dark` 自动打开 mainAgent 资料空间 tab 和详情。
+  - 1440/1024/768/390 × light/dark：`scrollWidth == innerWidth`（无横向溢出）；0 console error / runtime exception。
+  - 新增/更新的 jsdom 共 14 项通过（tab 显隐、active、看板→知识切换、加载/空/错误态、来源任务 chip 等）。
 - 演示数据：68 条 draft、3 条 quarantined；为演示手动 approve 了 6 条（通过 API `action=approve, reason=demo seed review`），不改变“自动只出 draft”的策略。
 
 ## 8. 已知取舍

@@ -2612,8 +2612,6 @@ async function openSession(id) {
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
-  const knowledgeView = $('#knowledge-view');
-  if (knowledgeView) knowledgeView.classList.add('hidden');
   relocatePermCards();
   $('#chat-view').classList.remove('hidden');
   renderGoalBar();
@@ -2666,18 +2664,28 @@ async function openSession(id) {
 // 轨迹视图（trajectory.js）复用同一份事件流投影成台账；composer 仅在对话页显示，
 // 切到轨迹页时隐藏。
 function switchChatTab(tab) {
+  // 资料空间只对主 Agent 会话开放；隐藏时按对话处理，防止 URL/旧状态把它拉出来。
+  if (tab === 'knowledge') {
+    const kbTab = document.querySelector('#chat-tab-knowledge');
+    if (!kbTab || kbTab.classList.contains('hidden')) tab = 'chat';
+  }
   document.querySelectorAll('.chat-tab').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
   const isTraj = tab === 'traj';
   const isBoard = tab === 'board';
-  $('#msg-wrap').classList.toggle('hidden', isTraj || isBoard);
+  const isKnowledge = tab === 'knowledge';
+  $('#msg-wrap').classList.toggle('hidden', isTraj || isBoard || isKnowledge);
   $('#traj-view').classList.toggle('hidden', !isTraj);
   $('#board-view').classList.toggle('hidden', !isBoard);
-  $('#composer').classList.toggle('hidden', isTraj || isBoard);
+  const knowledgeView = $('#knowledge-view');
+  if (knowledgeView) knowledgeView.classList.toggle('hidden', !isKnowledge);
+  $('#composer').classList.toggle('hidden', isTraj || isBoard || isKnowledge);
   if (!isBoard) { boardCloseDrawer(); boardDisconnect(); }
+  if (!isKnowledge && typeof kbOnTabHide === 'function') kbOnTabHide();
   if (isTraj) trajShow();
   if (isBoard) { boardConnect(); boardShow(); }
+  if (isKnowledge && typeof kbOnTabShow === 'function') kbOnTabShow();
 }
 
 // 本地 store 变化时后端发 refresh 事件；前端重取快照。EventSource 带 cookie，
@@ -2697,13 +2705,20 @@ function boardDisconnect() {
   state.boardEs = null;
 }
 
-// 看板只对 main_agent 会话显示；取消标记时如果正停在看板，切回对话。
+// 看板 / 资料空间只对 main_agent 会话显示；取消标记时如果正停在这两个 tab，
+// 切回对话。
 function syncMainAgentTabs(s) {
-  const tab = document.querySelector('.chat-tab[data-tab="board"]');
-  if (!tab) return;
   const visible = !!(s && s.main_agent);
-  tab.classList.toggle('hidden', !visible);
-  if (!visible && tab.classList.contains('active')) switchChatTab('chat');
+  ['board', 'knowledge'].forEach((name) => {
+    const tab = document.querySelector('.chat-tab[data-tab="' + name + '"]');
+    if (tab) tab.classList.toggle('hidden', !visible);
+  });
+  if (!visible) {
+    const active = document.querySelector('.chat-tab.active');
+    if (active && (active.dataset.tab === 'board' || active.dataset.tab === 'knowledge')) {
+      switchChatTab('chat');
+    }
+  }
 }
 
 function boardTaskTags(task) {
@@ -8410,8 +8425,6 @@ async function openNewSessionView(cwd) {
   nsPendingCwd = cwd || '';
   $('#chat-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
-  const knowledgeView = $('#knowledge-view');
-  if (knowledgeView) knowledgeView.classList.add('hidden');
   relocatePermCards();
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.remove('hidden');
@@ -8883,8 +8896,6 @@ function hideAllViews() {
   $('#chat-view').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
-  const knowledgeView = $('#knowledge-view');
-  if (knowledgeView) knowledgeView.classList.add('hidden');
   closeGroupMemberPanel();
   closeGroupMentionPopup();
 }
