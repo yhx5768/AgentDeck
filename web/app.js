@@ -6306,34 +6306,50 @@ function renderStreamEvent(d, box, ts) {
 // opencode 的 token 级增量：后端把 message.part.delta 原样透出（只有
 // field+delta，没有完整 part）。按 partID 聚进同一个气泡——同一 part 的
 // 多次 delta 追加到同一处，换 part 则新起气泡。随后到达的完整
-// message.part.updated（canonical assistant text block）会 liveTake 掉这个
-// 气泡并用全文替换，因此流式与最终内容不会重复。
+// message.part.updated（canonical assistant text block）会取代这个气泡里的
+// 正文，因此流式与最终内容不会重复。
+//
+// 两个坑（都有 oc_empty_bubble.test.js 钉住）：
+//  ① **纯空白前缀先不进 DOM**。opencode 每一步会在 reasoning 与工具之间吐一个
+//     纯空白的 text part（实测正文就是 "\n\n"），如果 delta 一到就建气泡，随后
+//     的完整 text 块会被 renderEvent 的「空正文过滤」跳过，气泡就永远挂着——
+//     就是那串「只有时间戳、没有正文」的空气泡。等出现非空白内容再建气泡，
+//     空 part 一点痕迹都不留。
+//  ② **正文只画进自己的容器**（.oc-stream-seg），不画整个 .bubble。原因是工具
+//     卡/thinking 会在正文收尾之前由 wrapInMsg 挂进同一个 .bubble（实测顺序：
+//     text delta → thinking 块 → tool_use → text 结束），而正文的收尾是整段
+//     innerHTML 替换；直接替换 .bubble 会把刚挂进来的工具卡一起擦掉，正是
+//     「工具卡不见」。
+function ocTextBubble(box, ts, text) {
+  const bubble = addMsg('msg-assistant', 'claude', box, ts);
+  const seg = document.createElement('div');
+  seg.className = 'oc-stream-seg streaming';
+  bubble.appendChild(seg);
+  return {
+    kind: 'text', el: bubble.parentElement, bodyEl: seg,
+    buf: text, done: false, taken: false, raf: null,
+  };
+}
+
 function renderOcTextDelta(d, box, ts) {
   const partId = d.partID || d.messageID;
   const text = d.delta || '';
   if (!partId || !text) return;
-  if (state.ocPartID === partId && state.ocBubble) {
-    state.ocBuf += text;
-    const b = state.ocBubble;
-    b.buf = state.ocBuf;
-    liveSchedulePaint(b);
-    return;
-  }
-  // 新 part：固化上一个气泡
-  if (state.ocBubble) {
-    liveFinalizeBlock(state.ocBubble);
+  if (state.ocPartID !== partId) {
+    // 新 part：固化上一个气泡（如果建过）
+    if (state.ocBubble) liveFinalizeBlock(state.ocBubble);
     state.ocBubble = null;
+    state.ocPartID = partId;
+    state.ocBuf = '';
   }
-  const bubble = addMsg('msg-assistant', 'claude', box, ts);
-  bubble.classList.add('streaming');
-  const b = {
-    kind: 'text', el: bubble.parentElement, bodyEl: bubble,
-    buf: text, done: false, taken: false, raf: null,
-  };
-  state.ocPartID = partId;
-  state.ocBuf = text;
-  state.ocBubble = b;
-  liveSchedulePaint(b);
+  state.ocBuf += text;
+  if (!state.ocBuf.trim()) return; // 仍是纯空白（坑 ①）：先不建气泡
+  if (!state.ocBubble) {
+    state.ocBubble = ocTextBubble(box, ts, state.ocBuf);
+  } else {
+    state.ocBubble.buf = state.ocBuf;
+  }
+  liveSchedulePaint(state.ocBubble);
 }
 
 // opencode 的推理增量。v2 把 reasoning 和正文分成两个事件命名空间
@@ -6512,7 +6528,26 @@ function renderEvent(ev, box) {
         // 空消息过滤：无正文的 text/thinking 不占位（Claude 5 会发无文本 thinking，
         // 中断/空 delta 也会留下空壳），否则时间线被空白块切断。
         if (block.type === 'text') {
-          if (!block.text || !block.text.trim()) continue;
+          if (!block.text || !block.text.trim()) {
+            // 空正文不占位（Claude 5 会发无文本 thinking；opencode 每步还会在
+            // reasoning 与工具之间吐一个纯空白的 text part，实测正文就是
+            // "\n\n"）。流式占位必须一并收掉，否则会留下空气泡——见
+            // scripts/frontend-tests/oc_empty_bubble.test.js。opencode 的纯空白
+            // part 根本不会建 ocBubble（renderOcTextDelta 里纯空白前缀不进
+            // DOM），这里若真有 ocBubble 只固化保留，绝不整颗删掉：那颗气泡里
+            // 可能已经挂了 thinking / 工具卡。
+            const lb = liveTake('text');
+            if (lb) lb.el.remove();
+            if (!block.id || state.ocPartID === block.id) {
+              if (state.ocBubble) {
+                liveFinalizeBlock(state.ocBubble);
+                state.ocBubble = null;
+              }
+              state.ocPartID = '';
+              state.ocBuf = '';
+            }
+            continue;
+          }
           const lb = liveTake('text');
           if (lb) lb.el.remove(); // 完整版替换 live 气泡，避免重复
           // opencode 流式：完整 part 的 id 与正在累积的 partID 相同时，复用那个
@@ -6535,7 +6570,6 @@ function renderEvent(ev, box) {
         } else if (block.type === 'thinking') {
           const lb = liveTake('thinking');
           if (block.thinking && block.thinking.trim()) {
-            if (lb) lb.el.remove(); // 完整版替换 live thinking
             const details = document.createElement('details');
             details.className = 'tool-block thinking-block';
             const summary = document.createElement('summary');
@@ -6544,7 +6578,13 @@ function renderEvent(ev, box) {
             body.className = 'tool-body';
             body.textContent = block.thinking;
             details.append(summary, body);
-            wrapInMsg(details, box, ev.ts);
+            // 就地替换 live thinking：走 wrapInMsg 是「挂到最近一条 assistant
+            // 消息」，而 opencode 的 text part 会插在中间（它会在正文气泡之后再
+            // 收到完整 thinking 块），于是原消息里的 live 块被摘走后就剩一个空气
+            // 泡，后到的工具卡又跟它分了家。就地替换既保住原气泡，也让同一事件的
+            // thinking / 工具卡留在同一处。
+            if (lb && lb.el.isConnected) lb.el.replaceWith(details);
+            else wrapInMsg(details, box, ev.ts);
           } else if (lb) {
             liveFinalizeBlock(lb); // 完整版被后端 strip 成空，保留 live 版
           }

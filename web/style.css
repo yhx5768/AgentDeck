@@ -1811,6 +1811,7 @@ body.html-fs-open { overflow: hidden; }
 /* ---------- partial streaming（--include-partial-messages 的增量气泡） ---------- */
 @keyframes stream-blink { 50% { opacity: 0; } }
 .msg-assistant .bubble.streaming::after,
+.msg-assistant .oc-stream-seg.streaming::after,
 .thinking-block .tool-body.streaming::after {
   content: '▍';
   display: inline-block;
