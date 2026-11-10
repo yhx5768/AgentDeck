@@ -56,7 +56,13 @@ type Session struct {
 	// GroupID marks a shadow member session owned by a group chat: it runs
 	// the group's turns for one participant and is hidden from the sidebar
 	// (openable directly by id from the group view). Empty = ordinary session.
-	GroupID  string `json:"group_id,omitempty"`
+	GroupID string `json:"group_id,omitempty"`
+	// ParentID is the session that created this one — the main agent that
+	// dispatched it as a worker. Empty = top-level. The sidebar nests a session
+	// under its parent (regardless of the worker's own cwd); the record is kept
+	// on the session itself, not the board, so the relationship survives a card
+	// being closed or never bound.
+	ParentID string `json:"parent_id,omitempty"`
 	Archived bool   `json:"archived"`
 	// Unread marks a session whose latest turn just finished (active→idle) but
 	// no client has opened it since. Set server-side by the runner on

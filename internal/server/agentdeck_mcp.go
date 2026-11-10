@@ -123,7 +123,19 @@ func (s *Server) agentdeckToolCall(sessionID, name string, args map[string]any) 
 		// artifacts too. The server still validates the task id and payload.
 		return s.agentdeckPublishArtifact(sessionID, args)
 	case "new_session":
-		code, body := s.callHandler(s.handleCreateSession, http.MethodPost, "/api/sessions", args, nil)
+		// A session created by another session is that session's child (the
+		// main agent dispatching a worker): record the caller as parent so the
+		// sidebar can nest it. An explicit parent_id wins; no caller identity
+		// (shared-config engines) means a top-level session.
+		payload := args
+		if _, ok := args["parent_id"]; !ok && sessionID != "" {
+			payload = make(map[string]any, len(args)+1)
+			for k, v := range args {
+				payload[k] = v
+			}
+			payload["parent_id"] = sessionID
+		}
+		code, body := s.callHandler(s.handleCreateSession, http.MethodPost, "/api/sessions", payload, nil)
 		return resultText(code, body, "")
 	case "get_session":
 		id, _ := args["id"].(string)
@@ -419,5 +431,6 @@ func (s *Server) a2aSessionSummary(sess *store.Session) map[string]any {
 		"running":         st.Running,
 		"queued":          st.Queued,
 		"main_agent":      sess.MainAgent,
+		"parent_id":       sess.ParentID,
 	}
 }

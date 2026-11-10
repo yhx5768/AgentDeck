@@ -1210,6 +1210,41 @@ function sessionItemHTML(s, opts = {}) {
       <span class="time">${timeAgo(s.updated_at)}</span>
     </div>`;
 }
+
+// buildSessionRow renders one sidebar row. depth>0 = a nested worker (indented
+// under its parent); parentCwd is the parent's cwd so a worker living in a
+// different directory gets a path badge.
+function buildSessionRow(s, depth, parentCwd) {
+  const item = document.createElement('div');
+  item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
+  if (depth > 0) {
+    item.classList.add('session-worker');
+    item.style.setProperty('--depth', String(Math.min(depth, 6)));
+  }
+  item.dataset.sessionId = s.id;
+  item.innerHTML = sessionItemHTML(s);
+  if (depth > 0 && s.cwd && parentCwd && s.cwd !== parentCwd) {
+    const badge = document.createElement('span');
+    badge.className = 'worker-cwd';
+    badge.textContent = shortenPath(s.cwd);
+    badge.title = s.cwd;
+    item.querySelector('.name').appendChild(badge);
+  }
+  bindSessionItem(item, s);
+  return item;
+}
+
+// isSessionAncestor reports whether `node` is (transitively) a child of
+// `maybeAncestor` — used to break a parent_id cycle so a bad record cannot make
+// the sidebar loop forever.
+function isSessionAncestor(maybeAncestor, node, byId) {
+  let cur = node;
+  for (let i = 0; i < 64 && cur; i++) {
+    if (cur.id === maybeAncestor.id) return true;
+    cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+  }
+  return false;
+}
 // 「待回答」行内标签：提问不进消息流、只停在输入框上方的 dock，人不在这个会话
 // 时侧栏这行是唯一的线索，所以给它一个和状态点同级的常驻标签。
 function askFlagHTML(asks) {
@@ -1758,11 +1793,43 @@ function renderSessionList() {
     return;
   }
 
+  // ---- worker forest ----
+  // A session nests under the one that created it (`parent_id` = the main agent
+  // that dispatched it as a worker). The worker's own cwd does NOT move it out
+  // of its parent's workspace — a differing cwd only adds a badge. A session
+  // whose parent is filtered out (search / archived) renders at top level.
+  const byId = new Map(list.map((s) => [s.id, s]));
+  const childMap = new Map();
+  const roots = [];
+  for (const s of list) {
+    const parent = s.parent_id ? byId.get(s.parent_id) : null;
+    if (parent && parent.id !== s.id && !isSessionAncestor(s, parent, byId)) {
+      if (!childMap.has(parent.id)) childMap.set(parent.id, []);
+      childMap.get(parent.id).push(s);
+    } else {
+      roots.push(s);
+    }
+  }
+  // Depth-first rows for one root (nested workers directly under it), guarded
+  // against deep/looping chains.
+  const treeRows = (root) => {
+    const rows = [];
+    const seen = new Set();
+    const walk = (s, depth, parentCwd) => {
+      if (depth > 12 || seen.has(s.id)) return;
+      seen.add(s.id);
+      rows.push({ session: s, depth, parentCwd });
+      for (const k of (childMap.get(s.id) || [])) walk(k, depth + 1, s.cwd);
+    };
+    walk(root, 0, '');
+    return rows;
+  };
+
   if (state.viewGroup === 'none') {
     const flat = document.createElement('div');
     flat.className = 'session-list-flat';
     const mixed = [
-      ...list.map((s) => ({ ts: new Date(s.updated_at).getTime() || 0, session: s })),
+      ...roots.map((s) => ({ ts: new Date(s.updated_at).getTime() || 0, session: s })),
       ...(state.groups || [])
         .filter((g) => !q || (g.name || '').toLowerCase().includes(q))
         .map((g) => ({ ts: new Date(g.updated_at || 0).getTime() || 0, group: g })),
@@ -1772,22 +1839,16 @@ function renderSessionList() {
         appendGroupItem(flat, entry.group);
         continue;
       }
-      const s = entry.session;
-      const item = document.createElement('div');
-      item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
-      item.dataset.sessionId = s.id;
-      item.innerHTML = sessionItemHTML(s);
-      bindSessionItem(item, s);
-      flat.appendChild(item);
+      for (const row of treeRows(entry.session)) flat.appendChild(buildSessionRow(row.session, row.depth, row.parentCwd));
     }
     el.appendChild(flat);
     renderIcons(el);
     return;
   }
 
-  // group by cwd（单聊＋群聊按各自 cwd 落进同一工作区）
+  // group by cwd（单聊＋群聊按各自 cwd 落进同一工作区；worker 跟着主 Agent 走）
   const groups = new Map();
-  for (const s of list) {
+  for (const s of roots) {
     const key = s.cwd || '(无目录)';
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
@@ -1804,13 +1865,13 @@ function renderSessionList() {
     return tb - ta;
   });
 
-  for (const [cwd, sessions] of ordered) {
+  for (const [cwd, entries] of ordered) {
     const group = document.createElement('div');
     group.className = 'session-group' + (collapsedGroups.has(cwd) ? ' collapsed' : '');
 
     const header = document.createElement('div');
     header.className = 'group-header';
-    header.innerHTML = `<span class="chev"><i data-lucide="chevron-down"></i></span><i data-lucide="folder" class="dir-icon"></i><span class="dir"></span><span class="count">${sessions.length}</span><button class="group-migrate-btn icon-btn" title="迁移/修改工作区路径"><i data-lucide="settings"></i></button><button class="group-add-btn icon-btn" title="新建单聊 / 群聊"><i data-lucide="plus"></i></button>`;
+    header.innerHTML = `<span class="chev"><i data-lucide="chevron-down"></i></span><i data-lucide="folder" class="dir-icon"></i><span class="dir"></span><span class="count"></span><button class="group-migrate-btn icon-btn" title="迁移/修改工作区路径"><i data-lucide="settings"></i></button><button class="group-add-btn icon-btn" title="新建单聊 / 群聊"><i data-lucide="plus"></i></button>`;
     header.querySelector('.dir').textContent = shortenPath(cwd);
     header.title = cwd;
     renderIcons(header);
@@ -1830,25 +1891,30 @@ function renderSessionList() {
       e.stopPropagation();
       openWsAddMenu(cwd, e.currentTarget);
     };
+    group.appendChild(header);
+
+    let count = 0;
+    const wsSessions = []; // 本工作区的会话（含同目录的嵌套 worker），供「迁移」用
+    for (const entry of entries) {
+      if (entry.__group) {
+        appendGroupItem(group, entry);
+        count++;
+        continue;
+      }
+      for (const row of treeRows(entry)) {
+        group.appendChild(buildSessionRow(row.session, row.depth, row.parentCwd));
+        // 只迁移实际就在这个目录的会话：异目录的 worker 只是挂靠在主 Agent
+        // 下面，不能跟着主 Agent 的工作区一起搬走。
+        if ((row.session.cwd || '') === (cwd === '(无目录)' ? '' : cwd)) wsSessions.push(row.session);
+        count++;
+      }
+    }
     // "settings" button: migrate every session of this workspace to a new path
     header.querySelector('.group-migrate-btn').onclick = (e) => {
       e.stopPropagation();
-      openWsMigratePop(sessions, e.currentTarget);
+      openWsMigratePop(wsSessions, e.currentTarget);
     };
-    group.appendChild(header);
-
-    for (const s of sessions) {
-      if (s.__group) {
-        appendGroupItem(group, s);
-        continue;
-      }
-      const item = document.createElement('div');
-      item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
-      item.dataset.sessionId = s.id;
-      item.innerHTML = sessionItemHTML(s);
-      bindSessionItem(item, s);
-      group.appendChild(item);
-    }
+    header.querySelector('.count').textContent = count;
     el.appendChild(group);
   }
   renderIcons(el);

@@ -831,6 +831,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// MainAgent marks the workspace's router agent (sidebar pin + the UI's
 		// cue to install the default routing rules). Not a permission boundary.
 		MainAgent bool `json:"main_agent"`
+		// ParentID is the session this one is created under (the main agent that
+		// dispatched it as a worker). Set automatically when an agent creates a
+		// worker over the agentdeck MCP; the sidebar nests the child under it.
+		ParentID string `json:"parent_id"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
@@ -899,6 +903,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	parentID := strings.TrimSpace(body.ParentID)
+	if parentID != "" {
+		if parent := s.st.Get(parentID); parent == nil {
+			writeErr(w, http.StatusBadRequest, "unknown parent session: "+parentID)
+			return
+		}
+	}
 	now := time.Now()
 	sess := &store.Session{
 		ID:             newID(),
@@ -913,6 +924,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		PeerName:       peerName,
 		RolePrompt:     body.RolePrompt,
 		MainAgent:      body.MainAgent,
+		ParentID:       parentID,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -2847,15 +2859,18 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	sess := &store.Session{
-		ID:              newID(),
-		Name:            name,
-		CLI:             src.CLI,
-		Provider:        src.Provider,
-		ModelOverride:   src.ModelOverride,
-		EffortOverride:  src.EffortOverride,
-		PermissionMode:  src.PermissionMode,
-		RolePrompt:      src.RolePrompt,
-		MainAgent:       src.MainAgent,
+		ID:             newID(),
+		Name:           name,
+		CLI:            src.CLI,
+		Provider:       src.Provider,
+		ModelOverride:  src.ModelOverride,
+		EffortOverride: src.EffortOverride,
+		PermissionMode: src.PermissionMode,
+		RolePrompt:     src.RolePrompt,
+		MainAgent:      src.MainAgent,
+		// A fork stays a sibling: same owner (parent) as the session it forked
+		// from, so a worker's branch is still nested under the same main agent.
+		ParentID:        src.ParentID,
 		Cwd:             src.Cwd,
 		ClaudeSessionID: forkedID,
 		CreatedAt:       now,

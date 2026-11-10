@@ -944,6 +944,30 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 }
 /* 名字自己吃掉剩余宽度，末端的「待回答」标签才不会被 ellipsis 挤掉 */
 .session-item .name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 嵌套 worker：挂在派它的主 Agent 行下面（归属按 parent_id，与 cwd 无关）。
+   缩进深度来自行内 --depth；worker 在别的目录时行尾加一个目录小标。 */
+.session-item.session-worker { padding-left: calc(var(--sp-4) + var(--depth, 1) * 16px); }
+.session-item.session-worker::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--sp-4) + (var(--depth, 1) - 1) * 16px + 5px);
+  top: 50%;
+  width: 7px; height: 1px;
+  background: var(--border);
+}
+.worker-cwd {
+  flex: none;
+  margin-left: var(--sp-1);
+  max-width: 110px;
+  padding: 0 5px;
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--dim);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .session-item .meta {
   color: var(--dim);
   font-size: var(--fs-xs);

@@ -84,6 +84,11 @@ Another agent session sent you a message. It is not from the user; ...
 校验/落库单一来源（读/搜两个直接调 `replayEvents`，见 §5.5；`artifact_publish`
 复用产物发布逻辑，见 §5.8）。
 
+**`new_session` 记父**：由会话建的 worker 会把 caller 的 session id 写进新会话的
+`parent_id`（服务端注入，模型不用管），侧栏据此把它嵌到主 Agent 行下面（见 AGENTS.md
+§16）。没有 caller 身份（opencode/mcode 共享一份 MCP 配置）就是顶层会话；显式传
+`parent_id` 优先，未知父 400。
+
 ### 5.2 注入方式（五引擎）
 
 | 引擎 | 注入 |
