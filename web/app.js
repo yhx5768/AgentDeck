@@ -6168,7 +6168,7 @@ function wrapInMsg(node, box, ts) {
   if (last && last.classList.contains('msg-assistant')) {
     last.querySelector('.bubble').appendChild(node);
   } else {
-    addMsg('msg-assistant', 'claude', msgs, ts).appendChild(node);
+    addMsg('msg-assistant', 'agent', msgs, ts).appendChild(node);
   }
 }
 
@@ -6270,7 +6270,7 @@ function renderStreamEvent(d, box, ts) {
       const l = state.live;
       if (l && l.cur) liveFinalizeBlock(l.cur); // 新 block 开始，固化上一个（覆盖 text→text 等连续场景）
       if (cb.type === 'text') {
-        const bubble = addMsg('msg-assistant', 'claude', box, ts);
+        const bubble = addMsg('msg-assistant', 'agent', box, ts);
         bubble.classList.add('streaming');
         const b = { kind: 'text', el: bubble.parentElement, bodyEl: bubble, buf: cb.text || '', done: false, taken: false, raf: null };
         livePush(b);
@@ -6321,7 +6321,7 @@ function renderStreamEvent(d, box, ts) {
 //     innerHTML 替换；直接替换 .bubble 会把刚挂进来的工具卡一起擦掉，正是
 //     「工具卡不见」。
 function ocTextBubble(box, ts, text) {
-  const bubble = addMsg('msg-assistant', 'claude', box, ts);
+  const bubble = addMsg('msg-assistant', 'agent', box, ts);
   const seg = document.createElement('div');
   seg.className = 'oc-stream-seg streaming';
   bubble.appendChild(seg);
@@ -6562,7 +6562,7 @@ function renderEvent(ev, box) {
             state.ocBuf = '';
             break;
           }
-          const bubble = addMsg('msg-assistant', 'claude', box, ev.ts);
+          const bubble = addMsg('msg-assistant', 'agent', box, ev.ts);
           bubble.innerHTML = md(block.text);
         } else if (block.type === 'tool_use') {
           if (!block.name) continue;
