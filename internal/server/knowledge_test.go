@@ -95,6 +95,7 @@ func TestWorkerKnowledgePermissions(t *testing.T) {
 	}
 	result, err := s.knowledgeAddData(worker, map[string]any{
 		"title": "worker 结论", "body": "只写草稿", "source_task_id": taskID, "status": "approved",
+		"type": "pitfall", "verification": "tested", "scope": "worker 草稿",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +103,9 @@ func TestWorkerKnowledgePermissions(t *testing.T) {
 	entry, ok := result["entry"].(map[string]any)
 	if !ok || entry["status"] != "draft" {
 		t.Fatalf("worker entry must be draft: %#v", result)
+	}
+	if entry["verification"] != "unverified" || entry["type"] != "pitfall" || entry["scope"] != "worker 草稿" {
+		t.Fatalf("worker verification must be unverified, type/scope kept: %#v", entry)
 	}
 	if s.knowledgeActorForMCP("").Admin {
 		t.Fatal("missing MCP session must not be admin")

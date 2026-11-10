@@ -140,3 +140,66 @@ func TestStoreSummariesAndTaskGuard(t *testing.T) {
 		t.Fatalf("unexpected summaries: %#v counts=%#v", summaries, counts)
 	}
 }
+
+func TestStoreTypeVerificationScope(t *testing.T) {
+	st := newTestStore(t)
+	entry, _, err := st.Create(CreateInput{
+		Title: "编译集群连接方式", Body: "通过 relay 非交互执行脚本。",
+		Project: "编译集群", Type: "env_map", Verification: "tested",
+		Scope: "三台 Linux 编译机", LastVerifiedAt: "2026-11-10 10:00:00", Actor: "mainAgent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Type != "env_map" || entry.Verification != "tested" || entry.Scope != "三台 Linux 编译机" {
+		t.Fatalf("type fields not persisted: %#v", entry)
+	}
+	res, err := st.Search(SearchOptions{Query: "relay", Type: "env_map", Verification: "tested", IncludeDrafts: true})
+	if err != nil || res.Total != 1 {
+		t.Fatalf("type/verification filter: total=%d err=%v", res.Total, err)
+	}
+	res, err = st.Search(SearchOptions{Query: "relay", Verification: "observed", IncludeDrafts: true})
+	if err != nil || res.Total != 0 {
+		t.Fatalf("verification mismatch should be empty: total=%d err=%v", res.Total, err)
+	}
+	if _, _, err := st.Create(CreateInput{Title: "bad", Body: "x", Type: "nonsense"}); err == nil {
+		t.Fatal("invalid type should fail")
+	}
+}
+
+func TestMigrationAddsTypeColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "knowledge-old.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range []string{
+		"DROP INDEX IF EXISTS idx_knowledge_type",
+		"DROP INDEX IF EXISTS idx_knowledge_verification",
+		"ALTER TABLE knowledge_entries DROP COLUMN type",
+		"ALTER TABLE knowledge_entries DROP COLUMN verification",
+		"ALTER TABLE knowledge_entries DROP COLUMN scope",
+	} {
+		if _, err := st.db.Exec(ddl); err != nil {
+			t.Fatalf("%s: %v", ddl, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	entry, _, err := migrated.Create(CreateInput{Title: "迁移后的条目", Body: "默认字段", Actor: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Type != "playbook" || entry.Verification != "unverified" || entry.Scope != "" {
+		t.Fatalf("migration defaults: %#v", entry)
+	}
+	if _, err := migrated.db.Exec("CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge_entries(type, status, updated_at DESC)"); err != nil {
+		t.Fatalf("type index missing after migration: %v", err)
+	}
+}

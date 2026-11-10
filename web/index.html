@@ -270,10 +270,25 @@
             <div class="knowledge-search"><i data-lucide="search"></i><input id="knowledge-q" placeholder="搜索标题、摘要、正文、标签…" autocomplete="off"></div>
             <select id="knowledge-project" title="按项目筛选"><option value="">全部项目</option></select>
             <select id="knowledge-status" title="按状态筛选">
-              <option value="all">全部</option>
+              <option value="all">全部状态</option>
               <option value="approved">已通过</option>
               <option value="draft">草稿</option>
               <option value="stale">可能过期</option>
+            </select>
+            <select id="knowledge-type" title="按类型筛选">
+              <option value="">全部类型</option>
+              <option value="env_map">环境地图</option>
+              <option value="playbook">操作配方</option>
+              <option value="strategy">策略计划</option>
+              <option value="tested_rule">已验证规则</option>
+              <option value="pitfall">坑与反例</option>
+              <option value="index">索引入口</option>
+            </select>
+            <select id="knowledge-verification" title="按验证状态筛选">
+              <option value="">全部验证</option>
+              <option value="tested">已验证</option>
+              <option value="observed">已观察</option>
+              <option value="unverified">未验证</option>
             </select>
             <span id="knowledge-task-chip" class="knowledge-task-chip hidden"></span>
           </div>
@@ -713,6 +728,29 @@
     <div class="knowledge-form-row">
       <label>项目 <input id="knowledge-form-project" placeholder="如 AgentDeck"></label>
       <label>标签（逗号分隔） <input id="knowledge-form-tags" placeholder="SSE, rewind"></label>
+    </div>
+    <div class="knowledge-form-row">
+      <label>类型
+        <select id="knowledge-form-type">
+          <option value="playbook">操作配方</option>
+          <option value="env_map">环境地图</option>
+          <option value="strategy">策略计划</option>
+          <option value="tested_rule">已验证规则</option>
+          <option value="pitfall">坑与反例</option>
+          <option value="index">索引入口</option>
+        </select>
+      </label>
+      <label>验证状态
+        <select id="knowledge-form-verification">
+          <option value="unverified">未验证</option>
+          <option value="observed">已观察</option>
+          <option value="tested">已验证</option>
+        </select>
+      </label>
+    </div>
+    <div class="knowledge-form-row">
+      <label>适用范围 <input id="knowledge-form-scope" placeholder="如：三台 Linux 编译机 / 鸿蒙构建链"></label>
+      <label>最后验证时间 <input id="knowledge-form-verified" placeholder="YYYY-MM-DD"></label>
     </div>
     <label>来源任务 <input id="knowledge-form-task" spellcheck="false" placeholder="可选，如 T-..."></label>
     <div class="modal-actions">

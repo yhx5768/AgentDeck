@@ -1,0 +1,433 @@
+[
+  {
+    "title": "鸿蒙编译集群的连接方式与操作入口",
+    "summary": "三台 Linux 编译机通过 ssrelay 交互登录；脚本化操作走 harmony-build-machines/scripts/ssrun.py 的同一 relay 通道。认证由个人 relay 配置负责，知识库不保存任何凭据。",
+    "body": "## 结论\n三台编译机（`agent309423` / `agent282711` / `agent282714`）通过 **ssrelay** 登录。`ssrelay` 只能交互、无 TTY 会崩，所以脚本化操作统一用 `ssrun.py` 走同一条 relay 通道。\n\n## 操作入口\n```bash\n# 跑一条命令\npython3 scripts/ssrun.py agent309423 -- 'hostname; python --version'\n\n# 推一个脚本上去再跑（避免引号地狱）\npython3 scripts/ssrun.py agent309423 --script ./some.sh\n\n# 推/取文件\npython3 scripts/ssrun.py agent309423 --push ./local.txt /root/remote.txt\npython3 scripts/ssrun.py agent309423 --pull /etc/hosts ./hosts.bak\n```\n\n`SSRUN_CONFIG` 可指向别的 relay 配置，默认读 `~/Projects/RelayManagement/data.json`。\n\n## 注意\n- 连接认证由个人 relay 配置负责；**不要把密码/密钥/token 写进知识库或脚本**。\n- `ssrun.py` 会关掉远端 bash 的 bracketed paste 并剥 ANSI；结束哨兵必须带退出码，否则会匹配到命令行自身回显。\n- macOS 参照机用 `scripts/mac-run.py`（默认 `m1-bcloud-mac-pro-01.m1.baidu.com`），同样只写方法、不写凭据。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "编译机",
+      "ssrelay",
+      "ssrun",
+      "连接方式"
+    ],
+    "type": "env_map",
+    "verification": "tested",
+    "scope": "三台 Linux 编译机 + macOS 参照机的日常操作",
+    "last_verified_at": "2026-10-27 14:33:00",
+    "confidence": 92,
+    "source_paths": [
+      "work/projects/harmony-build-machines/README.md",
+      "work/projects/harmony-build-machines/scripts/ssrun.py",
+      "work/projects/harmony-build-machines/scripts/mac-run.py"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/README.md",
+        "locator": "mac 参照机 / 快速入口",
+        "quote": "mac 参照编译机 m1-bcloud-mac-pro-01.m1.baidu.com 已可经 relay 登录，用 scripts/mac-run.py。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "五、脚本清单 / ssrun.py",
+        "quote": "ssrelay 只能交互登录，无法在脚本里跑命令。ssrun.py 走同一条 relay 通道做非交互执行。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "鸿蒙编译集群：三台 Linux 机器清单与角色",
+    "summary": "三台 Ubuntu 24.04 LTS x86_64 编译机（agent309423 / agent282711 / agent282714），/data 3.5T，环境按 parity-check 38 项对齐；每台可起 ferry0/ferry1 两个构建槽。macOS 参照机是 MacPro6,1 Intel 机型，不是 Apple Silicon。",
+    "body": "## 机器清单\n| 机器 | 系统 | 角色/备注 |\n|---|---|---|\n| `yq01-ps-beehive-agent309423` | Ubuntu 24.04 LTS x86_64 | 编译机；ferry 曾自行停止一次，必要时巡检 |\n| `agent282711` | Ubuntu 24.04 LTS x86_64 | 编译机 |\n| `agent282714` | Ubuntu 24.04 LTS x86_64 | 编译机 |\n\n- 三台 `/data` 约 3.5T，均可通过 ssrelay/ssrun 操作。\n- 每台可运行 `ferry0` / `ferry1` 两个构建槽，槽的 workspace 在 `/data/ferry0`、`/data/ferry1`。\n- 三台环境按 `parity-check.sh` 对齐，目标是 **38 项全过（fail=0）**。\n\n## macOS 参照机\n`m1-bcloud-mac-pro-01.m1.baidu.com`：MacPro6,1（2013 圆筒 Mac Pro），Intel Xeon E5-2697 v2 12 核 / 64 GB / macOS 12.6，**x86_64 Intel，不是 Apple Silicon**；用于构建产物对照。\n\n## 不要混淆\n- 机器名里的 `m1-` 不代表 Apple Silicon。\n- 机器清单不是凭据；登录方式见「连接方式」条目，不在此写账号/密钥。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "编译机",
+      "机器清单",
+      "ferry",
+      "环境"
+    ],
+    "type": "env_map",
+    "verification": "tested",
+    "scope": "鸿蒙 App 构建集群",
+    "last_verified_at": "2026-10-27 14:33:00",
+    "confidence": 91,
+    "source_paths": [
+      "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+      "work/projects/harmony-build-machines/README.md"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "一、背景与结论",
+        "quote": "三台新装的 Linux 机器 yq01-ps-beehive-agent309423 / agent282711 / agent282714（Ubuntu 24.04 LTS x86_64，/data 3.5T，均通过 ssrelay 操作）。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/README.md",
+        "locator": "mac 参照机",
+        "quote": "型号 MacPro6,1（2013 款圆筒 Mac Pro），Intel Xeon E5-2697 v2 12 核 / 64 GB / macOS 12.6，x86_64 Intel 架构。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "鸿蒙编译机关键路径与版本基线",
+    "summary": "SDK/JDK 平铺在 /data/ohos_sdk、nasm 2.14.02 在 /data/nasm-2.14、/usr/bin/python 指向 python2.7、ferry 槽在 /data/ferry0|ferry1；py3 侧预装 toolkit 1.7.0，npm 走内网源，/bin/sh 切到 bash。",
+    "body": "## 关键路径\n- SDK/JDK：`/data/ohos_sdk/<version>/command-line-tools/{bin,tool/node/bin}`；下载归档在 `/data/ohos_sdk/_dl`。\n- NASM：`/data/nasm-2.14/nasm`（2.14.02）。\n- Python：`/usr/bin/python` → python2.7；`/usr/bin/python3` 保留 py3（toolkit 1.7.0 预装在 py3 dist-packages）。\n- ferry 槽：`/data/ferry0`、`/data/ferry1`。\n- npm：`<node>/etc/npmrc` + npm builtin `npmrc` + 各用户 `~/.npmrc` 预设内网源。\n- hosts：`tekes-actions.cdn` 内网映射。\n- `/bin/sh` → bash（原 Ubuntu 默认 dash）。\n\n## 版本/环境基线\n- 三台 Ubuntu 24.04 LTS x86_64，`/data` 约 3.5T。\n- SDK 解包后必须 `chmod -R a+rX /data/ohos_sdk`（压缩包内目录/文件原本是 700/600，构建用户读不到）。\n- `parity-check.sh` 逐项核对上述改动，期望 38 项全过。\n\n## 适用范围\n重建/巡检/排障时先对照本条目；具体机器状态（是否正在构建、队列长度）不要写进知识，去任务日志/看板看实时状态。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "SDK",
+      "nasm",
+      "python2",
+      "ferry",
+      "npm",
+      "环境基线"
+    ],
+    "type": "env_map",
+    "verification": "tested",
+    "scope": "三台 Ubuntu 24.04 编译机的环境核对",
+    "last_verified_at": "2026-10-27 14:33:00",
+    "confidence": 90,
+    "source_paths": [
+      "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+      "work/projects/harmony-build-machines/scripts/parity-check.sh"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "2.1 基础环境 / 2.3 Python 运行环境 / 2.4 ferry 构建机",
+        "quote": "平铺解压成 /data/ohos_sdk/<version>/command-line-tools/{bin,tool/node/bin}；nasm 2.14.02 到 /data/nasm-2.14/nasm；/usr/bin/python 指向 python2.7；ferry0/ferry1 挂 /data。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/scripts/parity-check.sh",
+        "locator": "38 项一致性核对",
+        "quote": "期望 pass=38 fail=0。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "从零重建一台鸿蒙编译机：脚本顺序与验收",
+    "summary": "按 harmony-build-machines/scripts 的幂等脚本顺序重建：SDK/JDK → 系统兼容 → Python2/3 → ferry → parity-check 38/38。验收必须以构建用户身份跑，不要用 root。",
+    "body": "## 步骤（全部幂等，可重复执行）\n1. 基础环境：`ohos-dl.sh` → `ohos-extract.sh` → `ohos-nasm.sh` → `ohos-sdk-perms.sh` → `ohos-envtest.sh`。\n2. 系统兼容：`sh-to-bash.sh`、`ssh-rsa-sysconf.sh`（+ `ferry-ssh-rsa.sh`）、`install-libgl.sh` + `verify-transcoder-deps.sh`、`install-libtinfo5.sh`。\n3. Python：`install-py2-step1.sh` → `relink-python-to-py2.sh` → `install_py2_requests.sh`；py3 侧 `fix-toolkit-chain.sh` → `fix-toolkit-170.sh` → `fix-toolkit-sdk.sh`。\n4. npm：`fix-npm-registry.sh`（v1 不够）→ `fix-npm-registry-v2.sh`（写 builtin npmrc 才生效）。\n5. ferry：`su - work -c \"wget ... install.sh && bash install.sh\"` → `ferry_admin.sh --init --num=2 --disk=ferry0:/data,ferry1:/data` → `--start` 或 `start-ferry.sh`。\n6. 收尾：`parity-check.sh`，期望 **pass=38 fail=0**。\n\n## 验收要点\n- 以 **构建用户**（如 `ferry0`）身份跑命令，不要用 root；root 会绕过 SDK 权限问题，得到假通过。\n- 先验证再动手；补丁脚本要么一次铺满所有机器，要么事后必跑一致性核对。\n- 失败处理/回滚项见主文档「七、可回滚项」。\n\n## 证据\n主文档「二、从零重建」与 README 的「快速入口」。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "重建",
+      "playbook",
+      "parity-check",
+      "ferry"
+    ],
+    "type": "playbook",
+    "verification": "tested",
+    "scope": "三台 Linux 编译机任一环境重建",
+    "last_verified_at": "2026-10-27 14:33:00",
+    "confidence": 92,
+    "source_paths": [
+      "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+      "work/projects/harmony-build-machines/README.md",
+      "work/projects/harmony-build-machines/scripts/parity-check.sh"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "二、从零重建：照着做",
+        "quote": "scripts/ 目录下每个脚本都是幂等的，可重复执行。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/README.md",
+        "locator": "快速入口",
+        "quote": "要重建一台机器 → 主文档「二、从零重建：照着做」；核对机器是否配置齐全 → bash scripts/parity-check.sh（38 项，期望 fail=0）。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "构建产物对比：先复刻原始构建参数",
+    "summary": "对比 Linux 与 macOS 产物前必须复刻 build ID 等会写进产物的参数，否则会把测试输入差异误判成环境差异；用 cmp-app.py 比较字符串集合、类数量、sourceMaps 键值和归一化路由表。",
+    "body": "## 做法\n```bash\npython3 scripts/cmp-app.py A.app B.app\n```\n对比项：字符串集合、类数量、`sourceMaps` 键值、归一化后的路由表。**不是逐字节 diff**。\n\n## 关键前提\n- 必须复刻原始构建参数（至少 build ID 这类会写进产物的值）；否则差异来自输入，不是环境。\n- 同一配置连编两次，内层应零差异，只有 zip 时间戳不同；这证明构建是确定性的。\n- 第一轮 release：8/10 项完全一致，2 项差异可归因；第二轮 debug 除 build ID 外字符串集合一致。\n\n## 结论\nLinux 构建与 macOS 参照**代码内容等价**，差异来自绝对构建路径、打包顺序、平台相关原生二进制（transformer + es2abc），**不在机器配置**。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "产物对比",
+      "cmp-app",
+      "构建参数",
+      "playbook"
+    ],
+    "type": "playbook",
+    "verification": "tested",
+    "scope": "鸿蒙 App Linux 构建产物与 macOS 参照产物的对比",
+    "last_verified_at": "2026-09-24 18:00:00",
+    "confidence": 90,
+    "source_paths": [
+      "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+      "work/projects/harmony-build-machines/scripts/cmp-app.py",
+      "work/projects/harmony-build-machines/README.md"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "8.5 方法教训",
+        "quote": "做产物对比必须复刻原始构建参数（至少是 build ID 这类会写进产物的值），否则会把自己的测试输入误判成环境差异。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/README.md",
+        "locator": "产物对比一句话结论",
+        "quote": "Linux 构建与 macOS 参照产物代码内容等价，但不可能逐字节相同。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "Linux 产物与 macOS 参照代码等价，但不能逐字节相同",
+    "summary": "字符串集合、类数量、sourceMaps 键值、归一化路由表全部一致；逐字节差异来自绝对路径、打包顺序、transformer 和 es2abc 两个平台相关原生二进制。发布门禁不要用逐字节 diff。",
+    "body": "## 规则\nLinux 构建产物与 macOS 参照产物**代码内容等价**，但**不可能逐字节相同**。判据是字符串集合、类数量、`sourceMaps` 键值、归一化后的路由表；不是 `cmp`/sha256。\n\n## 四类差异\n| 差异来源 | 影响 | 能否消除 |\n|---|---|---|\n| 绝对构建路径 | `hm_router_map.json` | 归一化后内容相同 |\n| zip/打包顺序 | `sourceMaps.map` | 键值 100% 相同 |\n| transformer（`@baidu/ohps-plugin`） | `modules.abc` | 不能，两个平台独立构建，盖章版本不同 |\n| `es2abc` 编译器 | `widgets.abc` 等 | 不能，平台相关原生二进制 |\n\n## 适用范围与反例\n- 适用于 Linux vs macOS 的 OHOS 构建产物对比。\n- 反例：用逐字节 diff 判定「构建失败」；差异可能只是路径/顺序/盖章，不代表代码内容不同。\n- 最终仍需真机运行验证（`.abc` 无法逐字节对齐）。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "tested_rule",
+      "产物对比",
+      "es2abc",
+      "transformer"
+    ],
+    "type": "tested_rule",
+    "verification": "tested",
+    "scope": "OHOS 构建产物跨平台对比；发布门禁设计",
+    "last_verified_at": "2026-09-24 18:00:00",
+    "confidence": 94,
+    "source_paths": [
+      "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+      "work/projects/harmony-build-machines/README.md"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "8.7 总结论",
+        "quote": "四类差异没有一类是「代码内容不同」：字符串集合、类数量、sourceMaps 键值、归一化后的路由表，全部一致。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "8.7 总结论",
+        "quote": "Linux 构建不可能与 macOS 参照产物逐字节相同，卡点在两个平台相关的原生二进制（transformer + es2abc）。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "transformer 给 abc 盖章 13.0.1.0，超出老设备支持上限",
+    "summary": "Linux 版 plugin_byte_transformer 会把处理过的 abc 版本写成 13.0.1.0（darwin 版 12.0.6.0），低版本 API 设备上限 12.0.6.0，导致启动即崩；插件侧重编版已验证可用（apiVersion 0→17）。",
+    "body": "## 规则\n`@baidu/ohps-plugin` 的 `plugin_byte_transformer_linux-x64` 会给处理过的 abc **盖章**写入自己二进制里写死的版本：**Linux → 13.0.1.0，darwin → 12.0.6.0**，与输入版本无关。\n\n## 后果\n低版本 API 手机（设备上限 12.0.6.0）加载 Linux 产出的 `modules.abc` 会**启动即崩**。这不是机器配置问题，也不是代码内容问题。\n\n## 处理\n- 插件侧重编版已验证可用（apiVersion 0→17），不要只靠改机器环境。\n- 线上若仍是 1.0.1，升级到验证过的 1.0.2 版本；升级要落到正式源码，不能只改本地。\n- 验证方式：装到真机跑起来确认，不能只看产物字段。\n\n## 证据\n`abc版本差异分析-20260924.md` 与 `linux-transformer-排查复盘-20260924.md`。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "tested_rule",
+      "transformer",
+      "abc",
+      "老设备"
+    ],
+    "type": "tested_rule",
+    "verification": "tested",
+    "scope": "Linux 构建产物安装到低版本 API 设备；@baidu/ohps-plugin 升级",
+    "last_verified_at": "2026-09-24 18:00:00",
+    "confidence": 96,
+    "source_paths": [
+      "work/projects/harmony-build-machines/abc版本差异分析-20260924.md",
+      "work/projects/harmony-build-machines/linux-transformer-排查复盘-20260924.md",
+      "work/projects/harmony-build-machines/README.md"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/README.md",
+        "locator": "产物对比一句话结论",
+        "quote": "plugin_byte_transformer_linux-x64 会给处理过的 abc 盖章写入写死的版本 13.0.1.0（darwin 版是 12.0.6.0），超出低版本设备的支持上限。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/abc版本差异分析-20260924.md",
+        "locator": "根因分析",
+        "quote": "abc 版本由 transformer 盖章决定；含对照实验与给修复方的信息。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "macOS→Linux 移植的五类高频坑",
+    "summary": "ssh-rsa 被 OpenSSH 9.6 默认禁用、/bin/sh 是 dash、文件名大小写敏感、脚本是 Python2、插件只有 Mach-O。先按这五类排查，能覆盖本次绝大多数报错。",
+    "body": "## 五类坑\n1. **SSH**：icode 只提供 ssh-rsa，OpenSSH 9.6 默认禁用 → 系统级 `ssh-rsa-sysconf.sh` + 每槽 `ferry-ssh-rsa.sh`（平台会清 `.ssh`）。\n2. **shell**：Ubuntu `/bin/sh` 是 dash，而 macOS 的 sh 是 bash → `sh-to-bash.sh`。\n3. **文件名大小写**：Linux 区分大小写；macOS 不区分。源码侧 `p7b` 文件名大小写要在 Linux 上 `git mv`。\n4. **Python2**：`router.py`、`urllib2` 等是 py2 语法 → 装 python2.7、`/usr/bin/python` 指向 py2、py2 装 pip2/requests；py3 侧保留 toolkit。\n5. **原生二进制**：`@baidu/ohps-plugin` 的 transformer 只有 Mach-O → 需要 Linux 版插件；这是源码/平台侧问题，不是机器配置。\n\n## 适用\n鸿蒙 Tekes 构建链从 macOS 迁到 Linux 的排障；先按五类分桶，再进主文档「三、踩坑清单」看具体现象/根因/修法。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "pitfall",
+      "ssh-rsa",
+      "dash",
+      "python2",
+      "文件名大小写"
+    ],
+    "type": "pitfall",
+    "verification": "tested",
+    "scope": "macOS → Linux 的鸿蒙构建链移植",
+    "last_verified_at": "2026-09-22 20:00:00",
+    "confidence": 92,
+    "source_paths": [
+      "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+      "work/projects/harmony-build-machines/README.md"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/README.md",
+        "locator": "一句话背景",
+        "quote": "整条 Tekes 构建链原本是给 macOS 写的；本次绝大多数坑都源于此：ssh-rsa、sh 是 dash、插件只有 Mach-O、文件名大小写、脚本是 py2。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "三、踩坑清单 A 类",
+        "quote": "A 类：macOS → Linux 移植（本次主线，6 个）。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "验收不要用 root；SDK 权限/日志时间戳/报错信息都会误导",
+    "summary": "SDK 解包后目录是 700/600，root 验收会绕过权限问题；必须以构建用户身份跑。日志时间戳可能是假象，报错信息也经常误导，判断「谁写的」要看产出它的代码。",
+    "body": "## 规则\n1. **验收一律以构建用户身份跑，不要用 root。** SDK 压缩包内目录/文件是 700/600；root 能读，构建用户（ferry0/ferry1）读不到，早先 root 验收把致命缺陷放过去了。\n2. **日志时间戳可能是假象**：不要只看时间排序推断因果。\n3. **报错信息经常误导**：先确认路径是输入还是输出，再看产出它的那段代码；别看到文件就假定它是中间态。\n4. **补丁脚本要么一次铺满所有机器，要么事后必跑一致性核对**（`parity-check.sh`）。\n5. **别凭一次手工复现推断长期绑定关系**：ferry 的密钥是按任务触发人逐单注入，不是按槽固定；看任务日志里的 `BUILD_REPO_URL`。\n\n## 适用\n编译机验收、排障归因、补丁脚本收尾。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "pitfall",
+      "验收",
+      "root",
+      "日志",
+      "归因"
+    ],
+    "type": "pitfall",
+    "verification": "tested",
+    "scope": "编译机验收与跨机器问题归因",
+    "last_verified_at": "2026-09-22 20:00:00",
+    "confidence": 90,
+    "source_paths": [
+      "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "四、判断方法 1",
+        "quote": "验收一律以构建用户身份跑，不要用 root。早先「六个 SDK 版本 fail=0」的验收是 root 跑的，恰好绕过 C1 的权限问题。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "四、判断方法 7",
+        "quote": "别凭一次手工复现推断长期绑定关系；实际是按任务触发人逐单注入，看任务日志里的 BUILD_REPO_URL。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "npm 内网源、ferry .ssh 清理与 /tmp 跨槽锁",
+    "summary": "npm 公网源不可达时 v1 fix-npm-registry.sh 对 --prefix 无效，必须用 v2 写 builtin npmrc；ferry 平台会清 .ssh，需要系统级 ssh-rsa 兜底；ferry0/ferry1 共用 /tmp，ripgrep-init.lock 会互踩。",
+    "body": "## 三个常见坑\n1. **npm 源**：机器无公网；`fix-npm-registry.sh` v1 只写 globalconfig，对 `npm install --prefix` 无效 → 用 `fix-npm-registry-v2.sh` 写 `<node>/etc/npmrc` + npm builtin `npmrc` + 各用户 `~/.npmrc`。`$HOME/.npmrc` 会被 ferry 平台清理，所以 builtin npmrc 才是保底。\n2. **ferry .ssh**：平台会清构建用户家目录的 `.ssh`，每槽 `ferry-ssh-rsa.sh` 之外还要 `ssh-rsa-sysconf.sh` 做系统级兜底。\n3. **/tmp 锁**：ferry0/ferry1 共用 `/tmp`；`auto-debug-client` 的 `/tmp/ripgrep-init.lock` 谁先跑就以 0600 建文件，后跑用户 panic。同机两槽必踩，目前未修，需规避。\n\n## 适用\n编译机网络/权限类问题；API 26 的 pnpm 引导、ferry 克隆失败、bracketed paste 之外的临时文件冲突。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "pitfall",
+      "npm",
+      "ferry",
+      "ssh",
+      "临时锁"
+    ],
+    "type": "pitfall",
+    "verification": "tested",
+    "scope": "三台编译机的网络/权限/ferry 槽问题",
+    "last_verified_at": "2026-09-22 20:00:00",
+    "confidence": 89,
+    "source_paths": [
+      "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+      "work/projects/harmony-build-machines/scripts/fix-npm-registry-v2.sh"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "D6 npm 源 / C 类权限",
+        "quote": "$HOME/.npmrc 会被 ferry 平台清理，回落到 npm 内置默认值 registry.npmjs.org；v2 写 builtin npmrc 才真正生效。"
+      },
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/鸿蒙编译机Linux环境搭建与踩坑沉淀.md",
+        "locator": "C 类权限",
+        "quote": "ferry0/ferry1 共用 /tmp，auto-debug-client 启动时要 open /tmp/ripgrep-init.lock，谁先跑就以 0600 建这个文件，后跑的那个用户必然 panic。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  },
+  {
+    "title": "鸿蒙编译集群资料与脚本入口",
+    "summary": "先读 work/projects/harmony-build-machines/README.md；主文档含 25 个坑与重建步骤，scripts/ 有 30 个幂等脚本；abc 版本与 transformer 问题看单独两篇复盘；台账在 work/tracking/projects/harmony-build-machines.md。",
+    "body": "## 入口\n- `work/projects/harmony-build-machines/README.md`：快速入口、机器清单、一句话结论。\n- `鸿蒙编译机Linux环境搭建与踩坑沉淀.md`：主文档（背景、从零重建、25 个坑、判断方法、脚本清单、遗留问题、可回滚项、构建产物对比）。\n- `abc版本差异分析-20260924.md`：Linux 产物在低版本手机打不开的根因。\n- `linux-transformer-排查复盘-20260924.md`：排查过程与四次判断的教训。\n- `scripts/`：30 个幂等脚本，按主文档第二节顺序执行；`parity-check.sh` 是 38 项一致性核对。\n- `work/tracking/projects/harmony-build-machines.md`：流水式台账（当前状态/时间线）。\n\n## 怎么用\n- 重建机器 → 主文档「二」。\n- 遇到报错 → 主文档「三」按五类查。\n- 想知道怎么排查 → 主文档「四」。\n- 对比产物 → `python3 scripts/cmp-app.py A.app B.app` + 主文档「八」。\n- 操作三台机器 → `scripts/ssrun.py`；mac 参照机 → `scripts/mac-run.py`。",
+    "project": "编译集群",
+    "tags": [
+      "鸿蒙",
+      "index",
+      "README",
+      "脚本",
+      "台账"
+    ],
+    "type": "index",
+    "verification": "tested",
+    "scope": "鸿蒙编译集群的资料检索入口",
+    "last_verified_at": "2026-10-27 14:33:00",
+    "confidence": 95,
+    "source_paths": [
+      "work/projects/harmony-build-machines/README.md",
+      "work/tracking/projects/harmony-build-machines.md"
+    ],
+    "evidence": [
+      {
+        "kind": "path",
+        "ref": "work/projects/harmony-build-machines/README.md",
+        "locator": "文件 / 快速入口",
+        "quote": "主文档含 25 个踩坑；scripts/ 有 30 个幂等脚本；台账在 work/tracking/projects/harmony-build-machines.md。"
+      }
+    ],
+    "status": "approved",
+    "source_kind": "manual",
+    "sensitivity": "internal"
+  }
+]

@@ -8,8 +8,8 @@
 
 | 层 | 内容 |
 |---|---|
-| 数据 | 独立 `<data_dir>/knowledge.db`（SQLite + FTS5）；entries / tags / evidence / relations / events / FTS 表；draft/approved/stale/rejected/quarantined/superseded 状态；去重键；证据；审计事件 |
-| 检索 | 应用侧 CJK unigram + bigram 分词（`看板`、`重编号` 可命中）；BM25 排序；项目/标签/状态/来源任务过滤；分页 |
+| 数据 | 独立 `<data_dir>/knowledge.db`（SQLite + FTS5）；entries / tags / evidence / relations / events / FTS 表；`type`（env_map/playbook/strategy/tested_rule/pitfall/index）、`verification`（tested/observed/unverified）、`scope`、`last_verified_at`、证据；draft/approved/stale/rejected/quarantined/superseded 状态；去重键；审计事件 |
+| 检索 | 应用侧 CJK unigram + bigram 分词（`看板`、`重编号` 可命中）；BM25 排序；项目/标签/状态/**类型**/**验证状态**/来源任务过滤；分页 |
 | API | `GET /api/knowledge`、`GET /api/knowledge/{id}`、`POST /api/knowledge`、`PATCH /api/knowledge/{id}`、`POST /api/knowledge/collect` |
 | MCP | `knowledge_search` / `knowledge_get` / `knowledge_add`（所有会话）；`knowledge_review` / `knowledge_collect`（仅主 Agent，沿用 env + `requireMainAgent` 两层闸门） |
 | 采集 | `POST /api/knowledge/collect` 扫描看板 `待验收/已完成` 任务，生成每任务 1 条 draft；按 task 幂等；只读看板字段 + 已托管 artifact 元数据；敏感命中 quarantined；不读工作区/transcript/legacy report_file 路径 |
@@ -20,12 +20,48 @@
 
 - 入口：`#chat-tabs` 内的「资料空间」tab，位于「看板」右侧；只有 `main_agent` 会话显示（`syncMainAgentTabs` 同时控制 board/knowledge，非 mainAgent 隐藏两个 tab，若停在其中则回「对话」）。侧栏右上角入口已删除。
 - `switchChatTab('knowledge')`：显示 `#knowledge-view`，隐藏消息区/轨迹/看板/composer；切走时关闭详情并清掉选中态。知识库不再是覆盖层/独立 workspace 页。
-- 顶部 header：标题 + `mainAgent · 会话名` + 统计 chips（已通过/草稿/可能过期，可点击筛选）+ 搜索 + 项目/状态筛选 + 「从看板采集」「新建知识」；无独立返回按钮（tab 切换即可）。
-- 桌面：左侧卡片列表（状态/项目/来源任务/更新时间/标题/摘要/标签），右侧详情面板（正文 Markdown、来源任务与 artifact、证据、审批/过期动作）；选中卡片有左侧 accent 边和描边。
+- 顶部 header：标题 + `mainAgent · 会话名` + 统计 chips（已通过/草稿/可能过期，可点击筛选）+ 搜索 + 项目/状态/**类型**/**验证状态**筛选 + 「从看板采集」「新建知识」；无独立返回按钮（tab 切换即可）。
+- 新建表单：标题/摘要/正文/项目/标签/来源任务 + **类型、验证状态、适用范围、最后验证时间**；详情页展示同样的字段和证据引用。
+- 桌面：左侧卡片列表（状态/**验证状态**/**类型**/项目/来源任务/更新时间/标题/摘要/标签），右侧详情面板（正文 Markdown、来源任务与 artifact、证据、**类型/验证状态/适用范围/最后验证时间**、审批/过期动作）；选中卡片有左侧 accent 边和描边。
 - 移动端（≤900px）：列表全宽；详情为全屏 sheet（右上角关闭），避免页面级横向溢出和嵌套滚动。
 - 加载/空/错误三态：列表加载中、无结果空态、请求失败带「重试」。
 - 看板抽屉「查看全部」→ 切到资料空间 tab 并带 `source_task_id` 过滤（header 显示可清除的任务 chip）；「从本任务提炼知识」→ 打开新建知识 modal。
 - 深链 `?knowledge=1` / `?knowledge=<id>`：先定位 mainAgent 会话，再切到资料空间 tab；`<id>` 直接打开详情。`?theme=dark|light` 仍用于预览验证。
+
+
+### 1.2 沉淀什么 / 不沉淀什么（Anthropic《The components of agent memory》原则）
+
+资料空间对应四层记忆中的**知识表征 + 注入索引**：`会话日志 transcript`（原始过程，只作证据）→ `记忆笔记`（草稿/候选）→ `知识表征`（Wiki/索引，本资料空间）→ `注入上下文`（只放标题/摘要/标签的小索引，全文按需检索）。**原始会话不作为知识正文**。
+
+**只保存「环境本身不会告诉你的」：策略、计划、已验证规则、坑、连接/资产地图。** 不保存随时会变的当前状态。
+
+| type | 名称 | 写什么 | 例子 |
+|---|---|---|---|
+| `env_map` | 环境与资产地图 | 连接方式、机器清单与角色、OS/依赖/端口/路径、网络限制 | 编译集群怎么连、有哪些机器、各机器环境差异 |
+| `playbook` | 操作配方 | 可复用步骤/命令、前置条件、验证方法、失败处理/回滚 | 从零重建编译机、产物对比流程 |
+| `strategy` | 策略与计划 | 一类任务的做法、取舍标准、阶段计划 | 「先复刻参数再对比产物」的归因策略 |
+| `tested_rule` | 已验证规则 | 规则 + 证据 + 适用范围 + 反例 | Linux 产物代码等价但非逐字节相同 |
+| `pitfall` | 坑与反例 | 什么不要做、为什么、症状、修法 | `/bin/sh` 是 dash、ssh-rsa 被默认禁用 |
+| `index` | 索引入口 | 东西在哪、从哪进、先读哪篇 | 编译集群 README / 脚本清单 / 台账入口 |
+
+**验证状态**（与生命周期 `status` 正交，必须标）：
+
+| verification | 含义 | 使用要求 |
+|---|---|---|
+| `tested` | 有证据且实际验证通过 | 写清验证方法/日期；`last_verified_at` 必须有值 |
+| `observed` | 观察到现象，但未做完整验证 | 写清观察条件；采信前复核 |
+| `unverified` | 猜测/转述/未验证 | 默认值；主 Agent 审核后才能升级 |
+
+每条知识必须带：`evidence`（任务/artifact/文档路径/URL + 引用）、`scope`（适用范围/边界）、`last_verified_at`、`source_paths`。**「猜的」和「验证过的」不能混在一起**：worker 通过 MCP 写入的 verification 一律强制 `unverified`，只有主 Agent/用户审核时能升级为 `tested`/`observed`。
+
+**明确不沉淀：**
+
+- 密钥、密码、token、cookie、私钥、连接凭据；连接方式只写「怎么连」，不写凭据。
+- 一次性日志、报错堆栈、临时输出、屏幕状态、实时队列长度、运行中状态、金额/坐标等随时会变的值。
+- 纯聊天、寒暄、没有结论的过程记录。
+- 重复条目：相同结论先合并证据、更新 `last_verified_at`；过期结论标 `stale`，被新结论替代标 `superseded`。
+
+**少而精**：宝可梦实验里 10 个精炼记忆文件拿 4 枚徽章，413 个流水账文件只拿 1 枚。宁可一条可复用的 `tested_rule`，不要十条流水账。维护机制：主 Agent 定期回看会话日志/任务产物，提出新条目或纠正过期条目，走 draft → 审批，**不自动写入**。
 
 ## 2. 未实现 / TODO
 
@@ -102,7 +138,7 @@ worker 的 `knowledge_add` 提示：`title` 必填，`summary`/`body` 至少一�
 - 不读：任务 cwd 下任意文件、`data/events`、CLI transcript、`legacy report_file` 路径、外链内容。
 - `source_paths` 只是路径标注；服务端不会按它读文件。
 - 敏感扫描：私钥、Bearer、`token=/password=/secret=` 赋值、cookie、常见 token 前缀、混合大小写+数字的高熵串；命中后字段脱敏、状态 `quarantined`、不写 FTS。
-- 演示数据扫描：83 个任务 → 68 条 draft、3 条 quarantine（其余跳过：进行中/无内容）。3 条隔离分别为凭据/高熵命中。
+- 演示数据扫描：83 个任务 → collect 创建 68 条（65 draft + 3 quarantine）；其余跳过：进行中/无内容。3 条隔离分别为凭据/高熵命中。
 
 ## 6. 测试实例
 
@@ -149,8 +185,39 @@ rm -rf data-demo
   - 看板任务 `YHX-TODO-780` 抽屉「相关知识 (1)」显示 approved 条目；点「查看全部」切到资料空间 tab，任务 chip 为「来源任务 YHX-TODO-780 ×」，结果 1 条。
   - 深链 `?knowledge=<id>&theme=dark` 自动打开 mainAgent 资料空间 tab 和详情。
   - 1440/1024/768/390 × light/dark：`scrollWidth == innerWidth`（无横向溢出）；0 console error / runtime exception。
-  - 新增/更新的 jsdom 共 14 项通过（tab 显隐、active、看板→知识切换、加载/空/错误态、来源任务 chip 等）。
-- 演示数据：68 条 draft、3 条 quarantined；为演示手动 approve 了 6 条（通过 API `action=approve, reason=demo seed review`），不改变“自动只出 draft”的策略。
+  - 类型/验证筛选：环境地图 + 已验证 → 3 条编译集群种子；种子详情显示类型/验证状态/适用范围/最后验证时间，来源与证据列出路径和引用。
+  - 新增/更新的 jsdom 共 14 项通过（tab 显隐、active、看板→知识切换、加载/空/错误态、来源任务 chip、类型/验证徽标等）。
+  - Go 测试新增 `TestStoreTypeVerificationScope`（类型/验证过滤）与 `TestMigrationAddsTypeColumns`（旧库自动补列）；worker 写入的 verification 强制 unverified。
+- 演示数据：collect 产出 65 条 draft + 3 条 quarantined；另播种 11 条编译集群种子（全部 approved/tested，见 §7.1）。自动采集仍只出 draft，种子是人工审核后的演示数据。
+
+## 7.1 编译集群种子知识（11 条）
+
+演示库 `data-demo` 预置了一组来自 `work/projects/harmony-build-machines/` 的真实种子（全部 approved / tested；无密码、密钥、token；连接方式只写方法）：
+
+| type | 标题 | 说明 |
+|---|---|---|
+| env_map | 鸿蒙编译集群的连接方式与操作入口 | ssrelay 交互、ssrun.py 非交互、mac-run.py；认证由个人 relay 配置负责 |
+| env_map | 鸿蒙编译集群：三台 Linux 机器清单与角色 | agent309423/282711/282714、Ubuntu 24.04、/data 3.5T、ferry0/ferry1、mac 参照机 |
+| env_map | 鸿蒙编译机关键路径与版本基线 | SDK/nasm/python2/ferry/toolkit/npm/hosts/`/bin/sh` |
+| playbook | 从零重建一台鸿蒙编译机：脚本顺序与验收 | 幂等脚本顺序、parity-check 38/38、构建用户验收 |
+| playbook | 构建产物对比：先复刻原始构建参数 | cmp-app.py、build ID、确定性 |
+| tested_rule | Linux 产物与 macOS 参照代码等价，但不能逐字节相同 | 四类差异、发布门禁 |
+| tested_rule | transformer 给 abc 盖章 13.0.1.0，超出老设备支持上限 | 低版本设备启动崩溃根因 |
+| pitfall | macOS→Linux 移植的五类高频坑 | ssh-rsa/dash/文件名大小写/py2/Mach-O 插件 |
+| pitfall | 验收不要用 root；SDK 权限/日志时间戳/报错信息都会误导 | 验收身份与归因方法 |
+| pitfall | npm 内网源、ferry .ssh 清理与 /tmp 跨槽锁 | 网络/权限/临时文件冲突 |
+| index | 鸿蒙编译集群资料与脚本入口 | README/主文档/脚本/台账 |
+
+每条都带 `scope`、`last_verified_at`、`source_paths` 和带引用的 `evidence`（指向 `work/projects/harmony-build-machines/...`）。种子文件：`docs/knowledge-seed-harmony-build-machines.json`。
+
+播种命令（只对演示库；不要指向生产 8321）：
+
+```bash
+TOKEN=$(grep -m1 '^gateway_token:' config.yaml | sed 's/^gateway_token:[[:space:]]*//; s/["'\'']//g')
+AGENTDECK_TOKEN="$TOKEN" python3 scripts/seed-knowledge-demo.py --url http://127.0.0.1:8327
+```
+
+重复执行相同内容会因去重键返回 duplicate；改了正文会新建一条。需要干净重播时先停服务、删除 `data-demo/knowledge.db*`，再启动/collect/seed。
 
 ## 8. 已知取舍
 

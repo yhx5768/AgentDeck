@@ -93,6 +93,8 @@ func knowledgeSearchParamsFromArgs(args map[string]any) knowledgeSearchParams {
 		Query:            stringArg(args, "query"),
 		Project:          stringArg(args, "project"),
 		Status:           stringArg(args, "status"),
+		Type:             stringArg(args, "type"),
+		Verification:     stringArg(args, "verification"),
 		Tag:              stringArg(args, "tag"),
 		SourceTaskID:     stringArg(args, "source_task_id"),
 		Limit:            intArg(args, "limit"),
@@ -123,6 +125,8 @@ type knowledgeSearchParams struct {
 	Query            string
 	Project          string
 	Status           string
+	Type             string
+	Verification     string
 	Tag              string
 	SourceTaskID     string
 	Limit            int
@@ -136,6 +140,8 @@ func (p *knowledgeSearchParams) normalize(actor knowledgeActor) {
 	p.Query = strings.TrimSpace(p.Query)
 	p.Project = strings.TrimSpace(p.Project)
 	p.Status = strings.ToLower(strings.TrimSpace(p.Status))
+	p.Type = strings.ToLower(strings.TrimSpace(p.Type))
+	p.Verification = strings.ToLower(strings.TrimSpace(p.Verification))
 	p.Tag = strings.TrimSpace(p.Tag)
 	p.SourceTaskID = strings.TrimSpace(p.SourceTaskID)
 	if p.Limit <= 0 {
@@ -178,7 +184,8 @@ func (p *knowledgeSearchParams) normalize(actor knowledgeActor) {
 
 func (p knowledgeSearchParams) options() knowledge.SearchOptions {
 	return knowledge.SearchOptions{
-		Query: p.Query, Project: p.Project, Status: p.Status, Tag: p.Tag,
+		Query: p.Query, Project: p.Project, Status: p.Status, Type: p.Type,
+		Verification: p.Verification, Tag: p.Tag,
 		SourceTaskID: p.SourceTaskID, Limit: p.Limit, Offset: p.Offset,
 		IncludeDrafts: p.IncludeDrafts, IncludeStale: p.IncludeStale,
 		IncludeSensitive: p.IncludeSensitive,
@@ -194,6 +201,7 @@ func (s *Server) handleKnowledgeList(w http.ResponseWriter, r *http.Request) {
 	values := r.URL.Query()
 	params := knowledgeSearchParams{
 		Query: values.Get("q"), Project: values.Get("project"), Status: values.Get("status"),
+		Type: values.Get("type"), Verification: values.Get("verification"),
 		Tag: values.Get("tag"), SourceTaskID: values.Get("source_task_id"),
 		Limit: intQuery(values.Get("limit")), Offset: intQuery(values.Get("offset")),
 		IncludeDrafts:    truthyQuery(values.Get("include_drafts")),
@@ -309,7 +317,7 @@ func (s *Server) handleKnowledgeUpdate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, "只能编辑自己创建的草稿")
 			return
 		}
-		for _, key := range []string{"status", "review_reason", "reviewer"} {
+		for _, key := range []string{"status", "review_reason", "reviewer", "verification", "last_verified_at"} {
 			if _, exists := body[key]; exists {
 				writeErr(w, http.StatusForbidden, "审批操作仅主 Agent 可用")
 				return
@@ -467,10 +475,26 @@ func (s *Server) knowledgeAddData(actor knowledgeActor, input map[string]any) (m
 			})
 		}
 	}
+	explicitEvidence := evidenceArg(input)
+	explicitPaths := map[string]bool{}
+	for _, ev := range explicitEvidence {
+		if ev.Kind == "path" {
+			explicitPaths[ev.Ref] = true
+		}
+	}
 	for _, path := range sourcePaths {
+		if explicitPaths[path] {
+			continue
+		}
 		evidence = append(evidence, knowledge.Evidence{Kind: "path", Ref: path, Locator: "path"})
 	}
+	evidence = append(evidence, explicitEvidence...)
 
+	verification := strings.TrimSpace(stringArg(input, "verification"))
+	if !actor.Admin {
+		// A worker can propose a draft, but only a review can mark it verified.
+		verification = "unverified"
+	}
 	confidence := intArg(input, "confidence")
 	generatedBy := strings.TrimSpace(stringArg(input, "generated_by"))
 	aiFields := stringSliceArg(input, "ai_fields")
@@ -491,6 +515,9 @@ func (s *Server) knowledgeAddData(actor knowledgeActor, input map[string]any) (m
 		Body:              stringArg(input, "body"),
 		Project:           project,
 		Owner:             owner,
+		Type:              stringArg(input, "type"),
+		Verification:      verification,
+		Scope:             stringArg(input, "scope"),
 		Status:            status,
 		Confidence:        confidence,
 		Sensitivity:       stringArg(input, "sensitivity"),
@@ -503,6 +530,7 @@ func (s *Server) knowledgeAddData(actor knowledgeActor, input map[string]any) (m
 		AIFields:          aiFields,
 		Tags:              tags,
 		Evidence:          evidence,
+		LastVerifiedAt:    stringArg(input, "last_verified_at"),
 		Actor:             actor.Address,
 	})
 	if err != nil {
@@ -532,6 +560,18 @@ func (s *Server) knowledgeUpdateData(actor knowledgeActor, id string, input map[
 	}
 	if value, ok := input["project"].(string); ok {
 		in.Project = &value
+	}
+	if value, ok := input["type"].(string); ok {
+		in.Type = &value
+	}
+	if value, ok := input["scope"].(string); ok {
+		in.Scope = &value
+	}
+	if value, ok := input["verification"].(string); ok {
+		in.Verification = &value
+	}
+	if value, ok := input["last_verified_at"].(string); ok {
+		in.LastVerifiedAt = &value
 	}
 	if _, ok := input["tags"]; ok {
 		tags := stringSliceArg(input, "tags")
@@ -771,6 +811,9 @@ func collectTaskInput(task map[string]any) knowledge.CreateInput {
 		Body:              body.String(),
 		Project:           project,
 		Owner:             owner,
+		Type:              "playbook",
+		Verification:      "unverified",
+		Scope:             project,
 		Status:            "draft",
 		Confidence:        55,
 		Sensitivity:       "internal",
@@ -839,6 +882,35 @@ func anyStrings(value any) []string {
 		return out
 	}
 	return nil
+}
+
+func evidenceArg(input map[string]any) []knowledge.Evidence {
+	raw, ok := input["evidence"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := []knowledge.Evidence{}
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		ev := knowledge.Evidence{
+			Kind:       stringArg(m, "kind"),
+			Ref:        stringArg(m, "ref"),
+			Locator:    stringArg(m, "locator"),
+			Quote:      stringArg(m, "quote"),
+			CapturedAt: stringArg(m, "captured_at"),
+		}
+		if ev.Kind != "" && ev.Ref != "" {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 func stringSliceArg(input map[string]any, key string) []string {

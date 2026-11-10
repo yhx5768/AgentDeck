@@ -61,7 +61,10 @@ const HTML = `<!doctype html><html><body>
           <option value="draft">草稿</option><option value="stale">可能过期</option>
         </select>
         <span id="knowledge-task-chip" class="hidden"></span>
+        <select id="knowledge-type"><option value="">全部类型</option><option value="env_map">环境地图</option></select>
+        <select id="knowledge-verification"><option value="">全部验证</option><option value="tested">已验证</option></select>
         <input id="knowledge-q">
+
         <button id="knowledge-collect"></button>
         <button id="knowledge-new"></button>
       </div>
@@ -124,6 +127,10 @@ ${grabFn(kbSrc, 'kbEl')}
 ${grabFn(kbSrc, 'kbStatusLabel')}
 ${grabFn(kbSrc, 'kbStatusClass')}
 ${grabFn(kbSrc, 'kbSourceLabel')}
+${grabFn(kbSrc, 'kbTypeLabel')}
+${grabFn(kbSrc, 'kbVerificationLabel')}
+${grabFn(kbSrc, 'kbTypeBadge')}
+${grabFn(kbSrc, 'kbVerificationBadge')}
 ${grabFn(kbSrc, 'kbStatusBadge')}
 ${grabFn(kbSrc, 'kbGeneratedBadge')}
 ${grabFn(kbSrc, 'kbMuted')}
@@ -149,7 +156,7 @@ ${grabFn(kbSrc, 'renderBoardKnowledge')}
 window.__kb = {
   kbState, kbRenderList, kbRenderDetail, renderBoardKnowledge, kbStatusLabel,
   kbCountText, kbUpdateFacets, kbShowLoading, kbShowError, kbShowEmpty,
-  kbUpdateContext, switchChatTab, syncMainAgentTabs,
+  kbTypeLabel, kbVerificationLabel, kbUpdateContext, switchChatTab, syncMainAgentTabs,
 };
 `);
 
@@ -166,6 +173,10 @@ check('入口在 chat-tabs，侧栏右上角入口已删除', () => {
   assert(indexSrc.includes('id="chat-tab-knowledge"'), '缺少 knowledge tab');
   assert(!indexSrc.includes('id="btn-knowledge"'), '侧栏入口应删除');
   assert(tab('knowledge').textContent.includes('资料空间'));
+  assert(indexSrc.includes('id="knowledge-type"'), '缺少类型筛选');
+  assert(indexSrc.includes('id="knowledge-verification"'), '缺少验证状态筛选');
+  assert(indexSrc.includes('id="knowledge-form-type"'), '缺少类型表单字段');
+  assert(indexSrc.includes('id="knowledge-form-scope"'), '缺少适用范围字段');
 });
 
 check('mainAgent 显示看板+资料空间，非 mainAgent 隐藏', () => {
@@ -204,11 +215,15 @@ check('资料空间 tab 切换：active + 显示内容 + 隐藏 composer', () =>
   assert(w.__kbHidden, 'kbOnTabHide should run');
 });
 
-check('状态中文标签', () => {
+check('状态/类型/验证中文标签', () => {
   assert(kb.kbStatusLabel('draft') === '草稿');
   assert(kb.kbStatusLabel('approved') === '已通过');
   assert(kb.kbStatusLabel('stale') === '可能过期');
   assert(kb.kbStatusLabel('quarantined') === '已隔离');
+  assert(kb.kbTypeLabel('env_map') === '环境地图');
+  assert(kb.kbTypeLabel('pitfall') === '坑与反例');
+  assert(kb.kbVerificationLabel('tested') === '已验证');
+  assert(kb.kbVerificationLabel('unverified') === '未验证');
 });
 
 check('统计 chips + 计数文案', () => {
@@ -224,8 +239,8 @@ check('统计 chips + 计数文案', () => {
 
 check('列表渲染 + 点击打开详情 + 标签/徽标/来源任务', () => {
   kb.kbState.entries = [
-    { id: 'K-1', title: 'SSE 重编号', summary: '结论 A', status: 'approved', project: 'AgentDeck', tags: ['SSE'], source_task_id: 'T-1', updated_at: '11-09' },
-    { id: 'K-2', title: '草稿条目', summary: '结论 B', status: 'draft', generated_by: 'system', ai_fields: ['summary'], updated_at: '11-10' },
+    { id: 'K-1', title: 'SSE 重编号', summary: '结论 A', status: 'approved', project: 'AgentDeck', type: 'tested_rule', verification: 'tested', tags: ['SSE'], source_task_id: 'T-1', updated_at: '11-09' },
+    { id: 'K-2', title: '草稿条目', summary: '结论 B', status: 'draft', type: 'pitfall', verification: 'unverified', generated_by: 'system', ai_fields: ['summary'], updated_at: '11-10' },
   ];
   kb.kbState.total = 2;
   kb.kbState.selectedId = null;
@@ -237,18 +252,27 @@ check('列表渲染 + 点击打开详情 + 标签/徽标/来源任务', () => {
   assert(items[1].textContent.includes('自动'), 'system generated badge');
   assert(items[0].querySelector('.kb-tag').textContent === 'SSE');
   assert(items[0].querySelector('.kb-source-chip').textContent.includes('T-1'));
+  assert(items[0].querySelector('.kb-verification').textContent === '已验证');
+  assert(items[0].querySelector('.kb-type').textContent === '已验证规则');
+  assert(items[1].querySelector('.kb-verification').textContent === '未验证');
+  assert(items[1].querySelector('.kb-type').textContent === '坑与反例');
   items[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
   assert(w.__openedDetail === 'K-1', 'click should open detail');
 });
 
-check('空列表显示空态', () => {
+check('空列表显示空态 + 沉淀提示', () => {
   kb.kbState.entries = [];
   kb.kbState.total = 0;
   kb.kbState.q = '不存在的词';
   kb.kbRenderList();
-  const empty = doc.querySelector('#knowledge-empty');
+  let empty = doc.querySelector('#knowledge-empty');
   assert(!empty.classList.contains('hidden'));
   assert(empty.textContent.includes('没有匹配'));
+  kb.kbState.q = '';
+  kb.kbRenderList();
+  empty = doc.querySelector('#knowledge-empty');
+  assert(empty.textContent.includes('环境地图'));
+  assert(empty.textContent.includes('不要沉淀'));
 });
 
 check('加载/错误状态', () => {
@@ -268,6 +292,7 @@ check('详情渲染：动作/来源/证据/关联', () => {
   kb.kbRenderDetail({
     id: 'K-1', title: 'SSE 重编号', body: '## 结论', status: 'draft',
     project: 'AgentDeck', owner: 'mainAgent', confidence: 60, version: 1,
+    type: 'env_map', verification: 'observed', scope: '三台编译机', last_verified_at: '2026-11-10 10:00:00',
     source_task: { id: 'T-1', title: '任务一', status: '待验收' },
     source_artifacts: [{ id: 'A-1', title: '报告', kind: 'markdown', filename: 'report.md', url: '/api/agent-board/artifacts/A-1' }],
     evidence: [{ kind: 'task', ref: 'T-1', locator: 'task', quote: '用户原话' }],
@@ -283,6 +308,9 @@ check('详情渲染：动作/来源/证据/关联', () => {
   assert(doc.querySelector('#knowledge-detail-body .md-stub'), 'body rendered via md');
   assert(doc.querySelector('#knowledge-detail-body').textContent.includes('正文'));
   assert(doc.querySelector('#knowledge-detail-relations').textContent.includes('关联条目'));
+  const meta = doc.querySelector('#knowledge-detail-meta').textContent;
+  assert(meta.includes('环境地图') && meta.includes('已观察') && meta.includes('三台编译机'), meta);
+  assert(doc.querySelector('#knowledge-detail-kicker').textContent.includes('已观察'));
 });
 
 check('已通过详情显示标为过期，不显示通过/驳回', () => {
@@ -297,7 +325,7 @@ check('看板抽屉相关知识：条数/查看全部切 tab/提炼', () => {
   w.__openedEntry = null;
   kb.renderBoardKnowledge({
     id: 'T-1', title: '任务一', project: 'P', tags: ['SSE'],
-    knowledge: [{ id: 'K-1', title: '知识一', status: 'approved', project: 'P', updated_at: '11-09' }],
+    knowledge: [{ id: 'K-1', title: '知识一', status: 'approved', project: 'P', type: 'env_map', verification: 'tested', updated_at: '11-09' }],
     knowledge_count: 1,
   });
   const box = doc.querySelector('#board-drawer-knowledge');
@@ -305,6 +333,7 @@ check('看板抽屉相关知识：条数/查看全部切 tab/提炼', () => {
   assert(box.textContent.includes('知识一'));
   assert(box.textContent.includes('查看全部'));
   assert(box.textContent.includes('从本任务提炼知识'));
+  assert(box.querySelector('.kb-verification').textContent === '已验证');
   assert(doc.querySelector('#board-drawer-knowledge-count').textContent === '(1)');
   const all = Array.from(box.querySelectorAll('.kb-action')).find((b) => b.textContent === '查看全部');
   all.click();

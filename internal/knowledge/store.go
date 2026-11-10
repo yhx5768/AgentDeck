@@ -36,6 +36,9 @@ type Entry struct {
 	Body              string     `json:"body,omitempty"`
 	Project           string     `json:"project"`
 	Owner             string     `json:"owner"`
+	Type              string     `json:"type"`
+	Verification      string     `json:"verification"`
+	Scope             string     `json:"scope,omitempty"`
 	Status            string     `json:"status"`
 	Confidence        int        `json:"confidence"`
 	Sensitivity       string     `json:"sensitivity"`
@@ -84,11 +87,13 @@ type Relation struct {
 
 // Summary is the compact shape the board drawer embeds.
 type Summary struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Status    string `json:"status"`
-	Project   string `json:"project"`
-	UpdatedAt string `json:"updated_at"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Status       string `json:"status"`
+	Project      string `json:"project"`
+	Type         string `json:"type"`
+	Verification string `json:"verification"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 // CreateInput is one knowledge_add / collect / UI save payload.
@@ -98,6 +103,9 @@ type CreateInput struct {
 	Body              string
 	Project           string
 	Owner             string
+	Type              string
+	Verification      string
+	Scope             string
 	Status            string
 	Confidence        int
 	Sensitivity       string
@@ -110,23 +118,28 @@ type CreateInput struct {
 	AIFields          []string
 	Tags              []string
 	Evidence          []Evidence
+	LastVerifiedAt    string
 	Actor             string
 }
 
 // UpdateInput is a partial update. Nil pointers mean "leave unchanged".
 type UpdateInput struct {
-	Title        *string
-	Summary      *string
-	Body         *string
-	Project      *string
-	Tags         *[]string
-	Status       *string
-	Confidence   *int
-	Sensitivity  *string
-	ReviewReason *string
-	Reviewer     *string
-	Actor        string
-	Action       string
+	Title          *string
+	Summary        *string
+	Body           *string
+	Project        *string
+	Tags           *[]string
+	Type           *string
+	Verification   *string
+	Scope          *string
+	Status         *string
+	Confidence     *int
+	Sensitivity    *string
+	LastVerifiedAt *string
+	ReviewReason   *string
+	Reviewer       *string
+	Actor          string
+	Action         string
 }
 
 // SearchOptions is the shared filter set for the UI and MCP search.
@@ -134,6 +147,8 @@ type SearchOptions struct {
 	Query            string
 	Project          string
 	Status           string // exact status, or "all"
+	Type             string
+	Verification     string
 	Tag              string
 	SourceTaskID     string
 	Limit            int
@@ -161,6 +176,9 @@ CREATE TABLE IF NOT EXISTS knowledge_entries (
   body TEXT NOT NULL DEFAULT '',
   project TEXT NOT NULL DEFAULT '',
   owner TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT 'playbook',
+  verification TEXT NOT NULL DEFAULT 'unverified',
+  scope TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft',
   confidence INTEGER NOT NULL DEFAULT 50,
   sensitivity TEXT NOT NULL DEFAULT 'internal',
@@ -263,8 +281,62 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureEntryColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	_ = os.Chmod(path, 0o600)
 	return &Store{db: db, path: path}, nil
+}
+
+// ensureEntryColumns migrates databases created before the type/verification/
+// scope fields existed. New databases already have the columns from schema.
+func ensureEntryColumns(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(knowledge_entries)")
+	if err != nil {
+		return err
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"type", "ALTER TABLE knowledge_entries ADD COLUMN type TEXT NOT NULL DEFAULT 'playbook'"},
+		{"verification", "ALTER TABLE knowledge_entries ADD COLUMN verification TEXT NOT NULL DEFAULT 'unverified'"},
+		{"scope", "ALTER TABLE knowledge_entries ADD COLUMN scope TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		if existing[column.name] {
+			continue
+		}
+		if _, err := db.Exec(column.ddl); err != nil {
+			return err
+		}
+	}
+	for _, ddl := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge_entries(type, status, updated_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_knowledge_verification ON knowledge_entries(verification, status, updated_at DESC)",
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -335,11 +407,11 @@ func sanitizeTags(tags []string) []string {
 	return out
 }
 
-var entrySelect = `SELECT id,title,summary,body,project,owner,status,confidence,sensitivity,
-source_kind,source_task_id,source_session_id,source_artifact_ids,source_paths,
-dedupe_key,content_hash,generated_by,ai_fields,version,supersedes_id,
-last_verified_at,valid_until,reviewer,reviewed_at,review_reason,deleted_at,
-created_at,updated_at FROM knowledge_entries`
+var entrySelect = `SELECT id,title,summary,body,project,owner,type,verification,scope,
+status,confidence,sensitivity,source_kind,source_task_id,source_session_id,
+source_artifact_ids,source_paths,dedupe_key,content_hash,generated_by,ai_fields,
+version,supersedes_id,last_verified_at,valid_until,reviewer,reviewed_at,
+review_reason,deleted_at,created_at,updated_at FROM knowledge_entries`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -349,6 +421,7 @@ func scanEntry(scanner rowScanner) (*Entry, error) {
 	e := &Entry{}
 	var artifactIDs, sourcePaths, aiFields string
 	err := scanner.Scan(&e.ID, &e.Title, &e.Summary, &e.Body, &e.Project, &e.Owner,
+		&e.Type, &e.Verification, &e.Scope,
 		&e.Status, &e.Confidence, &e.Sensitivity, &e.SourceKind, &e.SourceTaskID,
 		&e.SourceSessionID, &artifactIDs, &sourcePaths, &e.DedupeKey, &e.ContentHash,
 		&e.GeneratedBy, &aiFields, &e.Version, &e.SupersedesID,
@@ -514,6 +587,25 @@ func (s *Store) Create(in CreateInput) (*Entry, bool, error) {
 		return nil, false, fmt.Errorf("summary or body required")
 	}
 	project := strings.TrimSpace(in.Project)
+	entryType := strings.ToLower(strings.TrimSpace(in.Type))
+	if entryType == "" {
+		entryType = "playbook"
+	}
+	if !validEntryType(entryType) {
+		return nil, false, fmt.Errorf("invalid type: %s", in.Type)
+	}
+	verification := strings.ToLower(strings.TrimSpace(in.Verification))
+	if verification == "" {
+		verification = "unverified"
+	}
+	if !validVerification(verification) {
+		return nil, false, fmt.Errorf("invalid verification: %s", in.Verification)
+	}
+	scope := clipRunes(strings.TrimSpace(in.Scope), 500)
+	lastVerified := strings.TrimSpace(in.LastVerifiedAt)
+	if lastVerified == "" && verification != "unverified" {
+		lastVerified = now()
+	}
 	status := strings.ToLower(strings.TrimSpace(in.Status))
 	if status == "" {
 		status = "draft"
@@ -585,11 +677,12 @@ func (s *Store) Create(in CreateInput) (*Entry, bool, error) {
 
 	id := newID()
 	at := now()
-	lastVerified := ""
 	reviewer := ""
 	reviewedAt := ""
 	if status == "approved" {
-		lastVerified = at
+		if lastVerified == "" {
+			lastVerified = at
+		}
 		reviewer = in.Actor
 		reviewedAt = at
 	}
@@ -606,12 +699,13 @@ func (s *Store) Create(in CreateInput) (*Entry, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	_, err = tx.Exec(`INSERT INTO knowledge_entries(id,title,summary,body,project,owner,status,
-		confidence,sensitivity,source_kind,source_task_id,source_session_id,source_artifact_ids,
-		source_paths,dedupe_key,content_hash,generated_by,ai_fields,version,supersedes_id,
-		last_verified_at,valid_until,reviewer,reviewed_at,review_reason,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, title, summary, body, project, strings.TrimSpace(in.Owner), status, confidence,
+	_, err = tx.Exec(`INSERT INTO knowledge_entries(id,title,summary,body,project,owner,type,
+		verification,scope,status,confidence,sensitivity,source_kind,source_task_id,source_session_id,
+		source_artifact_ids,source_paths,dedupe_key,content_hash,generated_by,ai_fields,version,
+		supersedes_id,last_verified_at,valid_until,reviewer,reviewed_at,review_reason,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, title, summary, body, project, strings.TrimSpace(in.Owner), entryType,
+		verification, scope, status, confidence,
 		sensitivity, sourceKind, strings.TrimSpace(in.SourceTaskID), strings.TrimSpace(in.SourceSessionID),
 		jsonStrings(sourceArtifacts), jsonStrings(sourcePaths), key, contentHash(body), generatedBy,
 		jsonStrings(aiFields), 1, "", lastVerified, "", reviewer, reviewedAt, rewardReason, at, at)
@@ -629,7 +723,7 @@ func (s *Store) Create(in CreateInput) (*Entry, bool, error) {
 		tx.Rollback()
 		return nil, false, err
 	}
-	_ = s.auditTx(tx, id, in.Actor, "create", `{"source_kind":`+jsonQuote(sourceKind)+`}`)
+	_ = s.auditTx(tx, id, in.Actor, "create", `{"source_kind":`+jsonQuote(sourceKind)+`,"type":`+jsonQuote(entryType)+`,"verification":`+jsonQuote(verification)+`}`)
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
@@ -673,6 +767,22 @@ func validSensitivity(value string) bool {
 func validStatus(value string) bool {
 	switch value {
 	case "draft", "approved", "stale", "superseded", "rejected", "quarantined":
+		return true
+	}
+	return false
+}
+
+func validEntryType(value string) bool {
+	switch value {
+	case "env_map", "playbook", "strategy", "tested_rule", "pitfall", "index":
+		return true
+	}
+	return false
+}
+
+func validVerification(value string) bool {
+	switch value {
+	case "tested", "observed", "unverified":
 		return true
 	}
 	return false
@@ -724,6 +834,29 @@ func (s *Store) Update(id string, in UpdateInput) (*Entry, error) {
 	if in.Tags != nil {
 		entry.Tags = sanitizeTags(*in.Tags)
 		contentChanged = true
+	}
+	if in.Type != nil {
+		entryType := strings.ToLower(strings.TrimSpace(*in.Type))
+		if !validEntryType(entryType) {
+			return nil, fmt.Errorf("invalid type: %s", *in.Type)
+		}
+		entry.Type = entryType
+	}
+	if in.Verification != nil {
+		verification := strings.ToLower(strings.TrimSpace(*in.Verification))
+		if !validVerification(verification) {
+			return nil, fmt.Errorf("invalid verification: %s", *in.Verification)
+		}
+		entry.Verification = verification
+		if verification != "unverified" && in.LastVerifiedAt == nil && entry.LastVerifiedAt == "" {
+			entry.LastVerifiedAt = now()
+		}
+	}
+	if in.Scope != nil {
+		entry.Scope = clipRunes(strings.TrimSpace(*in.Scope), 500)
+	}
+	if in.LastVerifiedAt != nil {
+		entry.LastVerifiedAt = strings.TrimSpace(*in.LastVerifiedAt)
 	}
 	if in.Confidence != nil {
 		confidence := *in.Confidence
@@ -789,12 +922,14 @@ func (s *Store) Update(id string, in UpdateInput) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = tx.Exec(`UPDATE knowledge_entries SET title=?,summary=?,body=?,project=?,status=?,
-		confidence=?,sensitivity=?,dedupe_key=?,content_hash=?,version=?,last_verified_at=?,
-		reviewer=?,reviewed_at=?,review_reason=?,updated_at=? WHERE id=?`,
-		entry.Title, entry.Summary, entry.Body, entry.Project, entry.Status, entry.Confidence,
-		entry.Sensitivity, entry.DedupeKey, entry.ContentHash, entry.Version, entry.LastVerifiedAt,
-		entry.Reviewer, entry.ReviewedAt, entry.ReviewReason, entry.UpdatedAt, id)
+	_, err = tx.Exec(`UPDATE knowledge_entries SET title=?,summary=?,body=?,project=?,
+		type=?,verification=?,scope=?,status=?,confidence=?,sensitivity=?,dedupe_key=?,
+		content_hash=?,version=?,last_verified_at=?,reviewer=?,reviewed_at=?,review_reason=?,
+		updated_at=? WHERE id=?`,
+		entry.Title, entry.Summary, entry.Body, entry.Project, entry.Type, entry.Verification,
+		entry.Scope, entry.Status, entry.Confidence, entry.Sensitivity, entry.DedupeKey,
+		entry.ContentHash, entry.Version, entry.LastVerifiedAt, entry.Reviewer,
+		entry.ReviewedAt, entry.ReviewReason, entry.UpdatedAt, id)
 	if err != nil {
 		tx.Rollback()
 		return nil, err
@@ -870,6 +1005,20 @@ func (s *Store) Search(opts SearchOptions) (*SearchResult, error) {
 	if !opts.IncludeSensitive {
 		where = append(where, "e.status <> 'quarantined'")
 		where = append(where, "e.sensitivity NOT IN ('sensitive','secret')")
+	}
+	if entryType := strings.ToLower(strings.TrimSpace(opts.Type)); entryType != "" {
+		if !validEntryType(entryType) {
+			return nil, fmt.Errorf("invalid type: %s", opts.Type)
+		}
+		where = append(where, "e.type = ?")
+		args = append(args, entryType)
+	}
+	if verification := strings.ToLower(strings.TrimSpace(opts.Verification)); verification != "" {
+		if !validVerification(verification) {
+			return nil, fmt.Errorf("invalid verification: %s", opts.Verification)
+		}
+		where = append(where, "e.verification = ?")
+		args = append(args, verification)
 	}
 	if project := strings.TrimSpace(opts.Project); project != "" {
 		where = append(where, "e.project = ?")
@@ -1024,7 +1173,7 @@ func (s *Store) SummariesForTasks(taskIDs []string, limit int) (map[string][]Sum
 	for _, id := range taskIDs {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(`SELECT id,title,status,project,updated_at,source_task_id
+	rows, err := s.db.Query(`SELECT id,title,status,project,type,verification,updated_at,source_task_id
 		FROM knowledge_entries
 		WHERE source_task_id IN (`+placeholders+`) AND deleted_at=''
 		  AND status IN ('draft','approved','stale')
@@ -1035,7 +1184,7 @@ func (s *Store) SummariesForTasks(taskIDs []string, limit int) (map[string][]Sum
 	for rows.Next() {
 		var item Summary
 		var taskID string
-		if err := rows.Scan(&item.ID, &item.Title, &item.Status, &item.Project, &item.UpdatedAt, &taskID); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.Status, &item.Project, &item.Type, &item.Verification, &item.UpdatedAt, &taskID); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}

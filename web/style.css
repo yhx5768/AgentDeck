@@ -5264,3 +5264,25 @@ body.board-preview-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   #knowledge-detail { transition: none !important; }
 }
+
+/* 类型 / 验证状态徽标（知识条目分类与可信度） */
+.kb-type,
+.kb-verification {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.kb-type { color: var(--dim); background: var(--bg3); }
+.kb-type-env_map { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.kb-type-tested_rule { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, var(--border)); }
+.kb-type-pitfall { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+.kb-type-strategy { color: var(--thinking); border-color: color-mix(in srgb, var(--thinking) 40%, var(--border)); }
+.kb-verification-tested { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--border)); background: color-mix(in srgb, var(--green) 8%, transparent); }
+.kb-verification-observed { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, var(--border)); background: var(--warning-bg); }
+.kb-verification-unverified { color: var(--dim); border-style: dashed; }
+.kb-evidence-head a { color: var(--accent); text-decoration: underline; }

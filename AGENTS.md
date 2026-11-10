@@ -285,13 +285,14 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 
 ### 17. 知识沉淀（P0）
 
-`data/knowledge.db`（独立 SQLite + FTS5，`internal/knowledge`）是 workspace 级资料空间：条目带来源任务/证据/审批状态，**不是**工作台账、memory 或 artifact 本体。P0 只做 draft/approved/stale/rejected/quarantined 与手动 `collect`，不做自动触发/artifact 正文抽取/语义检索。
+`data/knowledge.db`（独立 SQLite + FTS5，`internal/knowledge`）是 mainAgent 会话的「资料空间」tab：条目带来源任务/证据/审批状态，**不是**工作台账、memory 或 artifact 本体。每条的 `type` 是 env_map/playbook/strategy/tested_rule/pitfall/index，`verification` 是 tested/observed/unverified，另有 `scope` 和 `last_verified_at`；只沉淀策略/计划/已验证规则/坑/环境地图，不沉淀密钥、一次性日志、实时状态。P0 只做 draft/approved/stale/rejected/quarantined 与手动 `collect`，不做自动触发/artifact 正文抽取/语义检索。
 
-- API：`GET/POST /api/knowledge`、`GET/PATCH /api/knowledge/{id}`、`POST /api/knowledge/collect`；列表默认 UI 全部状态，MCP/worker 默认 approved。
+- API：`GET/POST /api/knowledge`、`GET/PATCH /api/knowledge/{id}`、`POST /api/knowledge/collect`；列表支持 `type`/`verification` 过滤；UI 默认全部状态，MCP/worker 默认 approved。
 - MCP：`knowledge_search`/`knowledge_get`/`knowledge_add` 所有会话；`knowledge_review`/`knowledge_collect` 仅主 Agent（`CC_WEBUI_A2A_KNOWLEDGE_ADMIN=1` + 服务端 `requireMainAgent`，与看板同款两层闸门）。worker 的 `knowledge_add` 必须带 `source_task_id`，强制 draft，不能审批。
 - 采集边界：只读看板任务/timeline + `task_artifacts` 元数据；**不读**工作区文件、transcript、legacy `report_file` 路径、外链。敏感命中脱敏并 `quarantined`，不写 FTS。实现说明见 `docs/knowledge-p0.md`；设计见 `docs/knowledge-design.md`。
 - 详情页的 `source_task`/`source_artifacts` 由 server 读取时补齐；看板任务响应带 `knowledge` 摘要（最多 3 条）与 `knowledge_count`，抽屉「相关知识」只读展示。
 - 中文检索是应用侧 unigram+bigram 分词（FTS5 `unicode61` 不能直接搜两字中间词）；改 tokenizer 必须跑 `internal/knowledge` 单测。
+- 演示种子：`docs/knowledge-seed-harmony-build-machines.json` + `scripts/seed-knowledge-demo.py`（11 条编译集群 env_map/playbook/tested_rule/pitfall/index，全部 approved/tested，无凭据）；只对 8327 演示库执行。
 
 ## 后端包职责（`internal/`）
 

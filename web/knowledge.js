@@ -10,6 +10,8 @@ const kbState = {
   q: '',
   project: '',
   status: 'all',
+  type: '',
+  verification: '',
   sourceTask: '',
   selectedId: null,
   loading: false,
@@ -47,6 +49,45 @@ function kbSourceLabel(kind) {
     digest: '周报',
     import: '导入',
   }[kind] || kind || '—';
+}
+
+function kbTypeLabel(kind) {
+  return {
+    env_map: '环境地图',
+    playbook: '操作配方',
+    strategy: '策略计划',
+    tested_rule: '已验证规则',
+    pitfall: '坑与反例',
+    index: '索引入口',
+  }[kind] || kind || '未分类';
+}
+
+function kbVerificationLabel(value) {
+  return {
+    tested: '已验证',
+    observed: '已观察',
+    unverified: '未验证',
+  }[value] || value || '未验证';
+}
+
+function kbTypeBadge(kind) {
+  if (!kind) return null;
+  const span = document.createElement('span');
+  span.className = 'kb-type kb-type-' + kind;
+  span.textContent = kbTypeLabel(kind);
+  return span;
+}
+
+function kbVerificationBadge(value) {
+  const span = document.createElement('span');
+  span.className = 'kb-verification kb-verification-' + (value || 'unverified');
+  span.textContent = kbVerificationLabel(value);
+  span.title = value === 'tested'
+    ? '有证据且验证通过'
+    : value === 'observed'
+      ? '观察到但未做完整验证'
+      : '未验证，采信前请复核';
+  return span;
 }
 
 function kbStatusBadge(status) {
@@ -216,7 +257,7 @@ function kbRenderList() {
   if (!kbState.entries.length) {
     kbShowEmpty(kbState.q
       ? `没有匹配「${kbState.q}」的知识。试试更短的关键词，或放宽项目/状态筛选。`
-      : '还没有知识。完成任务后可从看板采集草稿，也可以点「新建知识」。');
+      : '还没有知识。可以沉淀：环境地图 / 操作配方 / 策略计划 / 已验证规则 / 坑与反例 / 索引；不要沉淀密钥、一次性日志、实时状态。可从看板采集，或点「新建知识」。');
     return;
   }
   const total = document.createElement('div');
@@ -237,6 +278,9 @@ function kbRenderItem(entry) {
   const head = document.createElement('div');
   head.className = 'kb-item-head';
   head.append(kbStatusBadge(entry.status));
+  head.append(kbVerificationBadge(entry.verification));
+  const typeBadge = kbTypeBadge(entry.type);
+  if (typeBadge) head.append(typeBadge);
   const generated = kbGeneratedBadge(entry);
   if (generated) head.append(generated);
   if (entry.project) {
@@ -294,6 +338,8 @@ async function kbLoad() {
   if (kbState.q.trim()) params.set('q', kbState.q.trim());
   if (kbState.project) params.set('project', kbState.project);
   if (kbState.status) params.set('status', kbState.status);
+  if (kbState.type) params.set('type', kbState.type);
+  if (kbState.verification) params.set('verification', kbState.verification);
   if (kbState.sourceTask) params.set('source_task_id', kbState.sourceTask);
   params.set('limit', '50');
   try {
@@ -389,6 +435,9 @@ function kbRenderDetail(entry) {
   const els = kbDetailEls();
   els.kicker.innerHTML = '';
   els.kicker.append(kbStatusBadge(entry.status));
+  els.kicker.append(kbVerificationBadge(entry.verification));
+  const detailType = kbTypeBadge(entry.type);
+  if (detailType) els.kicker.append(detailType);
   if (entry.id) {
     const id = document.createElement('span');
     id.className = 'kb-id';
@@ -404,6 +453,9 @@ function kbRenderDetail(entry) {
   els.meta.innerHTML = '';
   [
     ['项目', entry.project],
+    ['类型', kbTypeLabel(entry.type)],
+    ['验证', kbVerificationLabel(entry.verification)],
+    ['适用范围', entry.scope],
     ['负责人', entry.owner],
     ['置信度', entry.confidence != null ? String(entry.confidence) : ''],
     ['来源', kbSourceLabel(entry.source_kind)],
@@ -502,7 +554,19 @@ function kbRenderDetail(entry) {
     row.className = 'kb-evidence';
     const head = document.createElement('div');
     head.className = 'kb-evidence-head';
-    head.textContent = `${evidence.kind}: ${evidence.ref}${evidence.locator ? ' · ' + evidence.locator : ''}`;
+    if (/^https?:\/\//i.test(evidence.ref || '')) {
+      const link = document.createElement('a');
+      link.href = evidence.ref;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = evidence.ref;
+      head.append(document.createTextNode(evidence.kind + ': '), link);
+    } else {
+      head.textContent = `${evidence.kind}: ${evidence.ref}${evidence.locator ? ' · ' + evidence.locator : ''}`;
+      head.title = '点击复制来源';
+      head.style.cursor = 'pointer';
+      head.onclick = () => kbCopyText(evidence.ref);
+    }
     row.append(head);
     if (evidence.quote) {
       const quote = document.createElement('div');
@@ -569,12 +633,20 @@ function kbNew(task) {
   const project = kbEl('#knowledge-form-project');
   const tags = kbEl('#knowledge-form-tags');
   const taskId = kbEl('#knowledge-form-task');
+  const formType = kbEl('#knowledge-form-type');
+  const formVerification = kbEl('#knowledge-form-verification');
+  const scope = kbEl('#knowledge-form-scope');
+  const verified = kbEl('#knowledge-form-verified');
   if (title) title.value = (task && (task.full_title || task.title)) || '';
   if (summary) summary.value = '';
   if (body) body.value = '';
   if (project) project.value = (task && task.project) || '';
   if (tags) tags.value = (task && Array.isArray(task.tags)) ? task.tags.join(', ') : '';
   if (taskId) taskId.value = (task && task.id) || '';
+  if (formType) formType.value = 'playbook';
+  if (formVerification) formVerification.value = 'unverified';
+  if (scope) scope.value = (task && task.project) || '';
+  if (verified) verified.value = '';
   if (typeof openModal === 'function') openModal('#modal-knowledge');
 }
 
@@ -585,6 +657,10 @@ async function kbSave() {
     body: (kbEl('#knowledge-form-body') || {}).value || '',
     project: (kbEl('#knowledge-form-project') || {}).value || '',
     tags: ((kbEl('#knowledge-form-tags') || {}).value || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+    type: (kbEl('#knowledge-form-type') || {}).value || 'playbook',
+    verification: (kbEl('#knowledge-form-verification') || {}).value || 'unverified',
+    scope: (kbEl('#knowledge-form-scope') || {}).value || '',
+    last_verified_at: (kbEl('#knowledge-form-verified') || {}).value || '',
     source_task_id: (kbEl('#knowledge-form-task') || {}).value || '',
   };
   if (!payload.title.trim()) {
@@ -721,6 +797,7 @@ function renderBoardKnowledge(task) {
       const row = document.createElement('div');
       row.className = 'kb-related-row';
       const badge = kbStatusBadge(item.status);
+      const verify = kbVerificationBadge(item.verification);
       const main = document.createElement('div');
       main.className = 'kb-related-main';
       const title = document.createElement('div');
@@ -730,7 +807,7 @@ function renderBoardKnowledge(task) {
       meta.className = 'kb-related-meta';
       meta.textContent = (item.project ? item.project + ' · ' : '') + (item.updated_at || '');
       main.append(title, meta);
-      row.append(badge, main);
+      row.append(badge, verify, main);
       row.onclick = () => openKnowledgeEntry(item.id);
       box.append(row);
     });
@@ -788,6 +865,10 @@ function renderBoardKnowledge(task) {
   if (project) project.onchange = () => { kbState.project = project.value; kbLoad(); };
   const status = kbEl('#knowledge-status');
   if (status) status.onchange = () => { kbState.status = status.value; kbLoad(); };
+  const type = kbEl('#knowledge-type');
+  if (type) type.onchange = () => { kbState.type = type.value; kbLoad(); };
+  const verification = kbEl('#knowledge-verification');
+  if (verification) verification.onchange = () => { kbState.verification = verification.value; kbLoad(); };
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     const view = kbEl('#knowledge-view');

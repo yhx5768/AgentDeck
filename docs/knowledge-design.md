@@ -98,7 +98,7 @@
 
 ### 2.1 KnowledgeEntry 字段
 
-建议字段（在任务给出的建议上补齐治理/版本/审计所需）：
+建议字段（在任务给出的建议上补齐治理/版本/审计所需；P0 已落地的 `type` / `verification` / `scope` 规范见 `docs/knowledge-p0.md` §1.2）：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -110,6 +110,9 @@
 | `tags` | 关联表 | 0–20 个标签 |
 | `owner` | TEXT | 负责人（地址名 / `user` / `mainAgent`） |
 | `created_by` | TEXT | 创建者（会话地址名 / `user` / `system`） |
+| `type` | TEXT | `env_map` / `playbook` / `strategy` / `tested_rule` / `pitfall` / `index`（P0 已实现） |
+| `verification` | TEXT | `tested` / `observed` / `unverified`（P0 已实现，与 status 正交） |
+| `scope` | TEXT | 适用范围/边界（P0 已实现） |
 | `status` | TEXT | `draft` / `approved` / `stale` / `superseded` / `rejected` / `quarantined` |
 | `confidence` | INTEGER | 0–100，展示与排序用，不是安全闸门 |
 | `sensitivity` | TEXT | `public` / `internal` / `sensitive` / `secret` |
