@@ -2982,9 +2982,13 @@ function boardRenderOverview(task) {
   const artifacts = $('#board-drawer-artifacts');
   if (artifacts) {
     artifacts.innerHTML = '';
+    artifacts.classList.remove('board-artifacts-grouped');
     const list = Array.isArray(task.artifacts) ? task.artifacts : [];
     if (list.length) {
-      list.forEach((artifact) => artifacts.append(boardArtifactItem(task, artifact)));
+      artifacts.classList.add('board-artifacts-grouped');
+      boardArtifactGroups(list).forEach((group, index) => {
+        artifacts.append(boardArtifactRoundCard(group, index === 0));
+      });
     } else if (task.report_file) {
       // Older servers only expose report_file; keep the legacy presentation.
       const item = document.createElement('div');
@@ -3062,6 +3066,101 @@ function boardArtifactKindLabel(artifact) {
 function boardArtifactPreviewable(artifact) {
   return !!(artifact && !artifact.legacy && artifact.url
     && (artifact.kind === 'html' || artifact.kind === 'markdown'));
+}
+
+// 产物按轮次分组：服务端下发 round（显式轮次）或 round_source=inferred +
+// round_batch（旧产物按发布时间聚类）。前端只负责排序/取标题，不猜服务端
+// 已经给出的 round；推断出来的旧产物一律不写成「第 N 轮」。
+function boardArtifactGroupOf(artifact) {
+  const round = Number(artifact && artifact.round);
+  if (Number.isFinite(round) && round > 0) {
+    const n = Math.floor(round);
+    return { rank: 0, key: 'round:' + n, round: n, batch: 0 };
+  }
+  const batch = Number(artifact && artifact.round_batch);
+  if (artifact && artifact.round_source === 'inferred'
+    && Number.isFinite(batch) && batch > 0) {
+    return { rank: 1, key: 'inferred:' + Math.floor(batch), round: 0, batch: Math.floor(batch) };
+  }
+  return { rank: 2, key: 'history', round: 0, batch: 0 };
+}
+
+function boardArtifactGroups(artifacts) {
+  const groups = new Map();
+  (Array.isArray(artifacts) ? artifacts : []).forEach((artifact, index) => {
+    const meta = boardArtifactGroupOf(artifact);
+    let group = groups.get(meta.key);
+    if (!group) {
+      group = Object.assign({}, meta, { items: [] });
+      groups.set(meta.key, group);
+    }
+    group.items.push({ artifact, index });
+  });
+  const list = [...groups.values()];
+  list.sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    if (a.rank === 0) return b.round - a.round; // 最新一轮置顶
+    if (a.rank === 1) return a.batch - b.batch; // 1 = 最近的旧批次
+    return 0;
+  });
+  list.forEach((group) => {
+    if (group.rank === 0) group.title = '第 ' + group.round + ' 轮';
+    else if (group.rank === 1) group.title = '较早产物';
+    else group.title = '历史产物';
+  });
+  return list;
+}
+
+function boardArtifactTimeRange(items) {
+  const stamps = items
+    .map((item) => String((item.artifact && item.artifact.created_at) || '').trim())
+    .filter(Boolean)
+    .sort();
+  if (!stamps.length) return '';
+  const first = stamps[0];
+  const last = stamps[stamps.length - 1];
+  const compact = (value) => {
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/);
+    return m ? { day: m[2] + '-' + m[3], time: m[4] } : null;
+  };
+  const a = compact(first);
+  const b = compact(last);
+  if (!a || !b) return first === last ? first : first + ' – ' + last;
+  if (first === last) return a.day + ' ' + a.time;
+  if (a.day === b.day) return a.day + ' ' + a.time + '–' + b.time;
+  return a.day + ' ' + a.time + ' – ' + b.day + ' ' + b.time;
+}
+
+function boardArtifactRoundCard(group, latest) {
+  const section = document.createElement('section');
+  section.className = 'board-artifact-round' + (latest ? ' board-artifact-round-latest' : '');
+  section.dataset.roundKey = group.key;
+  section.dataset.roundTitle = group.title;
+
+  const head = document.createElement('div');
+  head.className = 'board-artifact-round-head';
+  const title = document.createElement('div');
+  title.className = 'board-artifact-round-title';
+  title.textContent = group.title;
+  head.append(title);
+  if (latest) {
+    const tag = document.createElement('span');
+    tag.className = 'board-artifact-round-latest-tag';
+    tag.textContent = '最新';
+    head.append(tag);
+  }
+  const meta = document.createElement('div');
+  meta.className = 'board-artifact-round-meta';
+  const bits = [];
+  const range = boardArtifactTimeRange(group.items);
+  if (range) bits.push(range);
+  bits.push(group.items.length + ' 个产物');
+  meta.textContent = bits.join(' · ');
+  head.append(meta);
+  section.append(head);
+
+  group.items.forEach((item) => section.append(boardArtifactItem(null, item.artifact)));
+  return section;
 }
 
 function boardArtifactAction(label, href, download) {

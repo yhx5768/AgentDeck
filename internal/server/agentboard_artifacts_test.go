@@ -564,3 +564,144 @@ func TestAgentdeckArtifactPublishToolAvailableToWorker(t *testing.T) {
 		t.Fatalf("board_create should still be main-agent only: %v", err)
 	}
 }
+
+func TestAgentBoardArtifactRoundPublish(t *testing.T) {
+	s, _ := boardMCPServer(t)
+	createArtifactTestTask(t, s)
+
+	publishJSON := func(body map[string]any) map[string]any {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		req := artifactReq(http.MethodPost, "http://deck.local/api/agent-board/tasks/T-1/artifacts", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", "T-1")
+		rec := httptest.NewRecorder()
+		s.handleAgentBoardCreateArtifact(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("publish status = %d body=%s", rec.Code, rec.Body.String())
+		}
+		var created struct {
+			Artifact map[string]any `json:"artifact"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+			t.Fatal(err)
+		}
+		return created.Artifact
+	}
+
+	if got := publishJSON(map[string]any{
+		"title": "第 11 轮报告", "kind": "html", "filename": "r11.html",
+		"content": "<h1>11</h1>", "round": 11,
+	})["round"]; got != float64(11) {
+		t.Fatalf("json round = %v", got)
+	}
+	// Models sometimes send numbers as strings.
+	if got := publishJSON(map[string]any{
+		"title": "第 10 轮", "kind": "markdown", "filename": "r10.md",
+		"content": "# 10", "round": "10",
+	})["round"]; got != float64(10) {
+		t.Fatalf("string round = %v", got)
+	}
+
+	// Raw worker curl path: round comes from the query string.
+	req := artifactReq(http.MethodPost,
+		"http://deck.local/api/agent-board/tasks/T-1/artifacts?kind=html&filename=r9.html&round=9",
+		strings.NewReader("<h1>9</h1>"))
+	req.Header.Set("Content-Type", "text/html")
+	req.SetPathValue("id", "T-1")
+	rec := httptest.NewRecorder()
+	s.handleAgentBoardCreateArtifact(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("raw round publish = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Omit round: still accepted, and the read side clusters it instead of
+	// rejecting the publish.
+	legacy := publishJSON(map[string]any{
+		"title": "旧调用", "kind": "file", "filename": "old.bin", "content": "old",
+	})
+	if got := legacy["round"]; got != float64(0) {
+		t.Fatalf("legacy round = %v", got)
+	}
+
+	// Fractional and negative rounds are rejected.
+	for _, bad := range []any{1.5, -1, "abc"} {
+		raw, _ := json.Marshal(map[string]any{
+			"title": "bad", "kind": "html", "filename": "bad.html", "content": "<p>x</p>", "round": bad,
+		})
+		req := artifactReq(http.MethodPost, "http://deck.local/api/agent-board/tasks/T-1/artifacts", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", "T-1")
+		rec := httptest.NewRecorder()
+		s.handleAgentBoardCreateArtifact(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("round %v status = %d body=%s", bad, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Task read returns explicit/inferred grouping fields.
+	task, err := s.boardDB.GetTask("T-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var explicit, inferred int
+	for _, item := range task["artifacts"].([]map[string]any) {
+		if item["round_source"] == "explicit" {
+			explicit++
+		}
+		if item["round_source"] == "inferred" && item["round_batch"].(int) >= 1 {
+			inferred++
+		}
+	}
+	if explicit != 3 || inferred != 1 {
+		t.Fatalf("grouping explicit=%d inferred=%d artifacts=%+v", explicit, inferred, task["artifacts"])
+	}
+
+	// The MCP tool accepts the same optional round.
+	out, err := s.agentdeckToolCall("worker", "artifact_publish", map[string]any{
+		"task_id": "T-1", "title": "MCP 产物", "kind": "markdown",
+		"filename": "mcp.md", "content": "# mcp", "round": 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Artifact map[string]any `json:"artifact"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatalf("mcp output: %v %s", err, out)
+	}
+	if envelope.Artifact["round"] != float64(7) {
+		t.Fatalf("mcp round = %+v", envelope.Artifact)
+	}
+	if _, err := s.agentdeckToolCall("worker", "artifact_publish", map[string]any{
+		"task_id": "T-1", "title": "bad", "kind": "html", "filename": "bad.html",
+		"content": "<p>x</p>", "round": -2,
+	}); err == nil {
+		t.Fatal("expected MCP invalid round error")
+	}
+
+	// The task-scoped artifact list endpoint carries the fields as well.
+	req = artifactReq(http.MethodGet, "http://deck.local/api/agent-board/tasks/T-1/artifacts", nil)
+	req.SetPathValue("id", "T-1")
+	rec = httptest.NewRecorder()
+	s.handleAgentBoardTaskArtifacts(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d", rec.Code)
+	}
+	var list struct {
+		Artifacts []map[string]any `json:"artifacts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	foundRound := false
+	for _, item := range list.Artifacts {
+		if item["round"] == float64(11) && item["round_source"] == "explicit" {
+			foundRound = true
+		}
+	}
+	if !foundRound {
+		t.Fatalf("artifact list missing explicit round: %+v", list.Artifacts)
+	}
+}

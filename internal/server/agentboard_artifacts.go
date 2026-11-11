@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ const (
 type artifactUpload struct {
 	Title, Kind, Filename, MIME, Encoding, URL, SourceSession string
 	Content                                                   []byte
+	Round                                                     int
 }
 
 type artifactHTTPError struct {
@@ -338,6 +340,9 @@ func (s *Server) publishArtifact(st *boarddb.Store, r *http.Request, taskID stri
 	}
 	mimeType := artifactMIME(kind, filename, up.MIME)
 	sourceSession := strings.TrimSpace(up.SourceSession)
+	if up.Round < 0 {
+		return nil, http.StatusBadRequest, fmt.Errorf("round 必须是非负整数")
+	}
 
 	if kind == "url" {
 		target := strings.TrimSpace(up.URL)
@@ -348,7 +353,7 @@ func (s *Server) publishArtifact(st *boarddb.Store, r *http.Request, taskID stri
 		record, err := st.CreateArtifact(map[string]any{
 			"task_id": taskID, "title": title, "kind": kind, "mime": "",
 			"filename": filename, "size": int64(0), "url": target,
-			"source_session": sourceSession,
+			"source_session": sourceSession, "round": up.Round,
 		})
 		if err != nil {
 			return nil, http.StatusBadRequest, err
@@ -379,7 +384,7 @@ func (s *Server) publishArtifact(st *boarddb.Store, r *http.Request, taskID stri
 	record, err := st.CreateArtifact(map[string]any{
 		"id": id, "task_id": taskID, "title": title, "kind": kind, "mime": mimeType,
 		"filename": filename, "size": len(up.Content), "storage_path": rel,
-		"source_session": sourceSession,
+		"source_session": sourceSession, "round": up.Round,
 	})
 	if err != nil {
 		_ = os.RemoveAll(filepath.Dir(abs))
@@ -398,17 +403,19 @@ func (s *Server) agentdeckPublishArtifact(sessionID string, args map[string]any)
 		taskID, _ = args["id"].(string)
 	}
 	up := artifactUpload{
-		Title:         stringArg(args, "title"),
-		Kind:          stringArg(args, "kind"),
-		Filename:      stringArg(args, "filename"),
-		MIME:          stringArg(args, "mime"),
-		Encoding:      stringArg(args, "encoding"),
-		URL:           stringArg(args, "url"),
-		SourceSession: stringArg(args, "source_session"),
+		Title: stringArg(args, "title"),
+		Kind:  stringArg(args, "kind"), Filename: stringArg(args, "filename"),
+		MIME: stringArg(args, "mime"), Encoding: stringArg(args, "encoding"),
+		URL: stringArg(args, "url"), SourceSession: stringArg(args, "source_session"),
 	}
 	if strings.TrimSpace(up.SourceSession) == "" {
 		up.SourceSession = sessionID
 	}
+	round, err := artifactRoundValue(args["round"])
+	if err != nil {
+		return "", err
+	}
+	up.Round = round
 	if err := decodeArtifactContent(&up, stringArg(args, "content"), up.Encoding); err != nil {
 		return "", err
 	}
@@ -453,6 +460,7 @@ func parseArtifactJSON(r *http.Request) (artifactUpload, error) {
 		Encoding      string `json:"encoding"`
 		URL           string `json:"url"`
 		SourceSession string `json:"source_session"`
+		Round         any    `json:"round"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var max *http.MaxBytesError
@@ -462,9 +470,14 @@ func parseArtifactJSON(r *http.Request) (artifactUpload, error) {
 		}
 		return artifactUpload{}, artifactErr(http.StatusBadRequest, "请求体不是合法 JSON")
 	}
+	round, err := artifactRoundValue(body.Round)
+	if err != nil {
+		return artifactUpload{}, err
+	}
 	up := artifactUpload{
 		Title: body.Title, Kind: body.Kind, Filename: body.Filename, MIME: body.MIME,
 		Encoding: body.Encoding, URL: body.URL, SourceSession: body.SourceSession,
+		Round: round,
 	}
 	if err := decodeArtifactContent(&up, body.Content, body.Encoding); err != nil {
 		return artifactUpload{}, err
@@ -492,10 +505,14 @@ func parseArtifactRaw(r *http.Request, mediaType string) (artifactUpload, error)
 	if mediaType == "application/x-www-form-urlencoded" || mediaType == "application/octet-stream" {
 		mediaType = ""
 	}
+	round, err := artifactRoundValue(q.Get("round"))
+	if err != nil {
+		return artifactUpload{}, err
+	}
 	return artifactUpload{
 		Title: q.Get("title"), Kind: q.Get("kind"), Filename: q.Get("filename"),
 		MIME: firstNonEmpty(q.Get("mime"), mediaType), URL: q.Get("url"),
-		SourceSession: q.Get("source_session"), Content: data,
+		SourceSession: q.Get("source_session"), Content: data, Round: round,
 	}, nil
 }
 
@@ -508,6 +525,11 @@ func parseArtifactMultipart(r *http.Request) (artifactUpload, error) {
 		MIME: r.FormValue("mime"), Encoding: r.FormValue("encoding"), URL: r.FormValue("url"),
 		SourceSession: r.FormValue("source_session"),
 	}
+	round, err := artifactRoundValue(r.FormValue("round"))
+	if err != nil {
+		return artifactUpload{}, err
+	}
+	up.Round = round
 	file, header, err := r.FormFile("file")
 	if errors.Is(err, http.ErrMissingFile) {
 		if err := decodeArtifactContent(&up, r.FormValue("content"), up.Encoding); err != nil {
@@ -541,6 +563,50 @@ func parseArtifactMultipart(r *http.Request) (artifactUpload, error) {
 	}
 	up.Content = data
 	return up, nil
+}
+
+// artifactRoundValue normalizes the optional round field. It accepts integers
+// (JSON numbers / MCP args) and numeric strings (raw query and multipart
+// forms); empty means "no explicit round". Inferred/legacy grouping happens
+// server-side in boarddb, never here.
+func artifactRoundValue(value any) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
+	var round int
+	switch typed := value.(type) {
+	case int:
+		round = typed
+	case int64:
+		round = int(typed)
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, artifactErr(http.StatusBadRequest, "round 必须是整数")
+		}
+		round = int(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return 0, artifactErr(http.StatusBadRequest, "round 必须是整数")
+		}
+		round = int(parsed)
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return 0, nil
+		}
+		parsed, err := strconv.Atoi(text)
+		if err != nil {
+			return 0, artifactErr(http.StatusBadRequest, "round 必须是整数")
+		}
+		round = parsed
+	default:
+		return 0, artifactErr(http.StatusBadRequest, "round 必须是整数")
+	}
+	if round < 0 {
+		return 0, artifactErr(http.StatusBadRequest, "round 必须是非负整数")
+	}
+	return round, nil
 }
 
 func decodeArtifactContent(up *artifactUpload, content, encoding string) error {

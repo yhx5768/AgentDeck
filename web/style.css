@@ -4756,6 +4756,18 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .board-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
 .board-artifact { display: flex; align-items: flex-start; gap: 9px; flex-wrap: wrap; padding: 8px 0; }
 .board-artifact + .board-artifact { border-top: 1px solid var(--border); }
+/* 按轮次分组的卡片列表：分组容器本身退成透明，每组一张卡片 */
+#board-drawer-artifacts.board-artifacts-grouped { border: 0; background: transparent; padding: 0; }
+.board-artifact-round { border: 1px solid var(--border); background: var(--bg2); border-radius: var(--r-md); padding: 0 12px; margin-bottom: 8px; }
+.board-artifact-round:last-child { margin-bottom: 0; }
+.board-artifact-round-latest { border-color: var(--accent); }
+.board-artifact-round-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 0 7px; border-bottom: 1px solid var(--border); }
+.board-artifact-round-title { font-size: var(--fs-xs); font-weight: 650; color: var(--fg); }
+.board-artifact-round-latest-tag { flex: none; font-size: 9px; line-height: 1.5; padding: 0 5px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.board-artifact-round-meta { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--dim); }
+@media (max-width: 520px) {
+  .board-artifact-round-meta { margin-left: 0; }
+}
 .board-artifact-icon { width: 26px; height: 26px; border-radius: 7px; background: var(--bg3); color: var(--dim); display: flex; align-items: center; justify-content: center; font-size: 10px; flex: none; }
 .board-artifact-main { flex: 1; min-width: 0; }
 .board-artifact-head { display: flex; align-items: center; gap: 6px; min-width: 0; }

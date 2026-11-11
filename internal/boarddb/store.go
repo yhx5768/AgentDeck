@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +32,7 @@ var statusOrder = []string{"新建", "进行中", "待人工", "待验收", "已
 
 const schema = `
 CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('version', '2')
+INSERT INTO schema_meta(key, value) VALUES ('version', '3')
   ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
   storage_path TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
   source_session TEXT NOT NULL DEFAULT '',
+  round INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_task ON task_artifacts(task_id, created_at);
@@ -134,7 +136,51 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// CREATE TABLE IF NOT EXISTS does not add columns to an existing database,
+	// so bring older boards up to the current artifact shape here.
+	if err := ensureArtifactRoundColumn(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db, path: path}, nil
+}
+
+// ensureArtifactRoundColumn adds task_artifacts.round to boards created before
+// per-round grouping existed. The default 0 means "no explicit round"; such
+// artifacts are clustered by timestamp when read (see annotateArtifactRounds).
+func ensureArtifactRoundColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(task_artifacts)`)
+	if err != nil {
+		return err
+	}
+	hasRound := false
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notNull int
+			dflt    any
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "round" {
+			hasRound = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if hasRound {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE task_artifacts ADD COLUMN round INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -429,6 +475,7 @@ func (r *taskRow) toMap(events []map[string]any, artifacts []map[string]any) map
 	if legacy := legacyReportArtifact(r); legacy != nil {
 		artifacts = append(artifacts, legacy)
 	}
+	annotateArtifactRounds(artifacts)
 	if artifacts == nil {
 		artifacts = []map[string]any{}
 	}
@@ -477,6 +524,7 @@ func (s *Store) taskEvents(taskID string) ([]map[string]any, error) {
 type TaskArtifact struct {
 	ID, TaskID, Title, Kind, MIME, Filename, StoragePath, URL, SourceSession, CreatedAt string
 	Size                                                                                int64
+	Round                                                                               int
 }
 
 func (a *TaskArtifact) toMap() map[string]any {
@@ -484,18 +532,18 @@ func (a *TaskArtifact) toMap() map[string]any {
 		"id": a.ID, "task_id": a.TaskID, "title": a.Title, "kind": a.Kind,
 		"mime": a.MIME, "filename": a.Filename, "size": a.Size,
 		"storage_path": a.StoragePath, "url": a.URL,
-		"source_session": a.SourceSession, "created_at": a.CreatedAt,
+		"source_session": a.SourceSession, "round": a.Round, "created_at": a.CreatedAt,
 	}
 }
 
 const artifactSelect = `SELECT id,task_id,title,kind,mime,filename,size,storage_path,url,
-	source_session,created_at FROM task_artifacts`
+	source_session,round,created_at FROM task_artifacts`
 
 func scanArtifact(scanner interface{ Scan(...any) error }) (*TaskArtifact, error) {
 	artifact := &TaskArtifact{}
 	err := scanner.Scan(&artifact.ID, &artifact.TaskID, &artifact.Title, &artifact.Kind,
 		&artifact.MIME, &artifact.Filename, &artifact.Size, &artifact.StoragePath,
-		&artifact.URL, &artifact.SourceSession, &artifact.CreatedAt)
+		&artifact.URL, &artifact.SourceSession, &artifact.Round, &artifact.CreatedAt)
 	return artifact, err
 }
 
@@ -567,8 +615,125 @@ func legacyReportArtifact(r *taskRow) map[string]any {
 		"id": "legacy-report", "task_id": r.id, "title": "验证/进展报告（旧）",
 		"kind": kind, "mime": "", "filename": name, "size": int64(0),
 		"storage_path": path, "url": "", "source_session": "",
-		"created_at": r.updatedAt, "legacy": true,
+		"round": 0, "created_at": r.updatedAt, "legacy": true,
 	}
+}
+
+// artifactClusterGap is the maximum gap between adjacent publish timestamps
+// that still counts as one batch when inferring groups for artifacts that were
+// published before explicit rounds existed. It is deliberately generous: a
+// round's files (HTML report, transcript, ZIP, screenshots) are normally
+// published within seconds or minutes of each other, while separate rounds are
+// usually separated by more than half an hour.
+const artifactClusterGap = 30 * time.Minute
+
+// annotateArtifactRounds decorates the artifacts of one task with grouping
+// hints for the drawer:
+//
+//   - round > 0: published with an explicit round. round_source = "explicit".
+//   - round == 0: infer a batch by clustering adjacent created_at timestamps.
+//     round_source = "inferred" and round_batch counts clusters from the
+//     newest (1 = most recent legacy batch).
+//   - unknown/unparsable timestamps (and the synthetic legacy report_file
+//     artifact) stay ungrouped: round_source = "" and round_batch = 0, rendered
+//     as the final "历史产物" group.
+//
+// Inferred batches are intentionally NOT labelled "第 N 轮": the old data has
+// no round information, so the UI only says "较早产物" plus a time range and
+// never fabricates a precise round number.
+func annotateArtifactRounds(artifacts []map[string]any) {
+	type entry struct {
+		artifact map[string]any
+		at       time.Time
+	}
+	var timed []entry
+	for _, artifact := range artifacts {
+		if legacy, _ := artifact["legacy"].(bool); legacy {
+			artifact["round_source"] = ""
+			artifact["round_batch"] = 0
+			continue
+		}
+		if intFromAny(artifact["round"], 0) > 0 {
+			artifact["round_source"] = "explicit"
+			artifact["round_batch"] = 0
+			continue
+		}
+		artifact["round_source"] = ""
+		artifact["round_batch"] = 0
+		raw, _ := artifact["created_at"].(string)
+		at, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(raw), time.Local)
+		if err == nil {
+			timed = append(timed, entry{artifact: artifact, at: at})
+		}
+	}
+	if len(timed) == 0 {
+		return
+	}
+	sort.SliceStable(timed, func(i, j int) bool { return timed[i].at.Before(timed[j].at) })
+	var batches [][]entry
+	for _, item := range timed {
+		n := len(batches)
+		if n > 0 {
+			last := batches[n-1][len(batches[n-1])-1]
+			if item.at.Sub(last.at) <= artifactClusterGap {
+				batches[n-1] = append(batches[n-1], item)
+				continue
+			}
+		}
+		batches = append(batches, []entry{item})
+	}
+	// Newest batch is 1, so the frontend can sort ascending after explicit
+	// rounds without re-parsing timestamps.
+	for i := len(batches) - 1; i >= 0; i-- {
+		batch := len(batches) - i
+		for _, item := range batches[i] {
+			item.artifact["round_source"] = "inferred"
+			item.artifact["round_batch"] = batch
+		}
+	}
+}
+
+// artifactRoundInput normalizes the optional round field accepted by
+// CreateArtifact. Models and HTTP clients sometimes send numbers as strings, so
+// both shapes are accepted; anything else (or a negative value) is rejected.
+func artifactRoundInput(value any) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
+	var round int
+	switch typed := value.(type) {
+	case int:
+		round = typed
+	case int64:
+		round = int(typed)
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, fmt.Errorf("round must be an integer")
+		}
+		round = int(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("round must be an integer")
+		}
+		round = int(parsed)
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return 0, nil
+		}
+		parsed, err := strconv.Atoi(text)
+		if err != nil {
+			return 0, fmt.Errorf("round must be an integer")
+		}
+		round = parsed
+	default:
+		return 0, fmt.Errorf("round must be an integer")
+	}
+	if round < 0 {
+		return 0, fmt.Errorf("round must be non-negative")
+	}
+	return round, nil
 }
 
 var artifactKinds = map[string]bool{"html": true, "markdown": true, "file": true, "url": true}
@@ -622,6 +787,10 @@ func (s *Store) CreateArtifact(input map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("storage_path required for hosted artifacts")
 	}
 	at := now()
+	round, err := artifactRoundInput(input["round"])
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var exists int
@@ -631,11 +800,11 @@ func (s *Store) CreateArtifact(input map[string]any) (map[string]any, error) {
 	if exists == 0 {
 		return nil, fmt.Errorf("task not found")
 	}
-	_, err := s.db.Exec(`INSERT INTO task_artifacts(id,task_id,title,kind,mime,filename,size,
-		storage_path,url,source_session,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = s.db.Exec(`INSERT INTO task_artifacts(id,task_id,title,kind,mime,filename,size,
+		storage_path,url,source_session,round,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, taskID, title, kind, inputString(input, "mime"), filename,
 		int64FromAny(input["size"], 0), storagePath, externalURL,
-		inputString(input, "source_session"), at)
+		inputString(input, "source_session"), round, at)
 	if err != nil {
 		return nil, err
 	}
