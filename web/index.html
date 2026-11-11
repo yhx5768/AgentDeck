@@ -396,6 +396,50 @@
         <div id="ns-attached" class="ns-attached hidden"></div>
       </div>
     </div>
+
+    <!-- 分享管理独立页：集中管理所有卡片产物的公开分享链接。
+         入口：设置 → 分享管理；也可直接访问 /#/shares。 -->
+    <div id="shares-view" class="hidden">
+      <header id="shares-header">
+        <div class="shares-title-row">
+          <button id="shares-back" class="icon-btn" title="返回" aria-label="返回"><i data-lucide="arrow-left"></i></button>
+          <span class="shares-title">分享管理</span>
+          <span id="shares-count" class="shares-count"></span>
+          <span class="shares-spacer"></span>
+          <button id="shares-refresh" class="ghost-btn" type="button">刷新</button>
+        </div>
+        <div class="shares-toolbar">
+          <input id="shares-search" class="shares-search" placeholder="搜索产物 / 任务 / 卡号 / 文件名" autocomplete="off">
+          <select id="shares-status-filter" class="shares-select" aria-label="按状态筛选">
+            <option value="">全部状态</option>
+            <option value="active">有效</option>
+            <option value="expired">已过期</option>
+            <option value="revoked">已取消</option>
+          </select>
+          <select id="shares-scope-filter" class="shares-select" aria-label="按任务或项目筛选">
+            <option value="">全部任务/项目</option>
+          </select>
+          <select id="shares-kind-filter" class="shares-select" aria-label="按产物类型筛选">
+            <option value="">全部类型</option>
+            <option value="html">HTML</option>
+            <option value="markdown">Markdown</option>
+            <option value="file">文件</option>
+            <option value="url">链接</option>
+          </select>
+          <select id="shares-sort" class="shares-select" aria-label="排序">
+            <option value="created_desc">创建时间（新→旧）</option>
+            <option value="created_asc">创建时间（旧→新）</option>
+            <option value="expires_asc">到期时间（近→远，永久最后）</option>
+            <option value="expires_desc">到期时间（远→近，永久最前）</option>
+          </select>
+        </div>
+      </header>
+      <div id="shares-body">
+        <div id="shares-summary" class="shares-summary"></div>
+        <div id="shares-error" class="shares-error hidden"></div>
+        <div id="shares-list" class="shares-list"></div>
+      </div>
+    </div>
   </main>
 
   <!-- 工作区面板：Codex app 风格的右侧文件区（文件树 + 文件预览 + 改动视图）。
@@ -764,6 +808,13 @@
       </div>
       <label class="switch"><input type="checkbox" id="pref-browser-shared"><span class="slider"></span></label>
     </div>
+    <div class="settings-row">
+      <div class="settings-text">
+        <div class="settings-label">分享管理</div>
+        <div class="settings-sub">集中查看、复制和取消所有卡片产物的公开分享链接。</div>
+      </div>
+      <button id="btn-settings-shares" class="ghost-btn" type="button">打开分享管理</button>
+    </div>
     <div class="modal-actions">
       <button class="primary-btn" data-close>完成</button>
     </div>
@@ -830,6 +881,39 @@
   </div>
   <div id="board-artifact-preview-body" class="board-artifact-preview-body"></div>
 </div>
+
+<!-- 产物公开分享：创建弹窗 + 已分享链接管理 -->
+<div id="board-share-modal" class="board-share-backdrop hidden" role="dialog" aria-modal="true"
+     aria-label="分享产物">
+  <div class="board-share-card">
+    <div class="board-share-head">
+      <span class="board-share-heading">分享产物</span>
+      <button id="board-share-close" class="board-share-close" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="board-share-body">
+      <div id="board-share-artifact" class="board-share-artifact"></div>
+      <label class="board-share-field">有效期
+        <select id="board-share-expiry">
+          <option value="1">1 天</option>
+          <option value="3">3 天</option>
+          <option value="7">7 天</option>
+          <option value="0">永久</option>
+        </select>
+      </label>
+      <button id="board-share-create" class="board-share-primary" type="button">创建公开链接</button>
+      <div id="board-share-result" class="board-share-result hidden">
+        <div class="board-share-hint">任何拿到链接的人都能查看，无需登录；泄露后可随时在「分享管理」里取消。</div>
+        <div class="board-share-url-row">
+          <input id="board-share-url" class="board-share-url" readonly>
+          <button id="board-share-copy" class="board-share-secondary" type="button">复制链接</button>
+        </div>
+        <div id="board-share-expiry-note" class="board-share-hint"></div>
+      </div>
+      <div id="board-share-error" class="board-share-error hidden"></div>
+    </div>
+  </div>
+</div>
+
 
 
 <script src="/trajectory.js"></script>

@@ -106,6 +106,8 @@ var Tools = []Tool{
 			"mime":           str("Optional MIME type override."),
 			"source_session": str("Session id/address that produced the artifact; defaults to the caller."),
 			"url":            str("External http(s) URL when kind=url."),
+			"round": map[string]any{"type": "integer",
+				"description": "Optional round number (1, 2, …). Artifacts published in the same round are grouped under 第 N 轮 in the task drawer, newest round first. Omit for unstructured/legacy artifacts."},
 		}, "task_id"),
 	},
 	{

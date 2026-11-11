@@ -49,7 +49,7 @@ func TestArtifactPublishToolAndLegacyReportFileSchema(t *testing.T) {
 		}
 		found = true
 		props := tool.InputSchema["properties"].(map[string]any)
-		for _, key := range []string{"task_id", "title", "kind", "filename", "content", "encoding", "mime", "source_session", "url"} {
+		for _, key := range []string{"task_id", "title", "kind", "filename", "content", "encoding", "mime", "source_session", "url", "round"} {
 			if _, ok := props[key]; !ok {
 				t.Fatalf("artifact_publish missing property %q", key)
 			}

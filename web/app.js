@@ -2678,6 +2678,9 @@ async function openSession(id) {
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const sharesView = $('#shares-view');
+  if (sharesView) sharesView.classList.add('hidden');
+  clearSharesHash();
   relocatePermCards();
   $('#chat-view').classList.remove('hidden');
   renderGoalBar();
@@ -2985,9 +2988,13 @@ function boardRenderOverview(task) {
   const artifacts = $('#board-drawer-artifacts');
   if (artifacts) {
     artifacts.innerHTML = '';
+    artifacts.classList.remove('board-artifacts-grouped');
     const list = Array.isArray(task.artifacts) ? task.artifacts : [];
     if (list.length) {
-      list.forEach((artifact) => artifacts.append(boardArtifactItem(task, artifact)));
+      artifacts.classList.add('board-artifacts-grouped');
+      boardArtifactGroups(list).forEach((group, index) => {
+        artifacts.append(boardArtifactRoundCard(group, index === 0));
+      });
     } else if (task.report_file) {
       // Older servers only expose report_file; keep the legacy presentation.
       const item = document.createElement('div');
@@ -3065,6 +3072,101 @@ function boardArtifactKindLabel(artifact) {
 function boardArtifactPreviewable(artifact) {
   return !!(artifact && !artifact.legacy && artifact.url
     && (artifact.kind === 'html' || artifact.kind === 'markdown'));
+}
+
+// 产物按轮次分组：服务端下发 round（显式轮次）或 round_source=inferred +
+// round_batch（旧产物按发布时间聚类）。前端只负责排序/取标题，不猜服务端
+// 已经给出的 round；推断出来的旧产物一律不写成「第 N 轮」。
+function boardArtifactGroupOf(artifact) {
+  const round = Number(artifact && artifact.round);
+  if (Number.isFinite(round) && round > 0) {
+    const n = Math.floor(round);
+    return { rank: 0, key: 'round:' + n, round: n, batch: 0 };
+  }
+  const batch = Number(artifact && artifact.round_batch);
+  if (artifact && artifact.round_source === 'inferred'
+    && Number.isFinite(batch) && batch > 0) {
+    return { rank: 1, key: 'inferred:' + Math.floor(batch), round: 0, batch: Math.floor(batch) };
+  }
+  return { rank: 2, key: 'history', round: 0, batch: 0 };
+}
+
+function boardArtifactGroups(artifacts) {
+  const groups = new Map();
+  (Array.isArray(artifacts) ? artifacts : []).forEach((artifact, index) => {
+    const meta = boardArtifactGroupOf(artifact);
+    let group = groups.get(meta.key);
+    if (!group) {
+      group = Object.assign({}, meta, { items: [] });
+      groups.set(meta.key, group);
+    }
+    group.items.push({ artifact, index });
+  });
+  const list = [...groups.values()];
+  list.sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    if (a.rank === 0) return b.round - a.round; // 最新一轮置顶
+    if (a.rank === 1) return a.batch - b.batch; // 1 = 最近的旧批次
+    return 0;
+  });
+  list.forEach((group) => {
+    if (group.rank === 0) group.title = '第 ' + group.round + ' 轮';
+    else if (group.rank === 1) group.title = '较早产物';
+    else group.title = '历史产物';
+  });
+  return list;
+}
+
+function boardArtifactTimeRange(items) {
+  const stamps = items
+    .map((item) => String((item.artifact && item.artifact.created_at) || '').trim())
+    .filter(Boolean)
+    .sort();
+  if (!stamps.length) return '';
+  const first = stamps[0];
+  const last = stamps[stamps.length - 1];
+  const compact = (value) => {
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/);
+    return m ? { day: m[2] + '-' + m[3], time: m[4] } : null;
+  };
+  const a = compact(first);
+  const b = compact(last);
+  if (!a || !b) return first === last ? first : first + ' – ' + last;
+  if (first === last) return a.day + ' ' + a.time;
+  if (a.day === b.day) return a.day + ' ' + a.time + '–' + b.time;
+  return a.day + ' ' + a.time + ' – ' + b.day + ' ' + b.time;
+}
+
+function boardArtifactRoundCard(group, latest) {
+  const section = document.createElement('section');
+  section.className = 'board-artifact-round' + (latest ? ' board-artifact-round-latest' : '');
+  section.dataset.roundKey = group.key;
+  section.dataset.roundTitle = group.title;
+
+  const head = document.createElement('div');
+  head.className = 'board-artifact-round-head';
+  const title = document.createElement('div');
+  title.className = 'board-artifact-round-title';
+  title.textContent = group.title;
+  head.append(title);
+  if (latest) {
+    const tag = document.createElement('span');
+    tag.className = 'board-artifact-round-latest-tag';
+    tag.textContent = '最新';
+    head.append(tag);
+  }
+  const meta = document.createElement('div');
+  meta.className = 'board-artifact-round-meta';
+  const bits = [];
+  const range = boardArtifactTimeRange(group.items);
+  if (range) bits.push(range);
+  bits.push(group.items.length + ' 个产物');
+  meta.textContent = bits.join(' · ');
+  head.append(meta);
+  section.append(head);
+
+  group.items.forEach((item) => section.append(boardArtifactItem(null, item.artifact)));
+  return section;
 }
 
 function boardArtifactAction(label, href, download) {
@@ -3155,6 +3257,17 @@ function boardArtifactItem(task, artifact) {
     actions.append(boardArtifactAction('下载', artifact.url, true));
     actions.append(boardCopyButton(artifact.url, '复制链接'));
   }
+  if (!artifact.legacy && artifact.id) {
+    const share = document.createElement('button');
+    share.type = 'button';
+    share.className = 'board-artifact-action board-artifact-share';
+    share.textContent = '分享';
+    share.onclick = (e) => {
+      e.stopPropagation();
+      boardOpenShareDialog(artifact);
+    };
+    actions.append(share);
+  }
   if (actions.children.length) main.append(actions);
   return item;
 }
@@ -3231,6 +3344,495 @@ function boardCloseArtifactPreview() {
   const body = $('#board-artifact-preview-body');
   if (body) body.innerHTML = ''; // 卸载 iframe / 取消未完成的加载
   document.body.classList.remove('board-preview-open');
+}
+
+// ---------- 看板产物公开分享 ----------
+// 公开链接不需要登录：服务端签发 /s/{token}，撤销/过期立即生效。这里只负责
+// 创建弹窗、复制与管理列表，不缓存 token（管理列表由服务端按 share id 重建 URL）。
+
+let boardShareArtifact = null;
+
+function boardShareStatusLabel(status) {
+  return { active: '有效', expired: '已过期', revoked: '已取消' }[status] || status || '未知';
+}
+
+function boardShareShowError(target, text) {
+  const el = $(target);
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+}
+
+function boardShareBusy(busy) {
+  const btn = $('#board-share-create');
+  if (!btn) return;
+  btn.disabled = !!busy;
+  btn.textContent = busy ? '创建中…' : '创建公开链接';
+}
+
+function boardOpenShareDialog(artifact) {
+  const mask = $('#board-share-modal');
+  if (!mask || !artifact || !artifact.id) return;
+  boardShareArtifact = artifact;
+  const label = $('#board-share-artifact');
+  if (label) {
+    label.textContent = (artifact.title || artifact.filename || '未命名产物')
+      + ' · ' + boardArtifactKindLabel(artifact);
+  }
+  const expiry = $('#board-share-expiry');
+  if (expiry) expiry.value = '1';
+  const url = $('#board-share-url');
+  if (url) url.value = '';
+  const result = $('#board-share-result');
+  if (result) result.classList.add('hidden');
+  const note = $('#board-share-expiry-note');
+  if (note) note.textContent = '';
+  boardShareShowError('#board-share-error', '');
+  boardShareBusy(false);
+  mask.classList.remove('hidden');
+}
+
+function boardCloseShareDialog() {
+  const mask = $('#board-share-modal');
+  if (!mask) return;
+  mask.classList.add('hidden');
+  boardShareArtifact = null;
+  const url = $('#board-share-url');
+  if (url) url.value = '';
+}
+
+async function boardCreateShare() {
+  const artifact = boardShareArtifact;
+  if (!artifact || !artifact.id) return;
+  const select = $('#board-share-expiry');
+  const days = select ? Number(select.value) : 0;
+  boardShareShowError('#board-share-error', '');
+  boardShareBusy(true);
+  try {
+    const out = await api('/api/agent-board/artifacts/'
+      + encodeURIComponent(artifact.id) + '/shares', {
+      method: 'POST',
+      body: JSON.stringify({ expiry_days: Number.isFinite(days) ? days : 0 }),
+    });
+    const share = (out && out.share) || {};
+    if (!share.url) throw new Error('服务端没有返回公开链接');
+    const url = $('#board-share-url');
+    if (url) url.value = share.url;
+    const note = $('#board-share-expiry-note');
+    if (note) {
+      note.textContent = (share.expires_at ? '到期时间：' + share.expires_at : '永久有效（不会自动过期）')
+        + (share.url_local_only ? ' · ⚠ 仅本机/局域网可达（未配置 public_base_url）' : '');
+    }
+    const result = $('#board-share-result');
+    if (result) result.classList.remove('hidden');
+  } catch (err) {
+    boardShareShowError('#board-share-error',
+      '创建失败：' + (err && err.message ? err.message : err));
+  } finally {
+    boardShareBusy(false);
+  }
+}
+
+function boardCopyShareURL(url, button) {
+  if (!url) return;
+  const done = () => {
+    if (!button) return;
+    const old = button.textContent;
+    button.textContent = '已复制';
+    setTimeout(() => { button.textContent = old; }, 1200);
+  };
+  copyText(String(url)).then(done).catch(() => {
+    if (button) button.textContent = '复制失败';
+  });
+}
+
+// ---------- 分享管理独立页（设置 → 分享管理，或 /#/shares） ----------
+// 卡片抽屉只保留「分享」创建动作；所有卡片的分享链接统一在这里管理。
+
+const SHARES_HASH = '#/shares';
+let sharesAdminItems = [];
+let sharesAdminReturn = 'empty';
+const sharesAdminFilters = { q: '', status: '', scope: '', kind: '', sort: 'created_desc' };
+
+function sharesAdminVisible() {
+  const view = $('#shares-view');
+  return !!view && !view.classList.contains('hidden');
+}
+
+function clearSharesHash() {
+  if (location.hash === SHARES_HASH) {
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
+
+function sharesAdminEmpty(text) {
+  const el = document.createElement('div');
+  el.className = 'shares-empty';
+  el.textContent = text;
+  return el;
+}
+
+function sharesAdminCurrentView() {
+  if ($('#group-view') && !$('#group-view').classList.contains('hidden')) return 'group';
+  if ($('#new-session-view') && !$('#new-session-view').classList.contains('hidden')) return 'new-session';
+  if ($('#chat-view') && !$('#chat-view').classList.contains('hidden')) return 'chat';
+  return 'empty';
+}
+
+function openSharesAdmin() {
+  const view = $('#shares-view');
+  if (!view) return;
+  if (!sharesAdminVisible()) sharesAdminReturn = sharesAdminCurrentView();
+  hideAllViews();
+  view.classList.remove('hidden');
+  if (location.hash !== SHARES_HASH) {
+    history.replaceState(null, '', location.pathname + location.search + SHARES_HASH);
+  }
+  if (typeof boardDisconnect === 'function') boardDisconnect();
+  renderIcons();
+  sharesAdminRefresh();
+}
+
+function closeSharesAdmin() {
+  const view = $('#shares-view');
+  if (view) view.classList.add('hidden');
+  clearSharesHash();
+  if (sharesAdminReturn === 'group' && state.currentGroup) {
+    $('#group-view').classList.remove('hidden');
+  } else if (sharesAdminReturn === 'new-session') {
+    $('#new-session-view').classList.remove('hidden');
+  } else if (state.current) {
+    $('#chat-view').classList.remove('hidden');
+  } else {
+    $('#empty-state').classList.remove('hidden');
+  }
+  renderIcons();
+}
+
+// 设置弹窗里的「打开分享管理」入口：先关设置，再进独立页。
+function sharesAdminOpenFromSettings() {
+  const settings = $('#modal-settings');
+  if (settings) settings.classList.add('hidden');
+  openSharesAdmin();
+}
+
+// Filter/refresh/back/settings wiring is factored out so the jsdom tests can
+// exercise the exact same handlers the app uses.
+function sharesAdminBindControls() {
+  const bindFilter = (selector, key, event) => {
+    const el = $(selector);
+    if (!el) return;
+    el.addEventListener(event || 'change', () => {
+      sharesAdminFilters[key] = el.value;
+      sharesAdminRender();
+    });
+  };
+  bindFilter('#shares-search', 'q', 'input');
+  bindFilter('#shares-status-filter', 'status');
+  bindFilter('#shares-scope-filter', 'scope');
+  bindFilter('#shares-kind-filter', 'kind');
+  bindFilter('#shares-sort', 'sort');
+  const back = $('#shares-back');
+  if (back) back.addEventListener('click', closeSharesAdmin);
+  const refresh = $('#shares-refresh');
+  if (refresh) refresh.addEventListener('click', sharesAdminRefresh);
+  const settingsEntry = $('#btn-settings-shares');
+  if (settingsEntry) settingsEntry.addEventListener('click', sharesAdminOpenFromSettings);
+}
+
+function sharesAdminStatusCounts(items) {
+  const counts = { active: 0, expired: 0, revoked: 0 };
+  (items || []).forEach((share) => {
+    if (counts[share.status] != null) counts[share.status] += 1;
+  });
+  return counts;
+}
+
+// Scope options are rebuilt from the current data, keeping the previous
+// selection when it still exists (revoke/refresh must not silently clear it).
+function sharesAdminPopulateScope(items) {
+  const select = $('#shares-scope-filter');
+  if (!select) return;
+  const previous = select.value || sharesAdminFilters.scope;
+  select.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部任务/项目';
+  select.append(all);
+
+  const projects = new Map();
+  const tasks = new Map();
+  (items || []).forEach((share) => {
+    if (share.project) projects.set(share.project, (projects.get(share.project) || 0) + 1);
+    if (share.task_id && !tasks.has(share.task_id)) {
+      tasks.set(share.task_id, share.task_title || share.task_id);
+    }
+  });
+  if (projects.size) {
+    const group = document.createElement('optgroup');
+    group.label = '项目';
+    [...projects.keys()].sort((a, b) => a.localeCompare(b, 'zh')).forEach((project) => {
+      const option = document.createElement('option');
+      option.value = 'project:' + project;
+      option.textContent = '项目：' + project + '（' + projects.get(project) + '）';
+      group.append(option);
+    });
+    select.append(group);
+  }
+  if (tasks.size) {
+    const group = document.createElement('optgroup');
+    group.label = '任务';
+    [...tasks.entries()]
+      .sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'zh'))
+      .forEach(([taskID, title]) => {
+        const option = document.createElement('option');
+        option.value = 'task:' + taskID;
+        option.textContent = '任务：' + title + '（' + taskID + '）';
+        group.append(option);
+      });
+    select.append(group);
+  }
+  if (previous && [...select.options].some((option) => option.value === previous)) {
+    select.value = previous;
+  } else if (previous) {
+    select.value = '';
+    sharesAdminFilters.scope = '';
+  }
+}
+
+function sharesAdminFiltered() {
+  const query = String(sharesAdminFilters.q || '').trim().toLowerCase();
+  const scope = sharesAdminFilters.scope || '';
+  let items = sharesAdminItems.slice();
+  if (sharesAdminFilters.status) {
+    items = items.filter((share) => share.status === sharesAdminFilters.status);
+  }
+  if (sharesAdminFilters.kind) {
+    items = items.filter((share) => (share.artifact_kind || '') === sharesAdminFilters.kind);
+  }
+  if (scope.startsWith('project:')) {
+    const project = scope.slice('project:'.length);
+    items = items.filter((share) => (share.project || '') === project);
+  } else if (scope.startsWith('task:')) {
+    const taskID = scope.slice('task:'.length);
+    items = items.filter((share) => (share.task_id || '') === taskID);
+  }
+  if (query) {
+    items = items.filter((share) => [
+      share.artifact_title, share.artifact_filename, share.task_title,
+      share.task_id, share.artifact_id, share.url,
+    ].join(' ').toLowerCase().includes(query));
+  }
+  const text = (value) => String(value || '');
+  const tie = (a, b) => text(b.created_at).localeCompare(text(a.created_at))
+    || text(b.id).localeCompare(text(a.id));
+  const sort = sharesAdminFilters.sort;
+  if (sort === 'created_asc') {
+    items.sort((a, b) => text(a.created_at).localeCompare(text(b.created_at))
+      || text(a.id).localeCompare(text(b.id)));
+  } else if (sort === 'expires_asc') {
+    items.sort((a, b) => {
+      const ea = text(a.expires_at);
+      const eb = text(b.expires_at);
+      if (!ea && !eb) return tie(a, b);
+      if (!ea) return 1; // permanent last
+      if (!eb) return -1;
+      return ea.localeCompare(eb) || tie(a, b);
+    });
+  } else if (sort === 'expires_desc') {
+    items.sort((a, b) => {
+      const ea = text(a.expires_at);
+      const eb = text(b.expires_at);
+      if (!ea && !eb) return tie(a, b);
+      if (!ea) return -1; // permanent first
+      if (!eb) return 1;
+      return eb.localeCompare(ea) || tie(a, b);
+    });
+  } else {
+    items.sort(tie);
+  }
+  return items;
+}
+
+function sharesAdminRenderSummary(filtered) {
+  const summary = $('#shares-summary');
+  const count = sharesAdminStatusCounts(sharesAdminItems);
+  if (summary) {
+    summary.innerHTML = '';
+    [
+      ['全部', sharesAdminItems.length, ''],
+      ['有效', count.active, 'active'],
+      ['已过期', count.expired, 'expired'],
+      ['已取消', count.revoked, 'revoked'],
+    ].forEach(([label, value, cls]) => {
+      const chip = document.createElement('span');
+      chip.className = 'shares-count-chip' + (cls ? ' ' + cls : '');
+      chip.textContent = label + ' ' + value;
+      summary.append(chip);
+    });
+  }
+  const visible = $('#shares-count');
+  if (visible) {
+    visible.textContent = filtered.length === sharesAdminItems.length
+      ? '共 ' + sharesAdminItems.length + ' 条'
+      : '显示 ' + filtered.length + ' / ' + sharesAdminItems.length + ' 条';
+  }
+}
+
+function sharesAdminRow(share) {
+  const row = document.createElement('div');
+  row.className = 'shares-row';
+  row.dataset.shareId = share.id || '';
+  row.dataset.status = share.status || '';
+
+  const artifact = document.createElement('div');
+  artifact.className = 'shares-cell shares-artifact';
+  const artifactTitle = document.createElement('div');
+  artifactTitle.className = 'shares-row-title';
+  artifactTitle.textContent = share.artifact_title || share.artifact_filename || '未命名产物';
+  artifactTitle.title = artifactTitle.textContent;
+  const artifactMeta = document.createElement('div');
+  artifactMeta.className = 'shares-row-meta';
+  artifactMeta.textContent = [
+    boardArtifactKindLabel({ kind: share.artifact_kind }),
+    share.artifact_filename,
+    share.artifact_id,
+  ].filter(Boolean).join(' · ');
+  artifact.append(artifactTitle, artifactMeta);
+
+  const task = document.createElement('div');
+  task.className = 'shares-cell shares-task';
+  const taskTitle = document.createElement('div');
+  taskTitle.className = 'shares-row-title';
+  taskTitle.textContent = share.task_title || share.task_id || '—';
+  taskTitle.title = taskTitle.textContent;
+  const taskMeta = document.createElement('div');
+  taskMeta.className = 'shares-row-meta';
+  taskMeta.textContent = [share.task_id, share.project].filter(Boolean).join(' · ') || '—';
+  task.append(taskTitle, taskMeta);
+
+  const link = document.createElement('div');
+  link.className = 'shares-cell shares-link';
+  if (share.status === 'active' && share.url) {
+    const anchor = document.createElement('a');
+    anchor.className = 'shares-url';
+    anchor.href = share.url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener';
+    anchor.textContent = share.url;
+    anchor.title = share.url;
+    link.append(anchor);
+  } else {
+    const dead = document.createElement('span');
+    dead.className = 'shares-url shares-url-dead';
+    dead.textContent = share.status === 'revoked' ? '链接已取消（不可找回）' : '链接已过期（不可找回）';
+    link.append(dead);
+  }
+  const times = document.createElement('div');
+  times.className = 'shares-row-meta';
+  times.textContent = [
+    share.created_at ? '创建 ' + share.created_at : '',
+    share.expires_at ? '到期 ' + share.expires_at : '永久有效',
+  ].filter(Boolean).join(' · ');
+  link.append(times);
+
+  const status = document.createElement('span');
+  status.className = 'board-share-status ' + (share.status || 'unknown');
+  status.textContent = boardShareStatusLabel(share.status);
+
+  const actions = document.createElement('div');
+  actions.className = 'shares-cell shares-actions';
+  if (share.status === 'active' && share.url) {
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'board-artifact-action';
+    copy.textContent = '复制链接';
+    copy.onclick = () => boardCopyShareURL(share.url, copy);
+    actions.append(copy);
+  }
+  if (share.status !== 'revoked') {
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.className = 'board-artifact-action board-share-revoke';
+    revoke.textContent = '取消分享';
+    revoke.onclick = () => boardRevokeShare(share, revoke);
+    actions.append(revoke);
+  }
+  if (!actions.children.length) {
+    actions.append(document.createTextNode('—'));
+  }
+
+  row.append(artifact, task, link, status, actions);
+  return row;
+}
+
+function sharesAdminRender() {
+  const list = $('#shares-list');
+  if (!list) return;
+  sharesAdminPopulateScope(sharesAdminItems);
+  const filtered = sharesAdminFiltered();
+  sharesAdminRenderSummary(filtered);
+  list.innerHTML = '';
+  if (!sharesAdminItems.length) {
+    list.append(sharesAdminEmpty('还没有分享链接。在任务卡片的产物行点「分享」创建。'));
+    return;
+  }
+  if (!filtered.length) {
+    list.append(sharesAdminEmpty('没有匹配的分享链接。'));
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'shares-row shares-row-head';
+  ['产物', '任务', '分享链接', '状态', '操作'].forEach((label) => {
+    const cell = document.createElement('div');
+    cell.className = 'shares-cell';
+    cell.textContent = label;
+    head.append(cell);
+  });
+  list.append(head);
+  filtered.forEach((share) => list.append(sharesAdminRow(share)));
+}
+
+async function sharesAdminRefresh() {
+  const list = $('#shares-list');
+  if (list) {
+    list.innerHTML = '';
+    list.append(boardMuted('加载中…'));
+  }
+  boardShareShowError('#shares-error', '');
+  try {
+    const out = await api('/api/agent-board/shares');
+    sharesAdminItems = Array.isArray(out && out.shares) ? out.shares : [];
+    sharesAdminRender();
+  } catch (err) {
+    sharesAdminItems = [];
+    if (list) {
+      list.innerHTML = '';
+      list.append(boardMuted('读取失败'));
+    }
+    sharesAdminRenderSummary([]);
+    boardShareShowError('#shares-error',
+      '读取分享列表失败：' + (err && err.message ? err.message : err));
+  }
+}
+
+async function boardRevokeShare(share, button) {
+  if (!share || !share.id) return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = '取消中…';
+  }
+  try {
+    await api('/api/agent-board/shares/' + encodeURIComponent(share.id), { method: 'DELETE' });
+    await sharesAdminRefresh();
+  } catch (err) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '取消分享';
+    }
+    boardShareShowError('#shares-error',
+      '取消分享失败：' + (err && err.message ? err.message : err));
+  }
 }
 
 function boardEventAvatar(kind) {
@@ -3724,6 +4326,47 @@ async function boardSendToMain() {
       boardCloseArtifactPreview();
     }
   });
+})();
+
+// 产物公开分享：创建弹窗 + 设置页里的分享管理独立页。
+(() => {
+  const modal = $('#board-share-modal');
+  if (modal) {
+    const close = $('#board-share-close');
+    if (close) close.addEventListener('click', boardCloseShareDialog);
+    const create = $('#board-share-create');
+    if (create) create.addEventListener('click', boardCreateShare);
+    const copy = $('#board-share-copy');
+    if (copy) copy.addEventListener('click', () => {
+      const url = $('#board-share-url');
+      boardCopyShareURL(url ? url.value : '', copy);
+    });
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) boardCloseShareDialog();
+    });
+  }
+  sharesAdminBindControls();
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (modal && !modal.classList.contains('hidden')) {
+      e.preventDefault();
+      boardCloseShareDialog();
+    } else if (sharesAdminVisible()) {
+      e.preventDefault();
+      closeSharesAdmin();
+    }
+  });
+  window.addEventListener('hashchange', () => {
+    if (location.hash === SHARES_HASH) openSharesAdmin();
+    else if (sharesAdminVisible()) closeSharesAdmin();
+  });
+  // Defer the initial hash route until the rest of app.js has finished its
+  // top-level let/const initialisation (hideAllViews touches those bindings).
+  if (location.hash === SHARES_HASH) {
+    setTimeout(() => {
+      if (location.hash === SHARES_HASH) openSharesAdmin();
+    }, 0);
+  }
 })();
 
 // 任务抽屉宽度：拖拽/键盘调整，localStorage 持久化。默认 620px，
@@ -8681,6 +9324,9 @@ async function openNewSessionView(cwd) {
   nsPendingCwd = cwd || '';
   $('#chat-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const sharesView = $('#shares-view');
+  if (sharesView) sharesView.classList.add('hidden');
+  clearSharesHash();
   relocatePermCards();
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.remove('hidden');
@@ -9152,6 +9798,9 @@ function hideAllViews() {
   $('#chat-view').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const shares = $('#shares-view');
+  if (shares) shares.classList.add('hidden');
+  clearSharesHash();
   closeGroupMemberPanel();
   closeGroupMentionPopup();
 }
