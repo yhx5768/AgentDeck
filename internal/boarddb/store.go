@@ -32,7 +32,7 @@ var statusOrder = []string{"新建", "进行中", "待人工", "待验收", "已
 
 const schema = `
 CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('version', '3')
+INSERT INTO schema_meta(key, value) VALUES ('version', '4')
   ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -85,6 +85,24 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_task ON task_artifacts(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_artifacts_created ON task_artifacts(created_at DESC);
+
+-- artifact_shares turns one artifact into a public, unauthenticated link.
+-- Only the SHA-256 hash of the URL token is stored; the token itself is
+-- derived from the share id plus a server-side secret (see the server's
+-- artifact-share.key), so management can rebuild the URL after a restart
+-- without ever persisting the capability token. Empty expires_at = permanent;
+-- non-empty revoked_at = cancelled immediately.
+CREATE TABLE IF NOT EXISTS artifact_shares (
+  id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL REFERENCES task_artifacts(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL DEFAULT '',
+  revoked_at TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shares_token ON artifact_shares(token_hash);
+CREATE INDEX IF NOT EXISTS idx_shares_artifact ON artifact_shares(artifact_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS task_events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -817,6 +835,146 @@ func (s *Store) CreateArtifact(input map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	return artifact.toMap(), nil
+}
+
+// ArtifactShare is one row of artifact_shares. TokenHash is the SHA-256 of the
+// public URL token; the plaintext capability token is never persisted. The
+// Artifact*/Task* fields are filled by ListShares for the management view.
+type ArtifactShare struct {
+	ID, ArtifactID, TokenHash, ExpiresAt, RevokedAt, CreatedBy, CreatedAt string
+	ArtifactTitle, ArtifactKind, ArtifactFilename, TaskID, TaskTitle      string
+}
+
+func (s *ArtifactShare) toMap() map[string]any {
+	out := map[string]any{
+		"id": s.ID, "artifact_id": s.ArtifactID,
+		"expires_at": s.ExpiresAt, "revoked_at": s.RevokedAt,
+		"created_by": s.CreatedBy, "created_at": s.CreatedAt,
+	}
+	if s.ArtifactTitle != "" || s.ArtifactKind != "" || s.ArtifactFilename != "" {
+		out["artifact_title"] = s.ArtifactTitle
+		out["artifact_kind"] = s.ArtifactKind
+		out["artifact_filename"] = s.ArtifactFilename
+	}
+	if s.TaskID != "" || s.TaskTitle != "" {
+		out["task_id"] = s.TaskID
+		out["task_title"] = s.TaskTitle
+	}
+	return out
+}
+
+const shareSelect = `SELECT id,artifact_id,token_hash,expires_at,revoked_at,created_by,created_at
+	FROM artifact_shares`
+
+func scanShare(scanner interface{ Scan(...any) error }) (*ArtifactShare, error) {
+	share := &ArtifactShare{}
+	err := scanner.Scan(&share.ID, &share.ArtifactID, &share.TokenHash, &share.ExpiresAt,
+		&share.RevokedAt, &share.CreatedBy, &share.CreatedAt)
+	return share, err
+}
+
+// CreateShare records one public link for an artifact. The caller (server)
+// supplies the share id and the hash of the derived token; plaintext tokens
+// never reach the database. The id must be supplied because the public token is
+// derived from it (see the server's artifactShareToken).
+func (s *Store) CreateShare(input map[string]any) (map[string]any, error) {
+	artifactID := inputString(input, "artifact_id")
+	if artifactID == "" {
+		return nil, fmt.Errorf("artifact_id required")
+	}
+	tokenHash := inputString(input, "token_hash")
+	if tokenHash == "" {
+		return nil, fmt.Errorf("token_hash required")
+	}
+	id := inputString(input, "id")
+	if id == "" {
+		return nil, fmt.Errorf("share id required")
+	}
+	if !validArtifactID(id) {
+		return nil, fmt.Errorf("invalid share id")
+	}
+	at := now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var exists int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM task_artifacts WHERE id=?", artifactID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists == 0 {
+		return nil, fmt.Errorf("artifact not found")
+	}
+	_, err := s.db.Exec(`INSERT INTO artifact_shares(id,artifact_id,token_hash,expires_at,
+		revoked_at,created_by,created_at) VALUES(?,?,?,?,'',?,?)`,
+		id, artifactID, tokenHash, inputString(input, "expires_at"),
+		inputString(input, "created_by"), at)
+	if err != nil {
+		return nil, err
+	}
+	share, err := scanShare(s.db.QueryRow(shareSelect+" WHERE id=?", id))
+	if err != nil {
+		return nil, err
+	}
+	return share.toMap(), nil
+}
+
+func (s *Store) GetShare(id string) (*ArtifactShare, error) {
+	return scanShare(s.db.QueryRow(shareSelect+" WHERE id=?", id))
+}
+
+// GetShareByTokenHash resolves a public URL token. Revocation/expiry are
+// checked by the server so it can distinguish 404 (unknown) from 410 (known
+// but no longer valid).
+func (s *Store) GetShareByTokenHash(tokenHash string) (*ArtifactShare, error) {
+	return scanShare(s.db.QueryRow(shareSelect+" WHERE token_hash=?", tokenHash))
+}
+
+// ListShares returns every share with the artifact/task labels the management
+// panel needs, newest first. Revoked/expired rows stay visible so the user can
+// see what happened to a link.
+func (s *Store) ListShares() ([]map[string]any, error) {
+	rows, err := s.db.Query(`SELECT s.id,s.artifact_id,s.token_hash,s.expires_at,s.revoked_at,
+		s.created_by,s.created_at,a.title,a.kind,a.filename,a.task_id,
+		COALESCE(t.title,'')
+		FROM artifact_shares s
+		JOIN task_artifacts a ON a.id=s.artifact_id
+		LEFT JOIN tasks t ON t.id=a.task_id
+		ORDER BY s.created_at DESC, s.rowid DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		share := &ArtifactShare{}
+		if err := rows.Scan(&share.ID, &share.ArtifactID, &share.TokenHash, &share.ExpiresAt,
+			&share.RevokedAt, &share.CreatedBy, &share.CreatedAt, &share.ArtifactTitle,
+			&share.ArtifactKind, &share.ArtifactFilename, &share.TaskID, &share.TaskTitle); err != nil {
+			return nil, err
+		}
+		out = append(out, share.toMap())
+	}
+	return out, rows.Err()
+}
+
+// RevokeShare cancels a link immediately. Revoking an already-revoked share is
+// a no-op that still returns the record.
+func (s *Store) RevokeShare(id string) (map[string]any, error) {
+	at := now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`UPDATE artifact_shares SET revoked_at=? WHERE id=? AND revoked_at=''`, at, id)
+	if err != nil {
+		return nil, err
+	}
+	affected, _ := res.RowsAffected()
+	share, err := scanShare(s.db.QueryRow(shareSelect+" WHERE id=?", id))
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 && share.RevokedAt == "" {
+		return nil, fmt.Errorf("share not found")
+	}
+	return share.toMap(), nil
 }
 
 func (s *Store) Snapshot() (map[string]any, error) {

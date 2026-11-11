@@ -274,6 +274,7 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - **无文件导入**：看板就是 `<data_dir>/agent-board.db`，**DB 原生**——初始为空，靠主 Agent 用 `board_*` 工具建卡。**没有** legacy JSON / routing-table 迁移，也没有周期同步；读写只发生在 `/api/agent-board/*` 的 handler（别再加回任何外部文件来源）。
 - **产物托管（`task_artifacts`）**：一张卡可挂多个产物，数据在 `task_artifacts` 表，字节落 `<data_dir>/artifacts/<task>/<artifact>/<safe-filename>`。发布入口两条、逻辑一套（`internal/server/agentboard_artifacts.go` 的 `publishArtifact`）：① MCP `artifact_publish`（**对所有会话开放**，远端 worker 也能传；`content` 文本或 `encoding=base64`）；② HTTP `POST /api/agent-board/tasks/{id}/artifacts`（JSON / multipart / raw body，方便远端 curl）。单产物上限 10 MiB、文件名去 basename/控制字符、路径穿越与非法 id 拒绝；每次发布 append-only 生成新 artifact。托管 `GET /api/agent-board/artifacts/{id}`（`?download=1` 下载、`kind=url` 302），**所有产物响应**都带 `nosniff` + CSP `sandbox`（无 `allow-same-origin`，防 SVG/XHTML 等活动文档）。URL base 优先级：`public_base_url` → `browser.trusted_origins[0]`（只当 fallback、只接受纯 http(s) origin，不改写原字段、不依赖 `browser.enabled`）→ 请求 host → listen（产物标 `url_local_only`，提示仅本机/局域网）；响应带 `url_source` / `artifact_url_source` 便于排查。**token 不写进记录**。`report_file` 保留兼容：`artifacts[]` 里合成一条 `legacy:true` 项，`board_create`/`board_update` 的 schema 也补回了该字段。前端抽屉多产物列表 + HTML/Markdown 预览（`board_artifacts.test.js` 钉契约）。**轮次分组**：`task_artifacts.round`（int，0=未标注）由 `artifact_publish` / HTTP 的 `round` 可选传入；读路径在 `boarddb.annotateArtifactRounds` 给每项补 `round_source`（`explicit` / `inferred` / 空）与 `round_batch`。旧产物（round=0）按 `created_at` 相邻间隔 ≤30min 聚类，`round_batch` 从最新批次起为 1；聚类结果只显示「较早产物 + 时间范围」，**绝不编造「第 N 轮」**；时间不可解析的进「历史产物」。前端 `boardArtifactGroups` 按显式轮次倒序 → 推断批次升序 → 历史产物排序，最新组带「最新」标记。
 - **别把它当权限**：`main_agent` 只是标记；服务端只对**看板工具**按它拦截（`requireMainAgent`），其余 `/api/*` 任何本地会话都能调。
+- **产物公开分享（artifact_shares）**：单个产物可签发无需登录的公开链接 `GET /s/{token}`（**唯一在 auth 之外的看板路由**，只返回该产物，不暴露任务元数据/目录）。数据在 `artifact_shares`（`internal/server/agentboard_shares.go` + `boarddb`）：**DB 只存 token 的 SHA-256**；token = `base64url(shareID 16B || HMAC-SHA256(key, shareID)[:16])`，密钥在 `<data_dir>/artifact-share.key`（0600，首次自动生成），因此管理列表能按 share id 重建 URL 而无需持久化 capability token。`POST /api/agent-board/artifacts/{id}/shares`（body `expiry_days`: 1/3/7/null=永久，登录态）、`GET /api/agent-board/shares`、`DELETE /api/agent-board/shares/{id}`（撤销立即生效）。公开路由每次请求都查撤销/过期（410，未知 token 404），响应统一 `Cache-Control: no-store` + `X-Robots-Tag: noindex` + 现成的 CSP sandbox；URL 产物 302。前端产物行「分享」弹窗（1/3/7/永久 + 复制）与「分享管理」面板（列表/复制/取消）复用抽屉样式，不破坏打开/预览/下载。
 
 ### 16. 主 Agent 协调运行时（worker 通知 / 读搜 transcript / 幂等发送）
 
@@ -342,6 +343,7 @@ Claude 的 `~/.claude/settings.json` 的 env 段会覆盖进程继承的 env，�
 - `backups/<sid>.<unix_ms>.jsonl` — rewind 截断前的 Claude transcript 备份。
 - `notes.json` — 全局待办备忘（与 session 无关，跨重启持久化；前端权威，全量 PUT，0600 temp+rename 原子写，`notesMu` 单独加锁）。
 - `artifacts/<task_id>/<artifact_id>/<safe-filename>` — 看板产物托管的字节（HTML/Markdown/文件）；元数据在 `agent-board.db` 的 `task_artifacts`，两者由发布接口一起写。
+- `artifact-share.key` — 产物公开分享的 HMAC 密钥（32B，0600，首次分享时自动生成）。删除它会让已有 `/s/{token}` 链接全部失效；分享记录本身仍在 `agent-board.db` 的 `artifact_shares`。
 
 Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-webui 现场读、不复制。
 

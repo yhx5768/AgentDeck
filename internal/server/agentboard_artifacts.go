@@ -274,6 +274,14 @@ func (s *Server) handleAgentBoardArtifact(w http.ResponseWriter, r *http.Request
 		http.Redirect(w, r, artifact.URL, http.StatusFound)
 		return
 	}
+	s.serveArtifactFile(w, r, artifact, false)
+}
+
+// serveArtifactFile streams one hosted artifact. The authenticated route keeps
+// the long-lived immutable cache (artifacts are append-only); public /s/
+// links override it with no-store so revocation and expiry take effect
+// immediately, and add X-Robots-Tag so shared pages never get indexed.
+func (s *Server) serveArtifactFile(w http.ResponseWriter, r *http.Request, artifact *boarddb.TaskArtifact, public bool) {
 	root := s.artifactsRoot()
 	abs := filepath.Join(root, artifact.StoragePath)
 	if strings.TrimSpace(artifact.StoragePath) == "" || !pathWithin(root, abs) {
@@ -302,7 +310,12 @@ func (s *Server) handleAgentBoardArtifact(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	if public {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+	} else {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	}
 	// Apply the sandbox to every artifact, not just HTML: a "file" artifact can
 	// be an SVG/XHTML (or a lied-about MIME) that a browser would otherwise
 	// render as an active document on the AgentDeck origin. CSP sandbox on a

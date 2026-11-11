@@ -173,6 +173,13 @@ type Server struct {
 	boardDBErr  error
 	boardDBOnce sync.Once
 
+	// shareKey caches the per-data-dir HMAC key used to derive public artifact
+	// share tokens from their share ids. It lives in <data_dir>/artifact-share.key
+	// (0600) so public links survive restarts and management can rebuild the URL
+	// from the DB's token hash without storing the capability token itself.
+	shareKeyMu sync.Mutex
+	shareKey   []byte
+
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
 	httpSrv *http.Server
@@ -247,6 +254,12 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/agent-board/tasks/{id}/artifacts", s.auth(s.handleAgentBoardTaskArtifacts))
 	s.mux.Handle("POST /api/agent-board/tasks/{id}/artifacts", s.auth(s.handleAgentBoardCreateArtifact))
 	s.mux.Handle("GET /api/agent-board/artifacts/{id}", s.auth(s.handleAgentBoardArtifact))
+	// Public artifact shares: /s/{token} is the only unauthenticated board route.
+	// It serves exactly the shared artifact (never task metadata or a listing).
+	s.mux.HandleFunc("GET /s/{token}", s.handleArtifactShare)
+	s.mux.Handle("POST /api/agent-board/artifacts/{id}/shares", s.auth(s.handleAgentBoardCreateShare))
+	s.mux.Handle("GET /api/agent-board/shares", s.auth(s.handleAgentBoardListShares))
+	s.mux.Handle("DELETE /api/agent-board/shares/{id}", s.auth(s.handleAgentBoardRevokeShare))
 	s.mux.Handle("POST /api/agent-board/tasks", s.auth(s.handleAgentBoardCreateTask))
 	s.mux.Handle("PATCH /api/agent-board/tasks/{id}", s.auth(s.handleAgentBoardUpdateTask))
 	s.mux.Handle("POST /api/agent-board/tasks/{id}/worker", s.auth(s.handleAgentBoardBindWorker))

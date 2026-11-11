@@ -3251,6 +3251,17 @@ function boardArtifactItem(task, artifact) {
     actions.append(boardArtifactAction('下载', artifact.url, true));
     actions.append(boardCopyButton(artifact.url, '复制链接'));
   }
+  if (!artifact.legacy && artifact.id) {
+    const share = document.createElement('button');
+    share.type = 'button';
+    share.className = 'board-artifact-action board-artifact-share';
+    share.textContent = '分享';
+    share.onclick = (e) => {
+      e.stopPropagation();
+      boardOpenShareDialog(artifact);
+    };
+    actions.append(share);
+  }
   if (actions.children.length) main.append(actions);
   return item;
 }
@@ -3327,6 +3338,215 @@ function boardCloseArtifactPreview() {
   const body = $('#board-artifact-preview-body');
   if (body) body.innerHTML = ''; // 卸载 iframe / 取消未完成的加载
   document.body.classList.remove('board-preview-open');
+}
+
+// ---------- 看板产物公开分享 ----------
+// 公开链接不需要登录：服务端签发 /s/{token}，撤销/过期立即生效。这里只负责
+// 创建弹窗、复制与管理列表，不缓存 token（管理列表由服务端按 share id 重建 URL）。
+
+let boardShareArtifact = null;
+
+function boardShareStatusLabel(status) {
+  return { active: '有效', expired: '已过期', revoked: '已取消' }[status] || status || '未知';
+}
+
+function boardShareShowError(target, text) {
+  const el = $(target);
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+}
+
+function boardShareBusy(busy) {
+  const btn = $('#board-share-create');
+  if (!btn) return;
+  btn.disabled = !!busy;
+  btn.textContent = busy ? '创建中…' : '创建公开链接';
+}
+
+function boardOpenShareDialog(artifact) {
+  const mask = $('#board-share-modal');
+  if (!mask || !artifact || !artifact.id) return;
+  boardShareArtifact = artifact;
+  const label = $('#board-share-artifact');
+  if (label) {
+    label.textContent = (artifact.title || artifact.filename || '未命名产物')
+      + ' · ' + boardArtifactKindLabel(artifact);
+  }
+  const expiry = $('#board-share-expiry');
+  if (expiry) expiry.value = '1';
+  const url = $('#board-share-url');
+  if (url) url.value = '';
+  const result = $('#board-share-result');
+  if (result) result.classList.add('hidden');
+  const note = $('#board-share-expiry-note');
+  if (note) note.textContent = '';
+  boardShareShowError('#board-share-error', '');
+  boardShareBusy(false);
+  mask.classList.remove('hidden');
+}
+
+function boardCloseShareDialog() {
+  const mask = $('#board-share-modal');
+  if (!mask) return;
+  mask.classList.add('hidden');
+  boardShareArtifact = null;
+  const url = $('#board-share-url');
+  if (url) url.value = '';
+}
+
+async function boardCreateShare() {
+  const artifact = boardShareArtifact;
+  if (!artifact || !artifact.id) return;
+  const select = $('#board-share-expiry');
+  const days = select ? Number(select.value) : 0;
+  boardShareShowError('#board-share-error', '');
+  boardShareBusy(true);
+  try {
+    const out = await api('/api/agent-board/artifacts/'
+      + encodeURIComponent(artifact.id) + '/shares', {
+      method: 'POST',
+      body: JSON.stringify({ expiry_days: Number.isFinite(days) ? days : 0 }),
+    });
+    const share = (out && out.share) || {};
+    if (!share.url) throw new Error('服务端没有返回公开链接');
+    const url = $('#board-share-url');
+    if (url) url.value = share.url;
+    const note = $('#board-share-expiry-note');
+    if (note) {
+      note.textContent = (share.expires_at ? '到期时间：' + share.expires_at : '永久有效（不会自动过期）')
+        + (share.url_local_only ? ' · ⚠ 仅本机/局域网可达（未配置 public_base_url）' : '');
+    }
+    const result = $('#board-share-result');
+    if (result) result.classList.remove('hidden');
+  } catch (err) {
+    boardShareShowError('#board-share-error',
+      '创建失败：' + (err && err.message ? err.message : err));
+  } finally {
+    boardShareBusy(false);
+  }
+}
+
+function boardCopyShareURL(url, button) {
+  if (!url) return;
+  const done = () => {
+    if (!button) return;
+    const old = button.textContent;
+    button.textContent = '已复制';
+    setTimeout(() => { button.textContent = old; }, 1200);
+  };
+  copyText(String(url)).then(done).catch(() => {
+    if (button) button.textContent = '复制失败';
+  });
+}
+
+function boardShareRow(share) {
+  const row = document.createElement('div');
+  row.className = 'board-share-row';
+  row.dataset.shareId = share.id || '';
+
+  const main = document.createElement('div');
+  main.className = 'board-share-row-main';
+  const title = document.createElement('div');
+  title.className = 'board-share-row-title';
+  title.textContent = share.artifact_title || share.artifact_filename || '未命名产物';
+  const meta = document.createElement('div');
+  meta.className = 'board-share-row-meta';
+  const bits = [];
+  if (share.task_title) bits.push('任务：' + share.task_title);
+  if (share.created_at) bits.push('创建 ' + share.created_at);
+  bits.push(share.expires_at ? '到期 ' + share.expires_at : '永久有效');
+  meta.textContent = bits.join(' · ');
+  main.append(title, meta);
+
+  const status = document.createElement('span');
+  status.className = 'board-share-status ' + (share.status || 'unknown');
+  status.textContent = boardShareStatusLabel(share.status);
+  row.append(main, status);
+
+  const actions = document.createElement('div');
+  actions.className = 'board-share-row-actions';
+  if (share.status === 'active' && share.url) {
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'board-artifact-action';
+    copy.textContent = '复制链接';
+    copy.onclick = () => boardCopyShareURL(share.url, copy);
+    actions.append(copy);
+  }
+  if (share.status !== 'revoked') {
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.className = 'board-artifact-action board-share-revoke';
+    revoke.textContent = '取消分享';
+    revoke.onclick = () => boardRevokeShare(share, revoke);
+    actions.append(revoke);
+  }
+  row.append(actions);
+  return row;
+}
+
+function boardRenderShares(shares) {
+  const list = $('#board-shares-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const items = Array.isArray(shares) ? shares : [];
+  if (!items.length) {
+    list.append(boardMuted('暂无分享链接'));
+    return;
+  }
+  items.forEach((share) => list.append(boardShareRow(share)));
+}
+
+async function boardLoadShares() {
+  const list = $('#board-shares-list');
+  if (list) {
+    list.innerHTML = '';
+    list.append(boardMuted('加载中…'));
+  }
+  boardShareShowError('#board-shares-error', '');
+  try {
+    const out = await api('/api/agent-board/shares');
+    boardRenderShares(out && out.shares);
+  } catch (err) {
+    if (list) {
+      list.innerHTML = '';
+      list.append(boardMuted('读取失败'));
+    }
+    boardShareShowError('#board-shares-error',
+      '读取分享列表失败：' + (err && err.message ? err.message : err));
+  }
+}
+
+async function boardRevokeShare(share, button) {
+  if (!share || !share.id) return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = '取消中…';
+  }
+  try {
+    await api('/api/agent-board/shares/' + encodeURIComponent(share.id), { method: 'DELETE' });
+    await boardLoadShares();
+  } catch (err) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '取消分享';
+    }
+    boardShareShowError('#board-shares-error',
+      '取消分享失败：' + (err && err.message ? err.message : err));
+  }
+}
+
+function boardOpenSharesPanel() {
+  const panel = $('#board-shares-panel');
+  if (!panel) return;
+  panel.classList.remove('hidden');
+  boardLoadShares();
+}
+
+function boardCloseSharesPanel() {
+  const panel = $('#board-shares-panel');
+  if (panel) panel.classList.add('hidden');
 }
 
 function boardEventAvatar(kind) {
@@ -3650,6 +3870,45 @@ async function boardSendToMain() {
     if (e.key === 'Escape' && !mask.classList.contains('hidden')) {
       e.preventDefault();
       boardCloseArtifactPreview();
+    }
+  });
+})();
+
+// 产物公开分享：创建弹窗 + 分享管理面板。
+(() => {
+  const modal = $('#board-share-modal');
+  const panel = $('#board-shares-panel');
+  if (modal) {
+    const close = $('#board-share-close');
+    if (close) close.addEventListener('click', boardCloseShareDialog);
+    const create = $('#board-share-create');
+    if (create) create.addEventListener('click', boardCreateShare);
+    const copy = $('#board-share-copy');
+    if (copy) copy.addEventListener('click', () => {
+      const url = $('#board-share-url');
+      boardCopyShareURL(url ? url.value : '', copy);
+    });
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) boardCloseShareDialog();
+    });
+  }
+  if (panel) {
+    const close = $('#board-shares-close');
+    if (close) close.addEventListener('click', boardCloseSharesPanel);
+    panel.addEventListener('click', (e) => {
+      if (e.target === panel) boardCloseSharesPanel();
+    });
+  }
+  const manage = $('#board-share-manage');
+  if (manage) manage.addEventListener('click', boardOpenSharesPanel);
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (modal && !modal.classList.contains('hidden')) {
+      e.preventDefault();
+      boardCloseShareDialog();
+    } else if (panel && !panel.classList.contains('hidden')) {
+      e.preventDefault();
+      boardCloseSharesPanel();
     }
   });
 })();

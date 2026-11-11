@@ -207,7 +207,9 @@
               <div id="board-drawer-agent" class="board-pane-card"></div>
             </div>
             <div class="board-pane-section">
-              <div class="board-pane-title">产物与证据</div>
+              <div class="board-pane-title">产物与证据
+                <button id="board-share-manage" class="board-pane-title-btn" type="button">分享管理</button>
+              </div>
               <div id="board-drawer-artifacts" class="board-pane-card"></div>
             </div>
             <div class="board-pane-section">
@@ -825,6 +827,53 @@
     <button id="board-artifact-preview-close" class="board-artifact-preview-btn" type="button">关闭</button>
   </div>
   <div id="board-artifact-preview-body" class="board-artifact-preview-body"></div>
+</div>
+
+<!-- 产物公开分享：创建弹窗 + 已分享链接管理 -->
+<div id="board-share-modal" class="board-share-backdrop hidden" role="dialog" aria-modal="true"
+     aria-label="分享产物">
+  <div class="board-share-card">
+    <div class="board-share-head">
+      <span class="board-share-heading">分享产物</span>
+      <button id="board-share-close" class="board-share-close" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="board-share-body">
+      <div id="board-share-artifact" class="board-share-artifact"></div>
+      <label class="board-share-field">有效期
+        <select id="board-share-expiry">
+          <option value="1">1 天</option>
+          <option value="3">3 天</option>
+          <option value="7">7 天</option>
+          <option value="0">永久</option>
+        </select>
+      </label>
+      <button id="board-share-create" class="board-share-primary" type="button">创建公开链接</button>
+      <div id="board-share-result" class="board-share-result hidden">
+        <div class="board-share-hint">任何拿到链接的人都能查看，无需登录；泄露后可随时在「分享管理」里取消。</div>
+        <div class="board-share-url-row">
+          <input id="board-share-url" class="board-share-url" readonly>
+          <button id="board-share-copy" class="board-share-secondary" type="button">复制链接</button>
+        </div>
+        <div id="board-share-expiry-note" class="board-share-hint"></div>
+      </div>
+      <div id="board-share-error" class="board-share-error hidden"></div>
+    </div>
+  </div>
+</div>
+
+<div id="board-shares-panel" class="board-share-backdrop hidden" role="dialog" aria-modal="true"
+     aria-label="分享管理">
+  <div class="board-share-card board-shares-card">
+    <div class="board-share-head">
+      <span class="board-share-heading">分享管理</span>
+      <button id="board-shares-close" class="board-share-close" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="board-share-body">
+      <div class="board-share-hint">公开链接不需要登录；取消分享后立即失效。</div>
+      <div id="board-shares-error" class="board-share-error hidden"></div>
+      <div id="board-shares-list" class="board-shares-list"></div>
+    </div>
+  </div>
 </div>
 
 
