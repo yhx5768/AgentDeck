@@ -19,6 +19,9 @@ function parseFileLink(href) {
   try { p = decodeURIComponent(href); } catch (_) { p = href; }
   const m = p.match(/:(\d+)$/); // 尾部 :行号
   if (m) { line = parseInt(m[1], 10); p = p.slice(0, m.index); }
+  // 应用内接口 URL（上传附件、图片接口等）不是工作区文件路径，别让 md()
+  // 把它们改写成 file-link —— 否则看板时间线里的附件链接点不动。
+  if (p.startsWith('/api/')) return null;
   if (p.startsWith('/')) return { path: p, line }; // 绝对路径
   // 相对路径：基于当前会话 cwd 解析
   const cwd = state.current && state.current.cwd;
@@ -3443,10 +3446,12 @@ function boardComposerStatus(text, kind = '') {
 function boardComposerSync(task) {
   const input = $('#board-composer-input');
   const send = $('#board-composer-send');
+  const attach = $('#board-composer-attach');
   if (!input || !send) return;
   const allowed = !!(state.current && state.current.main_agent);
   input.disabled = !allowed;
   send.disabled = !allowed;
+  if (attach) attach.disabled = !allowed;
   input.placeholder = allowed
     ? `发送消息到主 Agent（${state.current.peer_name || 'mainAgent'}）…`
     : '当前会话不是主 Agent，不能发送';
@@ -3454,9 +3459,149 @@ function boardComposerSync(task) {
     boardComposerTaskId = task.id || '';
     input.value = '';
     input.style.height = 'auto';
+    // 切卡清空待发附件：文件已经落在主 Agent 会话的上传目录里，但视觉上
+    // 留在抽屉里会让人以为它们跟着新卡走，发出去就挂错任务了。
+    boardAttached = [];
+    boardRenderAttachedThumbs();
     boardComposerStatus('');
   }
   boardQueueStatus();
+}
+
+// ---------- 抽屉输入框附件 ----------
+// 与主 composer 同一套规则（4 图 / 8 文件、10MB / 40MB、按引擎决定图片是否
+// 内嵌），但附件状态独立：抽屉的待发附件不能和主输入框互相污染。
+let boardAttached = [];
+
+// 任务时间线只记 Markdown 链接，指向主 Agent 会话的上传接口；base64 绝不进
+// board DB（否则每条时间线事件都会被图片本体撑爆）。链接由 md() 渲染，可点。
+function boardAttachmentLinks(attachments, sid) {
+  if (!sid || !attachments || !attachments.length) return [];
+  return attachments.map((att) => {
+    const name = att.name || '';
+    const label = att.kind === 'image' ? '图片' : '文件';
+    // 文件名可能含 [ ]，不转义会把 Markdown 链接文本截断。
+    const safeName = name.replace(/[[\]\\]/g, '\\$&');
+    const url = `/api/sessions/${encodeURIComponent(sid)}/uploads/${encodeURIComponent(name)}`;
+    return `[${label} ${safeName}](${url})`;
+  });
+}
+
+function boardEventText(text, links) {
+  return [text || '', ...(links || [])].filter(Boolean).join('\n');
+}
+
+function boardCurrentAttachments() {
+  return {
+    images: boardAttached.filter((a) => a.kind === 'image')
+      .map((a) => ({ media_type: a.media_type, data: a.data })),
+    files: boardAttached.filter((a) => a.kind === 'file')
+      .map((a) => ({ name: a.name, path: a.path })),
+    links: boardAttachmentLinks(boardAttached, state.current && state.current.id),
+  };
+}
+
+function boardClearComposer() {
+  const input = $('#board-composer-input');
+  if (input) {
+    input.value = '';
+    input.style.height = 'auto';
+  }
+  boardAttached = [];
+  boardRenderAttachedThumbs();
+}
+
+function boardRenderAttachedThumbs() {
+  renderAttachmentThumbs($('#board-composer-attached'), boardAttached);
+}
+
+async function boardAddFiles(files) {
+  if (!files || !files.length) return;
+  if (!state.current || !state.current.main_agent) {
+    boardComposerStatus('当前不是主 Agent 会话，不能添加附件', 'error');
+    return;
+  }
+  const sid = state.current.id;
+  const taskId = boardComposerTaskId;
+  // 上传是异步的：切卡/切会话后返回的结果必须丢弃，否则会挂到新卡上。
+  const stale = () => boardComposerTaskId !== taskId
+    || !state.current || state.current.id !== sid;
+  // mcode/codex 没有内嵌图片通道，图片和主 composer 一样降级成文件附件。
+  const noInlineImages = !engineTakesImages(state.current.engine || 'claude');
+  for (const f of files) {
+    if (stale()) return;
+    if (ALLOWED_MIME.includes(f.type) && !noInlineImages) {
+      const imgs = boardAttached.filter((a) => a.kind === 'image').length;
+      if (imgs >= MAX_IMAGES) {
+        boardComposerStatus(`最多 ${MAX_IMAGES} 张图片`, 'error');
+        continue;
+      }
+      if (f.size > MAX_IMAGE_BYTES) {
+        boardComposerStatus(`图片过大：${f.name}（${fmtMiB(f.size)}MB > ${MAX_IMAGE_BYTES >> 20}MB）`, 'error');
+        continue;
+      }
+      try {
+        // 图片本体仍走 base64 内嵌；另存一份到主 Agent 会话的上传目录，
+        // 任务时间线才有可点的 URL（postMessage 不回传服务端落盘名）。
+        const [data, up] = await Promise.all([
+          readAsDataURL(f).then(stripDataURLPrefix),
+          uploadAttachment(f, sid),
+        ]);
+        if (stale()) return;
+        boardAttached.push({ kind: 'image', media_type: f.type, data, name: up.name, size: up.size, sid });
+      } catch (e) {
+        if (stale()) return;
+        boardComposerStatus(`添加图片失败：${f.name || '图片'}（${e.message || 'unknown error'}）`, 'error');
+      }
+      continue;
+    }
+    const nFiles = boardAttached.filter((a) => a.kind === 'file').length;
+    if (nFiles >= MAX_FILES) {
+      boardComposerStatus(`最多 ${MAX_FILES} 个文件附件`, 'error');
+      continue;
+    }
+    if (f.size > MAX_FILE_BYTES) {
+      boardComposerStatus(`文件过大：${f.name}（${fmtMiB(f.size)}MB > ${MAX_FILE_BYTES >> 20}MB）`, 'error');
+      continue;
+    }
+    try {
+      const up = await uploadAttachment(f, sid);
+      if (stale()) return;
+      boardAttached.push({ kind: 'file', name: up.name, size: up.size, path: up.path, sid });
+    } catch (e) {
+      if (stale()) return;
+      boardComposerStatus(`上传失败：${f.name}（${e.message || 'unknown error'}）`, 'error');
+    }
+  }
+  boardRenderAttachedThumbs();
+}
+
+async function boardOnPaste(e) {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items || !items.length) return;
+  const files = [];
+  for (const item of items) {
+    if (item.kind === 'file') {
+      const f = item.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (files.length) {
+    e.preventDefault();
+    await boardAddFiles(files);
+  }
+}
+
+async function boardOnDrop(e) {
+  if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  await boardAddFiles([...e.dataTransfer.files]);
+}
+
+async function boardOnFilePicked(e) {
+  const files = [...((e.target && e.target.files) || [])];
+  if (e.target) e.target.value = '';
+  await boardAddFiles(files);
 }
 
 async function boardAppendUserEvent(taskId, text) {
@@ -3476,36 +3621,46 @@ async function boardSendToMain() {
   const input = $('#board-composer-input');
   const send = $('#board-composer-send');
   const text = input ? input.value.trim() : '';
-  if (!text) return;
+  if (!text && !boardAttached.length) return;
   if (!state.current || !state.current.main_agent) {
     boardComposerStatus('当前不是主 Agent 会话，消息未发送', 'error');
     return;
   }
+  const sid = state.current.id;
+  // 附件是在加入时上传到「当时的主 Agent 会话」的；跨会话后文件路径会指到
+  // 别的会话上传目录（服务端会 400），直接清掉让用户重新添加。
+  if (boardAttached.some((a) => a.sid && a.sid !== sid)) {
+    boardAttached = [];
+    boardRenderAttachedThumbs();
+    boardComposerStatus('会话已切换，附件已清空，请重新添加', 'error');
+    return;
+  }
+  const att = boardCurrentAttachments();
   if (send) send.disabled = true;
   const message = boardDrawerTask
     ? `${boardTaskContext(boardDrawerTask)}\n${text}`
     : text;
+  const eventText = boardEventText(text, att.links);
   try {
-    if (isRunning() || state.boardMockBusy || pendingItems(state.current.id).length) {
-      holdPending(message, [], [], {
+    if (isRunning() || state.boardMockBusy || pendingItems(sid).length) {
+      holdPending(message, att.images, att.files, {
         taskId: boardDrawerTask && boardDrawerTask.id,
         bodyText: text,
+        attachmentLinks: att.links,
       });
-      input.value = '';
-      input.style.height = 'auto';
-      boardComposerStatus(`已排队 · 队列 ${pendingItems(state.current.id).length} 条`, 'queued');
+      boardClearComposer();
+      boardComposerStatus(`已排队 · 队列 ${pendingItems(sid).length} 条`, 'queued');
       return;
     }
     boardComposerStatus('发送中…');
-    await postMessage({ text: message, images: [], files: [] });
-    await boardAppendUserEvent(boardDrawerTask && boardDrawerTask.id, text);
-    input.value = '';
-    input.style.height = 'auto';
+    await postMessage({ text: message, images: att.images, files: att.files });
+    await boardAppendUserEvent(boardDrawerTask && boardDrawerTask.id, eventText);
+    boardClearComposer();
     boardComposerStatus('已发送 · 可在「对话」查看', 'ok');
   } catch (e) {
     boardComposerStatus('发送失败：' + (e && e.message ? e.message : e), 'error');
   } finally {
-    if (send) send.disabled = false;
+    if (send) send.disabled = !(state.current && state.current.main_agent);
   }
 }
 
@@ -3516,6 +3671,22 @@ async function boardSendToMain() {
     btn.addEventListener('click', () => boardShowPane(btn.dataset.boardPane));
   });
   if (!input || !send) return;
+  const attach = $('#board-composer-attach');
+  const fileInput = $('#board-file-input');
+  const composer = $('#board-drawer-composer');
+  if (attach && fileInput) {
+    attach.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', boardOnFilePicked);
+  }
+  if (composer) {
+    composer.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    composer.addEventListener('drop', boardOnDrop);
+  }
+  input.addEventListener('paste', boardOnPaste);
   send.addEventListener('click', boardSendToMain);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -7051,10 +7222,10 @@ function stripDataURLPrefix(s) {
   return i >= 0 ? s.slice(i + 1) : s;
 }
 
-function renderAttachedThumbs() {
-  const box = $('#attached-images');
+function renderAttachmentThumbs(box, list, onRemove) {
+  if (!box) return;
   box.innerHTML = '';
-  state.attached.forEach((att, i) => {
+  list.forEach((att, i) => {
     const t = document.createElement('div');
     if (att.kind === 'image') {
       t.className = 'attached-thumb';
@@ -7068,13 +7239,19 @@ function renderAttachedThumbs() {
       t.querySelector('.af-size').textContent = fmtBytes(att.size);
     }
     t.querySelector('.x').onclick = () => {
-      state.attached.splice(i, 1);
-      if (state.current) draft().attachments = state.attached;
-      renderAttachedThumbs();
+      list.splice(i, 1);
+      if (onRemove) onRemove();
+      renderAttachmentThumbs(box, list, onRemove);
     };
     box.appendChild(t);
   });
   renderIcons(box);
+}
+
+function renderAttachedThumbs() {
+  renderAttachmentThumbs($('#attached-images'), state.attached, () => {
+    if (state.current) draft().attachments = state.attached;
+  });
 }
 
 // Is a turn currently running for the open session? Derived from the session
@@ -7226,7 +7403,10 @@ async function flushPending() {
   renderPendingBubble();
   try {
     await postMessage({ text: item.text, images: item.images, files: item.files });
-    if (item.taskId) await boardAppendUserEvent(item.taskId, item.bodyText || '');
+    if (item.taskId) {
+      await boardAppendUserEvent(item.taskId,
+        boardEventText(item.bodyText || '', item.attachmentLinks));
+    }
     removePendingItem(sid, item.id);
   } catch (e) {
     // Keep the failed message at the head so order is preserved; the user can

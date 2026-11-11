@@ -232,11 +232,15 @@
           </div>
           <div id="board-drawer-composer" class="board-drawer-composer">
             <div id="board-composer-status" class="board-composer-status hidden" role="status" aria-live="polite"></div>
+            <div id="board-composer-attached" class="attached-images board-composer-attached"></div>
             <div class="board-composer-box">
+              <button id="board-composer-attach" class="board-composer-attach" type="button"
+                      title="添加图片或文件（可粘贴/拖拽）" aria-label="添加图片或文件"><i data-lucide="plus"></i></button>
               <textarea id="board-composer-input" rows="1" aria-label="发送消息到主 Agent"
                         placeholder="发送消息到主 Agent…"></textarea>
               <button id="board-composer-send" class="board-composer-send" type="button">发送</button>
             </div>
+            <input type="file" id="board-file-input" multiple hidden>
             <div class="board-composer-hint">
               <label id="board-mock-busy-wrap" class="board-mock-busy hidden">
                 <input type="checkbox" id="board-mock-busy"> 模拟忙碌（测试）
