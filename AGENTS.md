@@ -2,7 +2,7 @@
 
 给在本仓库工作的工程师 / AI agent 的导览。先读这一篇，再动手。
 
-> 用户向文档见 `README.md`；rewind 设计与实施记录见 `rewind-rd.md`；跨会话消息（常驻/地址名）设计见 `peer-rd.md`；**引擎中立的 A2A 总线 / agentdeck MCP 见 `a2a-rd.md`**；主会话派工、worker 回报的用法见 `docs/main-agent-best-practices.md`（改常驻、地址名、建会话、删除或归档的行为时同步更新）；待办见 `TODO.md`。
+> 用户向文档见 `README.md`；rewind 设计与实施记录见 `rewind-rd.md`；跨会话消息（常驻/地址名）设计见 `peer-rd.md`；**引擎中立的 A2A 总线 / agentdeck MCP 见 `a2a-rd.md`**；主会话派工、worker 回报的用法见 `docs/main-agent-best-practices.md`（改常驻、地址名、建会话、删除或归档的行为时同步更新）；**「需要人」注意力路由（收件箱 / 作答路径 / 超时语义）设计与实施计划见 `docs/needs-you-rd.md`**；待办见 `TODO.md`。
 > 本篇只讲「怎么在这里干活」。
 
 ## 项目是什么
