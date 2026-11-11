@@ -2675,6 +2675,9 @@ async function openSession(id) {
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const sharesView = $('#shares-view');
+  if (sharesView) sharesView.classList.add('hidden');
+  clearSharesHash();
   relocatePermCards();
   $('#chat-view').classList.remove('hidden');
   renderGoalBar();
@@ -3440,32 +3443,302 @@ function boardCopyShareURL(url, button) {
   });
 }
 
-function boardShareRow(share) {
-  const row = document.createElement('div');
-  row.className = 'board-share-row';
-  row.dataset.shareId = share.id || '';
+// ---------- 分享管理独立页（设置 → 分享管理，或 /#/shares） ----------
+// 卡片抽屉只保留「分享」创建动作；所有卡片的分享链接统一在这里管理。
 
-  const main = document.createElement('div');
-  main.className = 'board-share-row-main';
-  const title = document.createElement('div');
-  title.className = 'board-share-row-title';
-  title.textContent = share.artifact_title || share.artifact_filename || '未命名产物';
-  const meta = document.createElement('div');
-  meta.className = 'board-share-row-meta';
-  const bits = [];
-  if (share.task_title) bits.push('任务：' + share.task_title);
-  if (share.created_at) bits.push('创建 ' + share.created_at);
-  bits.push(share.expires_at ? '到期 ' + share.expires_at : '永久有效');
-  meta.textContent = bits.join(' · ');
-  main.append(title, meta);
+const SHARES_HASH = '#/shares';
+let sharesAdminItems = [];
+let sharesAdminReturn = 'empty';
+const sharesAdminFilters = { q: '', status: '', scope: '', kind: '', sort: 'created_desc' };
+
+function sharesAdminVisible() {
+  const view = $('#shares-view');
+  return !!view && !view.classList.contains('hidden');
+}
+
+function clearSharesHash() {
+  if (location.hash === SHARES_HASH) {
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
+
+function sharesAdminEmpty(text) {
+  const el = document.createElement('div');
+  el.className = 'shares-empty';
+  el.textContent = text;
+  return el;
+}
+
+function sharesAdminCurrentView() {
+  if ($('#group-view') && !$('#group-view').classList.contains('hidden')) return 'group';
+  if ($('#new-session-view') && !$('#new-session-view').classList.contains('hidden')) return 'new-session';
+  if ($('#chat-view') && !$('#chat-view').classList.contains('hidden')) return 'chat';
+  return 'empty';
+}
+
+function openSharesAdmin() {
+  const view = $('#shares-view');
+  if (!view) return;
+  if (!sharesAdminVisible()) sharesAdminReturn = sharesAdminCurrentView();
+  hideAllViews();
+  view.classList.remove('hidden');
+  if (location.hash !== SHARES_HASH) {
+    history.replaceState(null, '', location.pathname + location.search + SHARES_HASH);
+  }
+  if (typeof boardDisconnect === 'function') boardDisconnect();
+  renderIcons();
+  sharesAdminRefresh();
+}
+
+function closeSharesAdmin() {
+  const view = $('#shares-view');
+  if (view) view.classList.add('hidden');
+  clearSharesHash();
+  if (sharesAdminReturn === 'group' && state.currentGroup) {
+    $('#group-view').classList.remove('hidden');
+  } else if (sharesAdminReturn === 'new-session') {
+    $('#new-session-view').classList.remove('hidden');
+  } else if (state.current) {
+    $('#chat-view').classList.remove('hidden');
+  } else {
+    $('#empty-state').classList.remove('hidden');
+  }
+  renderIcons();
+}
+
+// 设置弹窗里的「打开分享管理」入口：先关设置，再进独立页。
+function sharesAdminOpenFromSettings() {
+  const settings = $('#modal-settings');
+  if (settings) settings.classList.add('hidden');
+  openSharesAdmin();
+}
+
+// Filter/refresh/back/settings wiring is factored out so the jsdom tests can
+// exercise the exact same handlers the app uses.
+function sharesAdminBindControls() {
+  const bindFilter = (selector, key, event) => {
+    const el = $(selector);
+    if (!el) return;
+    el.addEventListener(event || 'change', () => {
+      sharesAdminFilters[key] = el.value;
+      sharesAdminRender();
+    });
+  };
+  bindFilter('#shares-search', 'q', 'input');
+  bindFilter('#shares-status-filter', 'status');
+  bindFilter('#shares-scope-filter', 'scope');
+  bindFilter('#shares-kind-filter', 'kind');
+  bindFilter('#shares-sort', 'sort');
+  const back = $('#shares-back');
+  if (back) back.addEventListener('click', closeSharesAdmin);
+  const refresh = $('#shares-refresh');
+  if (refresh) refresh.addEventListener('click', sharesAdminRefresh);
+  const settingsEntry = $('#btn-settings-shares');
+  if (settingsEntry) settingsEntry.addEventListener('click', sharesAdminOpenFromSettings);
+}
+
+function sharesAdminStatusCounts(items) {
+  const counts = { active: 0, expired: 0, revoked: 0 };
+  (items || []).forEach((share) => {
+    if (counts[share.status] != null) counts[share.status] += 1;
+  });
+  return counts;
+}
+
+// Scope options are rebuilt from the current data, keeping the previous
+// selection when it still exists (revoke/refresh must not silently clear it).
+function sharesAdminPopulateScope(items) {
+  const select = $('#shares-scope-filter');
+  if (!select) return;
+  const previous = select.value || sharesAdminFilters.scope;
+  select.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部任务/项目';
+  select.append(all);
+
+  const projects = new Map();
+  const tasks = new Map();
+  (items || []).forEach((share) => {
+    if (share.project) projects.set(share.project, (projects.get(share.project) || 0) + 1);
+    if (share.task_id && !tasks.has(share.task_id)) {
+      tasks.set(share.task_id, share.task_title || share.task_id);
+    }
+  });
+  if (projects.size) {
+    const group = document.createElement('optgroup');
+    group.label = '项目';
+    [...projects.keys()].sort((a, b) => a.localeCompare(b, 'zh')).forEach((project) => {
+      const option = document.createElement('option');
+      option.value = 'project:' + project;
+      option.textContent = '项目：' + project + '（' + projects.get(project) + '）';
+      group.append(option);
+    });
+    select.append(group);
+  }
+  if (tasks.size) {
+    const group = document.createElement('optgroup');
+    group.label = '任务';
+    [...tasks.entries()]
+      .sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'zh'))
+      .forEach(([taskID, title]) => {
+        const option = document.createElement('option');
+        option.value = 'task:' + taskID;
+        option.textContent = '任务：' + title + '（' + taskID + '）';
+        group.append(option);
+      });
+    select.append(group);
+  }
+  if (previous && [...select.options].some((option) => option.value === previous)) {
+    select.value = previous;
+  } else if (previous) {
+    select.value = '';
+    sharesAdminFilters.scope = '';
+  }
+}
+
+function sharesAdminFiltered() {
+  const query = String(sharesAdminFilters.q || '').trim().toLowerCase();
+  const scope = sharesAdminFilters.scope || '';
+  let items = sharesAdminItems.slice();
+  if (sharesAdminFilters.status) {
+    items = items.filter((share) => share.status === sharesAdminFilters.status);
+  }
+  if (sharesAdminFilters.kind) {
+    items = items.filter((share) => (share.artifact_kind || '') === sharesAdminFilters.kind);
+  }
+  if (scope.startsWith('project:')) {
+    const project = scope.slice('project:'.length);
+    items = items.filter((share) => (share.project || '') === project);
+  } else if (scope.startsWith('task:')) {
+    const taskID = scope.slice('task:'.length);
+    items = items.filter((share) => (share.task_id || '') === taskID);
+  }
+  if (query) {
+    items = items.filter((share) => [
+      share.artifact_title, share.artifact_filename, share.task_title,
+      share.task_id, share.artifact_id, share.url,
+    ].join(' ').toLowerCase().includes(query));
+  }
+  const text = (value) => String(value || '');
+  const tie = (a, b) => text(b.created_at).localeCompare(text(a.created_at))
+    || text(b.id).localeCompare(text(a.id));
+  const sort = sharesAdminFilters.sort;
+  if (sort === 'created_asc') {
+    items.sort((a, b) => text(a.created_at).localeCompare(text(b.created_at))
+      || text(a.id).localeCompare(text(b.id)));
+  } else if (sort === 'expires_asc') {
+    items.sort((a, b) => {
+      const ea = text(a.expires_at);
+      const eb = text(b.expires_at);
+      if (!ea && !eb) return tie(a, b);
+      if (!ea) return 1; // permanent last
+      if (!eb) return -1;
+      return ea.localeCompare(eb) || tie(a, b);
+    });
+  } else if (sort === 'expires_desc') {
+    items.sort((a, b) => {
+      const ea = text(a.expires_at);
+      const eb = text(b.expires_at);
+      if (!ea && !eb) return tie(a, b);
+      if (!ea) return -1; // permanent first
+      if (!eb) return 1;
+      return eb.localeCompare(ea) || tie(a, b);
+    });
+  } else {
+    items.sort(tie);
+  }
+  return items;
+}
+
+function sharesAdminRenderSummary(filtered) {
+  const summary = $('#shares-summary');
+  const count = sharesAdminStatusCounts(sharesAdminItems);
+  if (summary) {
+    summary.innerHTML = '';
+    [
+      ['全部', sharesAdminItems.length, ''],
+      ['有效', count.active, 'active'],
+      ['已过期', count.expired, 'expired'],
+      ['已取消', count.revoked, 'revoked'],
+    ].forEach(([label, value, cls]) => {
+      const chip = document.createElement('span');
+      chip.className = 'shares-count-chip' + (cls ? ' ' + cls : '');
+      chip.textContent = label + ' ' + value;
+      summary.append(chip);
+    });
+  }
+  const visible = $('#shares-count');
+  if (visible) {
+    visible.textContent = filtered.length === sharesAdminItems.length
+      ? '共 ' + sharesAdminItems.length + ' 条'
+      : '显示 ' + filtered.length + ' / ' + sharesAdminItems.length + ' 条';
+  }
+}
+
+function sharesAdminRow(share) {
+  const row = document.createElement('div');
+  row.className = 'shares-row';
+  row.dataset.shareId = share.id || '';
+  row.dataset.status = share.status || '';
+
+  const artifact = document.createElement('div');
+  artifact.className = 'shares-cell shares-artifact';
+  const artifactTitle = document.createElement('div');
+  artifactTitle.className = 'shares-row-title';
+  artifactTitle.textContent = share.artifact_title || share.artifact_filename || '未命名产物';
+  artifactTitle.title = artifactTitle.textContent;
+  const artifactMeta = document.createElement('div');
+  artifactMeta.className = 'shares-row-meta';
+  artifactMeta.textContent = [
+    boardArtifactKindLabel({ kind: share.artifact_kind }),
+    share.artifact_filename,
+    share.artifact_id,
+  ].filter(Boolean).join(' · ');
+  artifact.append(artifactTitle, artifactMeta);
+
+  const task = document.createElement('div');
+  task.className = 'shares-cell shares-task';
+  const taskTitle = document.createElement('div');
+  taskTitle.className = 'shares-row-title';
+  taskTitle.textContent = share.task_title || share.task_id || '—';
+  taskTitle.title = taskTitle.textContent;
+  const taskMeta = document.createElement('div');
+  taskMeta.className = 'shares-row-meta';
+  taskMeta.textContent = [share.task_id, share.project].filter(Boolean).join(' · ') || '—';
+  task.append(taskTitle, taskMeta);
+
+  const link = document.createElement('div');
+  link.className = 'shares-cell shares-link';
+  if (share.status === 'active' && share.url) {
+    const anchor = document.createElement('a');
+    anchor.className = 'shares-url';
+    anchor.href = share.url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener';
+    anchor.textContent = share.url;
+    anchor.title = share.url;
+    link.append(anchor);
+  } else {
+    const dead = document.createElement('span');
+    dead.className = 'shares-url shares-url-dead';
+    dead.textContent = share.status === 'revoked' ? '链接已取消（不可找回）' : '链接已过期（不可找回）';
+    link.append(dead);
+  }
+  const times = document.createElement('div');
+  times.className = 'shares-row-meta';
+  times.textContent = [
+    share.created_at ? '创建 ' + share.created_at : '',
+    share.expires_at ? '到期 ' + share.expires_at : '永久有效',
+  ].filter(Boolean).join(' · ');
+  link.append(times);
 
   const status = document.createElement('span');
   status.className = 'board-share-status ' + (share.status || 'unknown');
   status.textContent = boardShareStatusLabel(share.status);
-  row.append(main, status);
 
   const actions = document.createElement('div');
-  actions.className = 'board-share-row-actions';
+  actions.className = 'shares-cell shares-actions';
   if (share.status === 'active' && share.url) {
     const copy = document.createElement('button');
     copy.type = 'button';
@@ -3482,38 +3755,60 @@ function boardShareRow(share) {
     revoke.onclick = () => boardRevokeShare(share, revoke);
     actions.append(revoke);
   }
-  row.append(actions);
+  if (!actions.children.length) {
+    actions.append(document.createTextNode('—'));
+  }
+
+  row.append(artifact, task, link, status, actions);
   return row;
 }
 
-function boardRenderShares(shares) {
-  const list = $('#board-shares-list');
+function sharesAdminRender() {
+  const list = $('#shares-list');
   if (!list) return;
+  sharesAdminPopulateScope(sharesAdminItems);
+  const filtered = sharesAdminFiltered();
+  sharesAdminRenderSummary(filtered);
   list.innerHTML = '';
-  const items = Array.isArray(shares) ? shares : [];
-  if (!items.length) {
-    list.append(boardMuted('暂无分享链接'));
+  if (!sharesAdminItems.length) {
+    list.append(sharesAdminEmpty('还没有分享链接。在任务卡片的产物行点「分享」创建。'));
     return;
   }
-  items.forEach((share) => list.append(boardShareRow(share)));
+  if (!filtered.length) {
+    list.append(sharesAdminEmpty('没有匹配的分享链接。'));
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'shares-row shares-row-head';
+  ['产物', '任务', '分享链接', '状态', '操作'].forEach((label) => {
+    const cell = document.createElement('div');
+    cell.className = 'shares-cell';
+    cell.textContent = label;
+    head.append(cell);
+  });
+  list.append(head);
+  filtered.forEach((share) => list.append(sharesAdminRow(share)));
 }
 
-async function boardLoadShares() {
-  const list = $('#board-shares-list');
+async function sharesAdminRefresh() {
+  const list = $('#shares-list');
   if (list) {
     list.innerHTML = '';
     list.append(boardMuted('加载中…'));
   }
-  boardShareShowError('#board-shares-error', '');
+  boardShareShowError('#shares-error', '');
   try {
     const out = await api('/api/agent-board/shares');
-    boardRenderShares(out && out.shares);
+    sharesAdminItems = Array.isArray(out && out.shares) ? out.shares : [];
+    sharesAdminRender();
   } catch (err) {
+    sharesAdminItems = [];
     if (list) {
       list.innerHTML = '';
       list.append(boardMuted('读取失败'));
     }
-    boardShareShowError('#board-shares-error',
+    sharesAdminRenderSummary([]);
+    boardShareShowError('#shares-error',
       '读取分享列表失败：' + (err && err.message ? err.message : err));
   }
 }
@@ -3526,27 +3821,15 @@ async function boardRevokeShare(share, button) {
   }
   try {
     await api('/api/agent-board/shares/' + encodeURIComponent(share.id), { method: 'DELETE' });
-    await boardLoadShares();
+    await sharesAdminRefresh();
   } catch (err) {
     if (button) {
       button.disabled = false;
       button.textContent = '取消分享';
     }
-    boardShareShowError('#board-shares-error',
+    boardShareShowError('#shares-error',
       '取消分享失败：' + (err && err.message ? err.message : err));
   }
-}
-
-function boardOpenSharesPanel() {
-  const panel = $('#board-shares-panel');
-  if (!panel) return;
-  panel.classList.remove('hidden');
-  boardLoadShares();
-}
-
-function boardCloseSharesPanel() {
-  const panel = $('#board-shares-panel');
-  if (panel) panel.classList.add('hidden');
 }
 
 function boardEventAvatar(kind) {
@@ -3874,10 +4157,9 @@ async function boardSendToMain() {
   });
 })();
 
-// 产物公开分享：创建弹窗 + 分享管理面板。
+// 产物公开分享：创建弹窗 + 设置页里的分享管理独立页。
 (() => {
   const modal = $('#board-share-modal');
-  const panel = $('#board-shares-panel');
   if (modal) {
     const close = $('#board-share-close');
     if (close) close.addEventListener('click', boardCloseShareDialog);
@@ -3892,25 +4174,28 @@ async function boardSendToMain() {
       if (e.target === modal) boardCloseShareDialog();
     });
   }
-  if (panel) {
-    const close = $('#board-shares-close');
-    if (close) close.addEventListener('click', boardCloseSharesPanel);
-    panel.addEventListener('click', (e) => {
-      if (e.target === panel) boardCloseSharesPanel();
-    });
-  }
-  const manage = $('#board-share-manage');
-  if (manage) manage.addEventListener('click', boardOpenSharesPanel);
+  sharesAdminBindControls();
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (modal && !modal.classList.contains('hidden')) {
       e.preventDefault();
       boardCloseShareDialog();
-    } else if (panel && !panel.classList.contains('hidden')) {
+    } else if (sharesAdminVisible()) {
       e.preventDefault();
-      boardCloseSharesPanel();
+      closeSharesAdmin();
     }
   });
+  window.addEventListener('hashchange', () => {
+    if (location.hash === SHARES_HASH) openSharesAdmin();
+    else if (sharesAdminVisible()) closeSharesAdmin();
+  });
+  // Defer the initial hash route until the rest of app.js has finished its
+  // top-level let/const initialisation (hideAllViews touches those bindings).
+  if (location.hash === SHARES_HASH) {
+    setTimeout(() => {
+      if (location.hash === SHARES_HASH) openSharesAdmin();
+    }, 0);
+  }
 })();
 
 // 任务抽屉宽度：拖拽/键盘调整，localStorage 持久化。默认 620px，
@@ -8859,6 +9144,9 @@ async function openNewSessionView(cwd) {
   nsPendingCwd = cwd || '';
   $('#chat-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const sharesView = $('#shares-view');
+  if (sharesView) sharesView.classList.add('hidden');
+  clearSharesHash();
   relocatePermCards();
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.remove('hidden');
@@ -9330,6 +9618,9 @@ function hideAllViews() {
   $('#chat-view').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const shares = $('#shares-view');
+  if (shares) shares.classList.add('hidden');
+  clearSharesHash();
   closeGroupMemberPanel();
   closeGroupMentionPopup();
 }

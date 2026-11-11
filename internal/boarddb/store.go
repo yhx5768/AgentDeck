@@ -843,6 +843,7 @@ func (s *Store) CreateArtifact(input map[string]any) (map[string]any, error) {
 type ArtifactShare struct {
 	ID, ArtifactID, TokenHash, ExpiresAt, RevokedAt, CreatedBy, CreatedAt string
 	ArtifactTitle, ArtifactKind, ArtifactFilename, TaskID, TaskTitle      string
+	TaskProject                                                           string
 }
 
 func (s *ArtifactShare) toMap() map[string]any {
@@ -859,6 +860,9 @@ func (s *ArtifactShare) toMap() map[string]any {
 	if s.TaskID != "" || s.TaskTitle != "" {
 		out["task_id"] = s.TaskID
 		out["task_title"] = s.TaskTitle
+	}
+	if s.TaskProject != "" {
+		out["project"] = s.TaskProject
 	}
 	return out
 }
@@ -934,7 +938,7 @@ func (s *Store) GetShareByTokenHash(tokenHash string) (*ArtifactShare, error) {
 func (s *Store) ListShares() ([]map[string]any, error) {
 	rows, err := s.db.Query(`SELECT s.id,s.artifact_id,s.token_hash,s.expires_at,s.revoked_at,
 		s.created_by,s.created_at,a.title,a.kind,a.filename,a.task_id,
-		COALESCE(t.title,'')
+		COALESCE(t.title,''),COALESCE(t.project,'')
 		FROM artifact_shares s
 		JOIN task_artifacts a ON a.id=s.artifact_id
 		LEFT JOIN tasks t ON t.id=a.task_id
@@ -948,7 +952,8 @@ func (s *Store) ListShares() ([]map[string]any, error) {
 		share := &ArtifactShare{}
 		if err := rows.Scan(&share.ID, &share.ArtifactID, &share.TokenHash, &share.ExpiresAt,
 			&share.RevokedAt, &share.CreatedBy, &share.CreatedAt, &share.ArtifactTitle,
-			&share.ArtifactKind, &share.ArtifactFilename, &share.TaskID, &share.TaskTitle); err != nil {
+			&share.ArtifactKind, &share.ArtifactFilename, &share.TaskID, &share.TaskTitle,
+			&share.TaskProject); err != nil {
 			return nil, err
 		}
 		out = append(out, share.toMap())

@@ -13,12 +13,12 @@ import (
 	"testing"
 )
 
-func publishShareTestArtifact(t *testing.T, s *Server, payload map[string]any) map[string]any {
+func publishShareTestArtifact(t *testing.T, s *Server, taskID string, payload map[string]any) map[string]any {
 	t.Helper()
 	raw, _ := json.Marshal(payload)
-	req := artifactReq(http.MethodPost, "http://deck.local/api/agent-board/tasks/T-1/artifacts", bytes.NewReader(raw))
+	req := artifactReq(http.MethodPost, "http://deck.local/api/agent-board/tasks/"+taskID+"/artifacts", bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
-	req.SetPathValue("id", "T-1")
+	req.SetPathValue("id", taskID)
 	rec := httptest.NewRecorder()
 	s.handleAgentBoardCreateArtifact(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -78,7 +78,7 @@ func shareTokenFromURL(t *testing.T, raw string) string {
 func TestArtifactShareCreateListPublicAndRevoke(t *testing.T) {
 	s, _ := boardMCPServer(t)
 	createArtifactTestTask(t, s)
-	artifact := publishShareTestArtifact(t, s, map[string]any{
+	artifact := publishShareTestArtifact(t, s, "T-1", map[string]any{
 		"title": "公开验收报告", "kind": "html", "filename": "share.html",
 		"content": "<!doctype html><html><body><h1>shared</h1></body></html>",
 	})
@@ -212,7 +212,7 @@ func TestArtifactShareCreateListPublicAndRevoke(t *testing.T) {
 func TestArtifactSharePermanentExpiredAndURLKinds(t *testing.T) {
 	s, _ := boardMCPServer(t)
 	createArtifactTestTask(t, s)
-	artifact := publishShareTestArtifact(t, s, map[string]any{
+	artifact := publishShareTestArtifact(t, s, "T-1", map[string]any{
 		"title": "永久报告", "kind": "markdown", "filename": "perm.md", "content": "# perm\n",
 	})
 	artifactID, _ := artifact["id"].(string)
@@ -252,7 +252,7 @@ func TestArtifactSharePermanentExpiredAndURLKinds(t *testing.T) {
 	createShareTestLink(t, s, artifactID, -1, http.StatusBadRequest)
 
 	// External URL artifacts redirect on the public route.
-	urlArtifact := publishShareTestArtifact(t, s, map[string]any{
+	urlArtifact := publishShareTestArtifact(t, s, "T-1", map[string]any{
 		"title": "外部链接", "kind": "url", "filename": "link", "url": "https://example.com/design",
 	})
 	urlID, _ := urlArtifact["id"].(string)
@@ -289,5 +289,55 @@ func TestPublicShareRouteBypassesAuth(t *testing.T) {
 	s.mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("protected shares list = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestArtifactShareRevokeIsolatedAndListProject(t *testing.T) {
+	s, _ := boardMCPServer(t)
+	if _, err := s.boardDB.CreateTask(map[string]any{
+		"id": "T-P", "title": "项目任务", "project": "演示项目",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	artifact := publishShareTestArtifact(t, s, "T-P", map[string]any{
+		"title": "项目产物", "kind": "html", "filename": "p.html", "content": "<p>p</p>",
+	})
+	artifactID, _ := artifact["id"].(string)
+	first := createShareTestLink(t, s, artifactID, nil, http.StatusCreated)
+	second := createShareTestLink(t, s, artifactID, 7, http.StatusCreated)
+
+	// Revoking one link must not touch another link on the same artifact.
+	id, _ := first["id"].(string)
+	req := artifactReq(http.MethodDelete, "http://deck.local/api/agent-board/shares/"+id, nil)
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	s.handleAgentBoardRevokeShare(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d %s", rec.Code, rec.Body.String())
+	}
+	secondToken := shareTokenFromURL(t, second["url"].(string))
+	rec = httptest.NewRecorder()
+	s.handleArtifactShare(rec, publicShareRequest(secondToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second share after revoking first = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Management rows expose the task's project for the page filter.
+	req = artifactReq(http.MethodGet, "http://deck.local/api/agent-board/shares", nil)
+	rec = httptest.NewRecorder()
+	s.handleAgentBoardListShares(rec, req)
+	var listed struct {
+		Shares []map[string]any `json:"shares"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Shares) != 2 {
+		t.Fatalf("shares = %+v", listed.Shares)
+	}
+	for _, share := range listed.Shares {
+		if share["project"] != "演示项目" || share["task_id"] != "T-P" {
+			t.Fatalf("listed share = %+v", share)
+		}
 	}
 }

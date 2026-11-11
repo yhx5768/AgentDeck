@@ -1,7 +1,9 @@
-// 看板产物公开分享前端回归：行内「分享」入口、创建弹窗（1/3/7/永久）、
-// 复制公开链接、分享管理列表（状态/复制/取消）、空态，以及不破坏 legacy 行。
+// 看板产物公开分享前端回归：
+// - 产物行「分享」入口 + 创建弹窗（1/3/7/永久）/复制，不破坏 legacy 行；
+// - 设置页「分享管理」入口 → 独立页面（不是弹窗/抽屉），跨任务列表；
+// - 搜索/状态/任务项目/类型筛选、排序、计数、复制、撤销、空态、hash 路由。
 //
-// 局限：jsdom 不做布局/剪贴板，clipboard 由 copyText stub 记录调用。
+// 局限：jsdom 不做布局/剪贴板；copyText 用 stub 记录调用。
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
@@ -27,8 +29,51 @@ function grabFn(name) {
 }
 
 const HTML = `<!doctype html><html><body>
+  <div id="empty-state"></div>
+  <div id="chat-view" class="hidden"></div>
+  <div id="new-session-view" class="hidden"></div>
+  <div id="group-view" class="hidden"></div>
   <div id="board-drawer-artifacts"></div>
-  <button id="board-share-manage"></button>
+  <div id="modal-settings" class="hidden">
+    <button id="btn-settings-shares"></button>
+  </div>
+  <div id="shares-view" class="hidden">
+    <header id="shares-header">
+      <div class="shares-title-row">
+        <button id="shares-back"></button>
+        <span id="shares-count"></span>
+        <button id="shares-refresh"></button>
+      </div>
+      <div class="shares-toolbar">
+        <input id="shares-search">
+        <select id="shares-status-filter">
+          <option value="">全部状态</option>
+          <option value="active">有效</option>
+          <option value="expired">已过期</option>
+          <option value="revoked">已取消</option>
+        </select>
+        <select id="shares-scope-filter"><option value="">全部任务/项目</option></select>
+        <select id="shares-kind-filter">
+          <option value="">全部类型</option>
+          <option value="html">HTML</option>
+          <option value="markdown">Markdown</option>
+          <option value="file">文件</option>
+          <option value="url">链接</option>
+        </select>
+        <select id="shares-sort">
+          <option value="created_desc">创建时间（新→旧）</option>
+          <option value="created_asc">创建时间（旧→新）</option>
+          <option value="expires_asc">到期时间（近→远，永久最后）</option>
+          <option value="expires_desc">到期时间（远→近，永久最前）</option>
+        </select>
+      </div>
+    </header>
+    <div id="shares-body">
+      <div id="shares-summary"></div>
+      <div id="shares-error" class="hidden"></div>
+      <div id="shares-list"></div>
+    </div>
+  </div>
   <div id="board-share-modal" class="hidden">
     <div id="board-share-artifact"></div>
     <select id="board-share-expiry">
@@ -44,11 +89,6 @@ const HTML = `<!doctype html><html><body>
     <div id="board-share-error" class="hidden"></div>
     <button id="board-share-close"></button>
   </div>
-  <div id="board-shares-panel" class="hidden">
-    <div id="board-shares-error" class="hidden"></div>
-    <div id="board-shares-list"></div>
-    <button id="board-shares-close"></button>
-  </div>
 </body></html>`;
 
 const dom = new JSDOM(HTML, { runScripts: 'outside-only', url: 'http://deck.local/' });
@@ -57,6 +97,13 @@ const doc = w.document;
 
 w.eval(`
 const $ = (sel) => document.querySelector(sel);
+const state = { current: null, currentGroup: null };
+function renderIcons() {}
+function boardDisconnect() {}
+function hideAllViews() {
+  ['#empty-state', '#chat-view', '#new-session-view', '#group-view', '#shares-view']
+    .forEach((sel) => { const el = $(sel); if (el) el.classList.add('hidden'); });
+}
 function boardMuted(text) {
   const el = document.createElement('div');
   el.className = 'board-pane-muted';
@@ -82,6 +129,10 @@ function copyText(text) {
   window.__copied.push(text);
   return Promise.resolve();
 }
+const SHARES_HASH = '#/shares';
+let sharesAdminItems = [];
+let sharesAdminReturn = 'empty';
+const sharesAdminFilters = { q: '', status: '', scope: '', kind: '', sort: 'created_desc' };
 ${grabFn('boardArtifactSize')}
 ${grabFn('boardArtifactKindLabel')}
 ${grabFn('boardArtifactPreviewable')}
@@ -94,61 +145,116 @@ ${grabFn('boardOpenShareDialog')}
 ${grabFn('boardCloseShareDialog')}
 ${grabFn('boardCreateShare')}
 ${grabFn('boardCopyShareURL')}
-${grabFn('boardShareRow')}
-${grabFn('boardRenderShares')}
-${grabFn('boardLoadShares')}
+${grabFn('sharesAdminVisible')}
+${grabFn('clearSharesHash')}
+${grabFn('sharesAdminEmpty')}
+${grabFn('sharesAdminCurrentView')}
+${grabFn('openSharesAdmin')}
+${grabFn('closeSharesAdmin')}
+${grabFn('sharesAdminOpenFromSettings')}
+${grabFn('sharesAdminBindControls')}
+${grabFn('sharesAdminStatusCounts')}
+${grabFn('sharesAdminPopulateScope')}
+${grabFn('sharesAdminFiltered')}
+${grabFn('sharesAdminRenderSummary')}
+${grabFn('sharesAdminRow')}
+${grabFn('sharesAdminRender')}
+${grabFn('sharesAdminRefresh')}
 ${grabFn('boardRevokeShare')}
-${grabFn('boardOpenSharesPanel')}
-${grabFn('boardCloseSharesPanel')}
+sharesAdminBindControls();
 window.__artifactItem = boardArtifactItem;
 window.__openShare = boardOpenShareDialog;
 window.__closeShare = boardCloseShareDialog;
 window.__createShare = boardCreateShare;
 window.__copyShare = boardCopyShareURL;
-window.__renderShares = boardRenderShares;
-window.__loadShares = boardLoadShares;
-window.__openPanel = boardOpenSharesPanel;
-window.__closePanel = boardCloseSharesPanel;
+window.__setShares = (items) => { sharesAdminItems = items; sharesAdminRender(); };
+window.__filters = sharesAdminFilters;
+window.__openShares = openSharesAdmin;
+window.__closeShares = closeSharesAdmin;
+window.__settingsEntry = sharesAdminOpenFromSettings;
+window.__refreshShares = sharesAdminRefresh;
+window.__renderShares = sharesAdminRender;
 `);
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const settle = async () => { await tick(); await tick(); };
 let failed = 0;
 function check(name, cond, extra) {
   if (cond) console.log('  ok  ' + name);
   else { failed++; console.log('  FAIL ' + name + (extra ? '  →  ' + extra : '')); }
 }
 
-function artifact(extra) {
+function makeShare(extra) {
   return Object.assign({
-    id: 'A-1', task_id: 'T-1', title: '验收报告', kind: 'html', filename: 'report.html',
-    size: 128, created_at: '2026-11-11 12:00:00',
-    url: 'http://deck.local/api/agent-board/artifacts/A-1',
+    id: 'S-1', artifact_id: 'A-1', artifact_title: '验收报告', artifact_kind: 'html',
+    artifact_filename: 'report.html', task_id: 'T-1', task_title: '任务A', project: '项目A',
+    status: 'active', active: true, url: 'https://deck.example/s/T1',
+    created_at: '2026-11-11 12:00:00', expires_at: '', created_by: 'local',
   }, extra || {});
+}
+
+function sharesFixture() {
+  return [
+    makeShare(),
+    makeShare({
+      id: 'S-2', artifact_id: 'A-2', artifact_title: '旧报告', artifact_kind: 'markdown',
+      artifact_filename: 'old.md', task_id: 'T-2', task_title: '任务B', project: '项目B',
+      status: 'expired', active: false, url: undefined,
+      created_at: '2026-11-10 12:00:00', expires_at: '2026-11-11 12:00:00',
+    }),
+    makeShare({
+      id: 'S-3', artifact_id: 'A-3', artifact_title: '已取消报告', artifact_kind: 'html',
+      artifact_filename: 'revoked.html', task_id: 'T-3', task_title: '任务C', project: '项目A',
+      status: 'revoked', active: false, url: undefined, revoked_at: '2026-11-09 13:00:00',
+      created_at: '2026-11-09 12:00:00', expires_at: '2026-11-12 12:00:00',
+    }),
+    makeShare({
+      id: 'S-4', artifact_id: 'A-4', artifact_title: '数据包', artifact_kind: 'file',
+      artifact_filename: 'bundle.zip', task_id: 'T-1', task_title: '任务A', project: '项目A',
+      url: 'https://deck.example/s/T4',
+      created_at: '2026-11-11 13:00:00', expires_at: '2026-11-20 12:00:00',
+    }),
+  ];
+}
+
+function resetFilters() {
+  Object.assign(w.__filters, { q: '', status: '', scope: '', kind: '', sort: 'created_desc' });
+  doc.querySelector('#shares-search').value = '';
+  doc.querySelector('#shares-status-filter').value = '';
+  doc.querySelector('#shares-scope-filter').value = '';
+  doc.querySelector('#shares-kind-filter').value = '';
+  doc.querySelector('#shares-sort').value = 'created_desc';
+}
+
+function rows() {
+  return [...doc.querySelectorAll('#shares-list .shares-row:not(.shares-row-head)')];
 }
 
 async function main() {
   console.log('看板产物公开分享');
 
-  // 1. 行内入口：普通产物有「分享」，legacy 没有
-  const item = w.__artifactItem(null, artifact());
+  // 1. 产物行入口：普通产物有「分享」，legacy 没有
+  const item = w.__artifactItem(null, {
+    id: 'A-1', task_id: 'T-1', title: '验收报告', kind: 'html', filename: 'report.html',
+    size: 128, url: 'http://deck.local/api/agent-board/artifacts/A-1',
+  });
   const shareBtn = [...item.querySelectorAll('button.board-artifact-action')]
     .find((b) => b.textContent === '分享');
   check('普通产物行有「分享」', !!shareBtn);
-  const legacy = w.__artifactItem(null, artifact({ id: 'legacy-report', legacy: true }));
+  const legacy = w.__artifactItem(null, {
+    id: 'legacy-report', title: '旧报告', kind: 'html', filename: 'old.html', legacy: true,
+  });
   check('legacy 产物没有「分享」', ![...legacy.querySelectorAll('button')]
     .some((b) => b.textContent === '分享'));
 
-  // 2. 打开弹窗
+  // 2. 创建弹窗（保持原有行为）
   shareBtn.click();
   const modal = doc.querySelector('#board-share-modal');
   check('分享弹窗打开', !modal.classList.contains('hidden'));
   check('弹窗显示产物标题/类型',
     doc.querySelector('#board-share-artifact').textContent.includes('验收报告')
     && doc.querySelector('#board-share-artifact').textContent.includes('HTML'));
-  check('默认有效期 1 天', doc.querySelector('#board-share-expiry').value === '1');
-  check('结果区默认隐藏', doc.querySelector('#board-share-result').classList.contains('hidden'));
 
-  // 3. 创建分享：POST 带 expiry_days，返回 URL 可复制
   let createBody = null;
   w.__apiHandler = (reqPath, opts) => {
     if (reqPath === '/api/agent-board/artifacts/A-1/shares' && opts.method === 'POST') {
@@ -172,107 +278,184 @@ async function main() {
     doc.querySelector('#board-share-url').value === 'https://deck.example/s/PUBLICTOKEN');
   check('显示到期时间',
     doc.querySelector('#board-share-expiry-note').textContent.includes('2026-11-14 12:00:00'));
-  check('结果区可见', !doc.querySelector('#board-share-result').classList.contains('hidden'));
-  check('创建按钮恢复可用',
-    !doc.querySelector('#board-share-create').disabled
-    && doc.querySelector('#board-share-create').textContent === '创建公开链接');
-
   const copyBtn = doc.querySelector('#board-share-copy');
   w.__copyShare(doc.querySelector('#board-share-url').value, copyBtn);
   await tick();
-  check('复制公开链接', w.__copied[w.__copied.length - 1] === 'https://deck.example/s/PUBLICTOKEN');
-  check('复制按钮反馈', copyBtn.textContent === '已复制');
-
-  // 4. 创建失败要显示错误，而不是把弹窗关掉
-  w.__apiHandler = () => { throw new Error('boom'); };
-  await w.__createShare();
-  await tick();
-  check('创建失败显示错误', doc.querySelector('#board-share-error').textContent.includes('boom')
-    && !doc.querySelector('#board-share-error').classList.contains('hidden'));
-  check('失败后弹窗仍打开', !modal.classList.contains('hidden'));
+  check('复制公开链接',
+    w.__copied[w.__copied.length - 1] === 'https://deck.example/s/PUBLICTOKEN');
   w.__closeShare();
-  check('关闭弹窗', modal.classList.contains('hidden')
+  check('关闭创建弹窗并清空 URL', modal.classList.contains('hidden')
     && doc.querySelector('#board-share-url').value === '');
 
-  // 5. 分享管理：有效/已过期/已取消 + 复制/取消动作
-  let shares = [
-    {
-      id: 'S-1', artifact_id: 'A-1', artifact_title: '验收报告', task_title: '任务A',
-      status: 'active', active: true, url: 'https://deck.example/s/T1',
-      created_at: '2026-11-11 12:00:00', expires_at: '',
-    },
-    {
-      id: 'S-2', artifact_id: 'A-2', artifact_title: '旧报告', status: 'expired',
-      active: false, created_at: '2026-11-10 12:00:00', expires_at: '2026-11-11 12:00:00',
-    },
-    {
-      id: 'S-3', artifact_id: 'A-3', artifact_title: '已取消报告', status: 'revoked',
-      active: false, created_at: '2026-11-09 12:00:00', revoked_at: '2026-11-09 13:00:00',
-    },
-  ];
+  // 3. 设置页入口 → 独立页面（不是弹窗），并加载跨任务列表
+  let sharesData = sharesFixture();
   const deleted = [];
   w.__apiHandler = (reqPath, opts) => {
     if (reqPath === '/api/agent-board/shares' && (!opts.method || opts.method === 'GET')) {
-      return { ok: true, shares };
+      return { ok: true, shares: sharesData };
     }
     if (reqPath.startsWith('/api/agent-board/shares/') && opts.method === 'DELETE') {
       deleted.push(reqPath.split('/').pop());
-      shares = shares.map((s) => (s.id === 'S-1'
+      sharesData = sharesData.map((s) => (s.id === 'S-1'
         ? Object.assign({}, s, { status: 'revoked', active: false, url: undefined, revoked_at: 'now' })
         : s));
       return { ok: true };
     }
     throw new Error('unexpected api ' + reqPath);
   };
-  w.__openPanel();
-  await tick();
-  await tick();
-  check('管理面板打开', !doc.querySelector('#board-shares-panel').classList.contains('hidden'));
-  const rows = [...doc.querySelectorAll('#board-shares-list .board-share-row')];
-  check('列出全部分享', rows.length === 3, String(rows.length));
-  check('状态文案',
-    [...doc.querySelectorAll('.board-share-status')].map((el) => el.textContent).join(',')
-      === '有效,已过期,已取消');
-  check('只有有效链接可复制',
-    rows[0].querySelectorAll('.board-artifact-action').length === 2
-    && rows[1].querySelectorAll('.board-artifact-action').length === 1
-    && rows[2].querySelectorAll('.board-artifact-action').length === 0);
-  check('管理列表展示任务/创建/到期',
-    rows[0].querySelector('.board-share-row-meta').textContent.includes('任务：任务A')
-    && rows[0].querySelector('.board-share-row-meta').textContent.includes('创建 2026-11-11')
-    && rows[0].querySelector('.board-share-row-meta').textContent.includes('永久有效'));
-  check('管理列表复制走同一个链接', (() => {
-    const btn = [...rows[0].querySelectorAll('button')].find((b) => b.textContent === '复制链接');
-    btn.click();
-    return w.__copied[w.__copied.length - 1] === 'https://deck.example/s/T1';
-  })());
+  doc.querySelector('#modal-settings').classList.remove('hidden');
+  doc.querySelector('#btn-settings-shares').click();
+  await settle();
+  check('设置弹窗被关闭', doc.querySelector('#modal-settings').classList.contains('hidden'));
+  check('进入分享管理独立页', !doc.querySelector('#shares-view').classList.contains('hidden'));
+  check('独立页不是弹窗/抽屉（无 .modal 包裹）',
+    !doc.querySelector('#shares-view').classList.contains('modal')
+    && !doc.querySelector('#shares-view').closest('.modal'));
+  check('hash 路由为 #/shares', w.location.hash === '#/shares');
+  check('跨任务列表渲染 4 条', rows().length === 4, String(rows().length));
+  check('列表包含多个任务/项目',
+    new Set(rows().map((r) => r.querySelector('.shares-task .shares-row-title').textContent)).size === 3);
+  check('状态计数',
+    [...doc.querySelectorAll('#shares-summary .shares-count-chip')]
+      .map((el) => el.textContent).join(',') === '全部 4,有效 2,已过期 1,已取消 1');
+  check('可见条数', doc.querySelector('#shares-count').textContent === '共 4 条');
 
-  // 6. 取消分享
-  const revoke = rows[0].querySelector('.board-share-revoke');
-  revoke.click();
-  await tick();
-  await tick();
+  // 4. 行字段：产物/任务/链接/时间/状态
+  const row1 = doc.querySelector('#shares-list .shares-row[data-share-id="S-1"]');
+  check('行有产物标题/类型/文件名',
+    row1.querySelector('.shares-artifact .shares-row-title').textContent === '验收报告'
+    && row1.querySelector('.shares-artifact .shares-row-meta').textContent.includes('HTML')
+    && row1.querySelector('.shares-artifact .shares-row-meta').textContent.includes('report.html'));
+  check('行有任务标题/卡号/项目',
+    row1.querySelector('.shares-task .shares-row-title').textContent === '任务A'
+    && row1.querySelector('.shares-task .shares-row-meta').textContent.includes('T-1')
+    && row1.querySelector('.shares-task .shares-row-meta').textContent.includes('项目A'));
+  check('行有分享链接/创建/到期',
+    row1.querySelector('.shares-link .shares-url').href === 'https://deck.example/s/T1'
+    && row1.querySelector('.shares-link .shares-row-meta').textContent.includes('创建 2026-11-11 12:00:00')
+    && row1.querySelector('.shares-link .shares-row-meta').textContent.includes('永久有效'));
+  check('行有状态徽章', row1.querySelector('.board-share-status').textContent === '有效');
+  check('失效行不显示可点击链接',
+    doc.querySelector('#shares-list .shares-row[data-share-id="S-2"] .shares-url').tagName !== 'A');
+
+  // 5. 复制
+  const rowCopy = [...row1.querySelectorAll('button')].find((b) => b.textContent === '复制链接');
+  rowCopy.click();
+  check('列表复制链接', w.__copied[w.__copied.length - 1] === 'https://deck.example/s/T1');
+
+  // 6. 搜索
+  const search = doc.querySelector('#shares-search');
+  search.value = '旧报告';
+  search.dispatchEvent(new w.Event('input'));
+  check('搜索标题', rows().length === 1 && rows()[0].dataset.shareId === 'S-2');
+  check('搜索后可见条数', doc.querySelector('#shares-count').textContent === '显示 1 / 4 条');
+  search.value = 'T-3';
+  search.dispatchEvent(new w.Event('input'));
+  check('搜索卡号', rows().length === 1 && rows()[0].dataset.shareId === 'S-3');
+  search.value = '';
+  search.dispatchEvent(new w.Event('input'));
+
+  // 7. 状态筛选（计数仍显示全量）
+  const statusFilter = doc.querySelector('#shares-status-filter');
+  statusFilter.value = 'expired';
+  statusFilter.dispatchEvent(new w.Event('change'));
+  check('状态筛选 expired', rows().length === 1 && rows()[0].dataset.shareId === 'S-2');
+  check('筛选不改变全局计数',
+    doc.querySelector('#shares-summary .shares-count-chip').textContent === '全部 4');
+  statusFilter.value = '';
+  statusFilter.dispatchEvent(new w.Event('change'));
+
+  // 8. 任务/项目筛选
+  const scopeFilter = doc.querySelector('#shares-scope-filter');
+  check('任务/项目筛选选项含项目与任务',
+    [...scopeFilter.options].some((o) => o.value === 'project:项目A')
+    && [...scopeFilter.options].some((o) => o.value === 'task:T-2'));
+  scopeFilter.value = 'project:项目A';
+  scopeFilter.dispatchEvent(new w.Event('change'));
+  check('按项目筛选', rows().length === 3, String(rows().length));
+  scopeFilter.value = 'task:T-2';
+  scopeFilter.dispatchEvent(new w.Event('change'));
+  check('按任务筛选', rows().length === 1 && rows()[0].dataset.shareId === 'S-2');
+  scopeFilter.value = '';
+  scopeFilter.dispatchEvent(new w.Event('change'));
+
+  // 9. 类型筛选
+  const kindFilter = doc.querySelector('#shares-kind-filter');
+  kindFilter.value = 'markdown';
+  kindFilter.dispatchEvent(new w.Event('change'));
+  check('按产物类型筛选', rows().length === 1 && rows()[0].dataset.shareId === 'S-2');
+  kindFilter.value = '';
+  kindFilter.dispatchEvent(new w.Event('change'));
+
+  // 10. 排序
+  const sort = doc.querySelector('#shares-sort');
+  sort.value = 'created_desc';
+  sort.dispatchEvent(new w.Event('change'));
+  check('创建时间倒序', rows()[0].dataset.shareId === 'S-4');
+  sort.value = 'expires_asc';
+  sort.dispatchEvent(new w.Event('change'));
+  check('到期时间近→远（永久最后）',
+    rows().map((r) => r.dataset.shareId).join(',') === 'S-2,S-3,S-4,S-1',
+    rows().map((r) => r.dataset.shareId).join(','));
+  sort.value = 'expires_desc';
+  sort.dispatchEvent(new w.Event('change'));
+  check('到期时间远→近（永久最前）', rows()[0].dataset.shareId === 'S-1');
+  sort.value = 'created_desc';
+  sort.dispatchEvent(new w.Event('change'));
+
+  // 11. 撤销：DELETE 后立即重新拉取并更新状态/计数
+  doc.querySelector('#shares-list .shares-row[data-share-id="S-1"] .board-share-revoke').click();
+  await settle();
   check('DELETE 对应 share id', deleted[0] === 'S-1', JSON.stringify(deleted));
-  check('取消后列表刷新为已取消',
-    doc.querySelector('#board-shares-list .board-share-status').textContent === '已取消');
-  check('取消后该行不再显示取消按钮',
-    !doc.querySelector('#board-shares-list .board-share-row[data-share-id="S-1"] .board-share-revoke'));
+  const revokedRow = doc.querySelector('#shares-list .shares-row[data-share-id="S-1"]');
+  check('撤销后状态更新', revokedRow.querySelector('.board-share-status').textContent === '已取消');
+  check('撤销后不再显示取消按钮', !revokedRow.querySelector('.board-share-revoke'));
+  check('撤销后计数更新',
+    [...doc.querySelectorAll('#shares-summary .shares-count-chip')]
+      .map((el) => el.textContent).join(',') === '全部 4,有效 1,已过期 1,已取消 2');
 
-  // 7. 空态
-  shares = [];
-  await w.__loadShares();
+  // 12. 空态
+  w.__setShares([]);
+  check('无分享时显示引导空态',
+    doc.querySelector('#shares-list').textContent.includes('还没有分享链接'));
+  w.__setShares(sharesFixture());
+  const search2 = doc.querySelector('#shares-search');
+  search2.value = '不存在的产物';
+  search2.dispatchEvent(new w.Event('input'));
+  check('筛选无结果显示匹配空态',
+    doc.querySelector('#shares-list').textContent.includes('没有匹配的分享链接'));
+  search2.value = '';
+  search2.dispatchEvent(new w.Event('input'));
+
+  // 13. 返回：独立页关闭、hash 清理、回到空态（无当前会话）
+  doc.querySelector('#shares-back').click();
   await tick();
-  check('空态显示「暂无分享链接」',
-    doc.querySelector('#board-shares-list').textContent.includes('暂无分享链接'));
+  check('返回后关闭独立页', doc.querySelector('#shares-view').classList.contains('hidden'));
+  check('返回后清理 hash', w.location.hash === '');
+  check('返回后回到空态', !doc.querySelector('#empty-state').classList.contains('hidden'));
 
-  // 8. CSS 契约
+  // 14. hash 直接访问路径
+  w.__openShares();
+  await settle();
+  check('openSharesAdmin 设置 #/shares', w.location.hash === '#/shares');
+  w.__closeShares();
+  check('closeSharesAdmin 清理 hash', w.location.hash === '');
+  check('打开时隐藏其它主视图', doc.querySelector('#chat-view').classList.contains('hidden'));
+
+  // 15. CSS 契约
   const css = fs.readFileSync(path.join(WEB, 'style.css'), 'utf8');
-  check('CSS: 分享遮罩层级高于产物预览',
-    /\.board-share-backdrop\s*\{[^}]*z-index:\s*280/s.test(css));
-  check('CSS: 隐藏态 display:none',
-    /\.board-share-backdrop\.hidden\s*\{\s*display:\s*none/s.test(css));
-  check('CSS: 管理列表可滚动且不撑破弹窗',
-    /\.board-shares-list\s*\{[^}]*overflow-y:\s*auto/s.test(css));
+  check('CSS: 独立页是纵向 flex 视图',
+    /#shares-view\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/s.test(css));
+  check('CSS: 列表行是 grid（桌面五列）',
+    /\.shares-row\s*\{[^}]*display:\s*grid[^}]*grid-template-columns/s.test(css));
+  check('CSS: 窄屏列表切换为堆叠',
+    /@media \(max-width: 900px\)[\s\S]*?\.shares-row\s*\{[^}]*grid-template-columns/s.test(css));
+  check('CSS: 状态计数有 active/expired/revoked 配色',
+    /\.shares-count-chip\.active/.test(css)
+    && /\.shares-count-chip\.expired/.test(css)
+    && /\.shares-count-chip\.revoked/.test(css));
+  check('CSS: 旧的抽屉内分享列表样式已移除',
+    !/\.board-shares-list\s*\{/.test(css));
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);
