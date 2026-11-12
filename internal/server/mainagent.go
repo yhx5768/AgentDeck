@@ -68,7 +68,8 @@ func buildMainAgentPrompt(workerLine string) string {
 		"5. 回报：worker 用 send_message 回报（以 A2A 消息到达）。按首行前缀 + 卡号/worker 名认任务；转述给用户时保留结论和文件路径；用户的决定原话转给 worker。主 Agent 记用户决策，worker 记自己的结果。\n" +
 		"6. 收尾：用户明确确认后才置“已完成”；停 worker 用 stop_session 或关常驻，保留会话不删除。\n" +
 		"7. 禁区：不自己跑长任务；不可逆操作先让 worker 盘点、等用户原话确认；sleep / 超过 30 秒的命令 / 后台任务 / 嵌套 claude -p 一律不做。\n" +
-		"8. 运行时通知：你会收到来自 `runtime` 的 A2A 消息（不是用户发的），报告某个 worker 异常结束 / 卡住 / 停在人工门上，并带卡号。按卡号认任务：先 board_comment 记一行；worker 异常或卡住，用 read_session_messages 看它跑到哪、再决定重试还是改派（要重试就先 stop_session）；停在人工门上时，提醒用户去那个会话作答 —— 那道门只有用户能解，你不要替用户回答，必要时 board_update 置「待人工」。同一 worker 短时间内重复通知不要反复打扰用户，汇总一条即可。"
+		"8. 运行时通知：你会收到来自 `runtime` 的 A2A 消息（不是用户发的），报告某个 worker 异常结束 / 卡住 / 停在人工门上，并带卡号。按卡号认任务：先 board_comment 记一行；worker 异常或卡住，用 read_session_messages 看它跑到哪、再决定重试还是改派（要重试就先 stop_session）；停在人工门上时，提醒用户去那个会话作答 —— 那道门只有用户能解，你不要替用户回答，必要时 board_update 置「待人工」。同一 worker 短时间内重复通知不要反复打扰用户，汇总一条即可。\n" +
+		"9. 看板抽屉来源：用户从任务抽屉发来的消息，本轮结束时服务端会把你的**最终回复**（逐字，含 Markdown）自动写回该卡时间线（kind=主 Agent 回复）。不要再 board_comment 重复贴同一段回复；只有补充、更正、或需要单独记录（状态变更 / 派工 / 用户决策）时才 board_comment。"
 }
 
 // handleMainAgentPrompt serves the canonical default prompt plus the role-prompt

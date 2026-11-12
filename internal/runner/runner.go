@@ -79,6 +79,21 @@ type Message struct {
 	// the UI renders in the peer bubble. Both ride on the persisted user event.
 	From string `json:"from,omitempty"`
 	Body string `json:"body,omitempty"`
+	// BoardTaskID binds this turn to one AgentDeck board card. It is set only
+	// when a message originates from the board drawer; the server validates
+	// the card before enqueueing. The runner persists it on the user event and
+	// captures the turn's final assistant text so the server can write it back
+	// to that card (see boardreply.go).
+	BoardTaskID string `json:"board_task_id,omitempty"`
+
+	// userSeq is the Seq of the persisted user event for this turn. It is the
+	// stable turn identity used for idempotent board writeback; unexported so
+	// it cannot arrive over the HTTP API.
+	userSeq int64
+	// userTs is that event's timestamp. A rewind truncates the log and can
+	// reuse a Seq, so the idempotency key also carries the timestamp to keep
+	// two different turns from colliding.
+	userTs time.Time
 }
 
 // turnText composes the text actually sent to the CLI for a user turn: the
@@ -136,6 +151,11 @@ type sessionRuntime struct {
 	// turn. Guarded by mu.
 	lastActivity  time.Time
 	stallNotified bool
+
+	// boardTurn captures the assistant output of the board-bound turn
+	// currently running (nil for ordinary turns). Guarded by mu; see
+	// boardreply.go.
+	boardTurn *boardTurnCapture
 }
 
 // Manager spawns claude processes and fans out stream events.
@@ -162,6 +182,7 @@ type Manager struct {
 	// SetNotifier can run while turns are in flight.
 	notifyMu  sync.Mutex
 	notifier  *Notifier
+	turnFinal func(TurnFinal)
 	watchOnce sync.Once
 }
 
@@ -347,6 +368,9 @@ func (m *Manager) emit(sessionID, kind string, data any) {
 		// Stream events are never persisted, so the goal loop reads its verdict
 		// off this path instead of the event log.
 		m.noteGoalOutput(sessionID, assistantTextOf(data))
+		// Board-bound turns keep their assistant text here until the turn ends;
+		// the server then appends the final reply to the card timeline.
+		m.noteBoardOutput(sessionID, data)
 		m.broadcast(sessionID, kind, data)
 		return
 	}
@@ -467,6 +491,10 @@ func (m *Manager) setIdle(sessionID string, lastErr string) {
 	r.lastErr = lastErr
 	r.notifyStatus()
 	r.mu.Unlock()
+	// A clean turn that came from the board drawer hands its final assistant
+	// text to the server for writeback. Error/interrupt turns are discarded:
+	// partial output is not a "final reply".
+	m.finishBoardTurn(sessionID, lastErr)
 	// A turn that ended (clean or error) produced output the user hasn't seen
 	// yet — mark it unread so the sidebar shows a blue dot on every client
 	// until one of them opens it. An interrupt produced no fresh result, so
@@ -518,9 +546,18 @@ func (m *Manager) Enqueue(sessionID string, msg Message) error {
 	if msg.Body != "" {
 		event["body"] = msg.Body
 	}
-	if _, err := m.st.AppendEvent(sessionID, "user", event); err != nil {
+	if msg.BoardTaskID != "" {
+		// Bind the persisted user turn to the card. This is the durable record
+		// of where the turn came from; the final assistant text is captured in
+		// memory and written back when the turn ends.
+		event["board_task_id"] = msg.BoardTaskID
+	}
+	userEv, err := m.st.AppendEvent(sessionID, "user", event)
+	if err != nil {
 		return err
 	}
+	msg.userSeq = userEv.Seq
+	msg.userTs = userEv.Ts
 	// A prompt just arrived, so this session just had activity: bump UpdatedAt
 	// here, not only when the turn ends. The sidebar sorts by this field, and
 	// without the bump a session that was idle for a while stays parked at its
@@ -593,6 +630,10 @@ func (m *Manager) work(sessionID string) {
 		r.notifyStatus()
 		r.mu.Unlock()
 		m.resetGoalTurn(sessionID)
+		// Start (or clear) board reply capture for exactly this turn. Queued
+		// turns are sequential, so the previous capture has already been
+		// flushed by setIdle before the worker pops the next message.
+		m.beginBoardTurn(sessionID, msg)
 		// Resident sessions run turns on their long-lived streaming-input
 		// process; everyone else spawns a one-shot process per turn.
 		if sess := m.st.Get(sessionID); sess != nil && sess.Resident {

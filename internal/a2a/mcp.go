@@ -172,7 +172,7 @@ var BoardTools = []Tool{
 	},
 	{
 		Name:        "board_comment",
-		Description: "Append one event/comment line to a task's timeline (dispatch, report, decision, done, cancel, reassign). Idempotent on (kind, text, at).",
+		Description: "Append one event/comment line to a task's timeline (dispatch, report, decision, done, cancel, reassign). Idempotent on (kind, text, at). Board-source turns already get their final reply written back automatically — don't post the same reply again; use this only for a supplement, correction, or a separate bookkeeping line.",
 		InputSchema: obj(map[string]any{
 			"id":     str("Task id (required)."),
 			"text":   str("Comment text (required)."),

@@ -899,6 +899,10 @@ func (m *Manager) runResidentTurn(sessionID string, msg Message) {
 		}
 	}
 
+	// A peer turn may have been streaming while we waited. Its events must not
+	// leak into this board-bound turn's final-reply capture, so (re)install the
+	// capture only after the process is idle.
+	m.beginBoardTurn(sessionID, msg)
 	m.emit(sessionID, "status", map[string]string{"state": "turn_start"})
 	proc.mu.Lock()
 	proc.busy = true

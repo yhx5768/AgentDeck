@@ -3898,6 +3898,8 @@ function boardRenderTimeline(task) {
     const isUser = event.kind === '用户消息';
     const row = document.createElement('div');
     row.className = 'board-drawer-event' + (isUser ? ' board-event-user' : '');
+    row.dataset.kind = event.kind || '事件';
+    if (event.kind === '主 Agent 回复') row.dataset.replyKey = boardReplyKey(event);
     const at = document.createElement('span');
     at.className = 'board-drawer-event-at';
     at.textContent = event.at || '';
@@ -4014,6 +4016,7 @@ function boardOpenDrawer(task) {
   boardRenderLinks(task);
   boardRenderRaw(task);
   boardShowPane(boardDrawerPane);
+  boardReplySync(task);
   $('#board-drawer-mask').classList.add('open');
   $('#board-drawer').classList.add('open');
 }
@@ -4023,6 +4026,10 @@ function boardOpenDrawer(task) {
 // 的乐观气泡 + SSE；忙碌时用主对话同一套 holdPending，轮次结束后自动提交。
 let boardComposerTaskId = null;
 let boardDrawerTask = null;
+// 抽屉提问的回复等待：taskId -> { baseline, sid }。服务端在 board 来源的 turn
+// 结束后自动回写最终回复；前端不比对时钟（客户端可能和服务端不同步），而是记
+// 下发送前已有回复的 key 集合，看板刷新后出现新 key = 已回复。
+let boardReplyWaits = {};
 
 function boardTaskContext(task) {
   const lines = [
@@ -4040,6 +4047,78 @@ function boardTaskContext(task) {
     lines.splice(4, 0, `标签: ${task.tags.join(' / ')}`);
   }
   return lines.join('\n');
+}
+
+function boardReplyEvents(task) {
+  return boardTaskEvents(task).filter((event) => event.kind === '主 Agent 回复');
+}
+
+function boardReplyKey(event) {
+  if (!event) return '';
+  // 自动回写带 turn_id（服务端写入），手动评论退回 at+正文。用「发送前已有
+  // key 集合 → 刷新后出现新 key」判定本轮回复，不依赖时间线排序，也不依赖
+  // 客户端与服务端时钟一致。
+  const data = event.data;
+  if (data && data.turn_id) return 'turn:' + data.turn_id;
+  return `sig:${event.at || ''} ${event.text || ''}`;
+}
+
+function boardReplyKeys(task) {
+  return boardReplyEvents(task).map(boardReplyKey);
+}
+
+function boardReplyMarkWait(taskId, baselineKeys) {
+  if (!taskId) return;
+  boardReplyWaits[taskId] = {
+    baseline: Array.isArray(baselineKeys) ? baselineKeys.slice() : [],
+    sid: (state.current && state.current.id) || '',
+  };
+}
+
+function boardReplyClearWait(taskId) {
+  if (taskId && boardReplyWaits[taskId]) delete boardReplyWaits[taskId];
+}
+
+// 抽屉重新渲染时同步「回复中 / 已回复」。检测到新回复时把抽屉切到时间线并
+// 高亮最新一条，用户不用切回主对话找答案。
+function boardReplySync(task) {
+  if (!task || !task.id) return false;
+  const wait = boardReplyWaits[task.id];
+  if (!wait) return false;
+  const keys = boardReplyKeys(task);
+  const fresh = keys.find((key) => !wait.baseline.includes(key));
+  if (fresh) {
+    delete boardReplyWaits[task.id];
+    boardComposerStatus('已回复 · 最新回复见「时间线」', 'ok');
+    if (state.boardSelectedId === task.id) boardReplyReveal(task, fresh);
+    return true;
+  }
+  // 还有排队消息时保留队列提示（“已排队 · 队列 N 条”），避免把队列信息盖掉。
+  if (!pendingItems(wait.sid).length) boardComposerStatus('回复中…', 'queued');
+  return false;
+}
+
+function boardReplyReveal(task, replyKey) {
+  boardTimelineFilter = 'all';
+  boardShowPane('timeline');
+  boardRenderTimeline(task);
+  const timeline = $('#board-drawer-timeline');
+  if (!timeline) return;
+  const rows = timeline.querySelectorAll('.board-drawer-event');
+  let target = null;
+  for (const row of rows) {
+    if (row.dataset.kind !== '主 Agent 回复') continue;
+    if (!target) target = row;
+    if (replyKey && row.dataset.replyKey === replyKey) {
+      target = row;
+      break;
+    }
+  }
+  if (!target) return;
+  target.classList.add('board-event-fresh');
+  if (typeof target.scrollIntoView === 'function') {
+    target.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 function boardComposerStatus(text, kind = '') {
@@ -4245,6 +4324,9 @@ async function boardSendToMain() {
   }
   const att = boardCurrentAttachments();
   if (send) send.disabled = true;
+  const boardTaskId = (boardDrawerTask && boardDrawerTask.id) || '';
+  // 记住发送前已有回复的 key 集合，供自动回写后判定是否出现新回复。
+  const replyBaseline = boardReplyKeys(boardDrawerTask);
   const message = boardDrawerTask
     ? `${boardTaskContext(boardDrawerTask)}\n${text}`
     : text;
@@ -4252,20 +4334,32 @@ async function boardSendToMain() {
   try {
     if (isRunning() || state.boardMockBusy || pendingItems(sid).length) {
       holdPending(message, att.images, att.files, {
-        taskId: boardDrawerTask && boardDrawerTask.id,
+        taskId: boardTaskId,
+        boardTaskId,
+        replyBaseline,
         bodyText: text,
         attachmentLinks: att.links,
       });
+      boardReplyMarkWait(boardTaskId, replyBaseline);
       boardClearComposer();
       boardComposerStatus(`已排队 · 队列 ${pendingItems(sid).length} 条`, 'queued');
       return;
     }
     boardComposerStatus('发送中…');
-    await postMessage({ text: message, images: att.images, files: att.files });
-    await boardAppendUserEvent(boardDrawerTask && boardDrawerTask.id, eventText);
+    // 结构化绑定：服务端据此把本轮最终回复自动写回卡片时间线。正文里的
+    // task_id 仍保留，方便模型理解上下文，但不再作为唯一信号。
+    await postMessage({
+      text: message,
+      images: att.images,
+      files: att.files,
+      board_task_id: boardTaskId || undefined,
+    });
+    await boardAppendUserEvent(boardTaskId, eventText);
     boardClearComposer();
-    boardComposerStatus('已发送 · 可在「对话」查看', 'ok');
+    boardReplyMarkWait(boardTaskId, replyBaseline);
+    boardComposerStatus('已发送 · 回复中…', 'queued');
   } catch (e) {
+    boardReplyClearWait(boardTaskId);
     boardComposerStatus('发送失败：' + (e && e.message ? e.message : e), 'error');
   } finally {
     if (send) send.disabled = !(state.current && state.current.main_agent);
@@ -7996,6 +8090,7 @@ async function postMessage(payload) {
     // 测试实例兜底：任何路径都不真正 POST，只入本地队列。
     holdPending(payload.text, payload.images, payload.files, {
       taskId: payload.taskId,
+      boardTaskId: payload.board_task_id,
       bodyText: payload.bodyText,
     });
     return;
@@ -8082,14 +8177,22 @@ async function flushPending() {
   }
   item.status = 'sending';
   renderPendingBubble();
+  const boardTaskId = item.boardTaskId || item.taskId || '';
   try {
-    await postMessage({ text: item.text, images: item.images, files: item.files });
+    await postMessage({
+      text: item.text,
+      images: item.images,
+      files: item.files,
+      board_task_id: boardTaskId || undefined,
+    });
     if (item.taskId) {
       await boardAppendUserEvent(item.taskId,
         boardEventText(item.bodyText || '', item.attachmentLinks));
     }
+    if (boardTaskId) boardReplyMarkWait(boardTaskId, item.replyBaseline || '');
     removePendingItem(sid, item.id);
   } catch (e) {
+    boardReplyClearWait(boardTaskId);
     // Keep the failed message at the head so order is preserved; the user can
     // retry or cancel it without losing the rest of the queue.
     item.status = 'error';

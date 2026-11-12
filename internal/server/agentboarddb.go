@@ -227,6 +227,20 @@ func (s *Server) handleAgentBoardAppendEventDB(w http.ResponseWriter, r *http.Re
 	if body.At == "" {
 		body.At = time.Now().Format("2006-01-02 15:04:05")
 	}
+	// A board-source turn is written back automatically. If the model also
+	// posts the same final text through board_comment, keep one copy instead
+	// of two. (Different text — a summary or a supplement — is still allowed.)
+	// Only model-authored comments are considered: a user message from the
+	// drawer (source=drawer, kind=用户消息) may legitimately repeat the text.
+	if body.Source == "agentdeck" || body.Kind == "主 Agent 回复" {
+		if dup, err := st.HasAutoReplyText(taskID, body.Text); err == nil && dup {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok": true, "task_id": taskID, "at": body.At, "duplicate": true,
+				"deduped_by": "auto_reply",
+			})
+			return
+		}
+	}
 	created, err := st.AppendEvent(taskID, body.Kind, body.Text, body.At, body.Source)
 	if err != nil {
 		if err.Error() == "task not found" {
