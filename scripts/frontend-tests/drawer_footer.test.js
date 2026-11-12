@@ -58,6 +58,17 @@ test('移动端 CSS：抽屉不再整体加 padding，滚动区/底栏各自适�
     '移动端滚动区应有自己的 padding');
 });
 
+test('CSS：抽屉输入框聚焦只保留外层一层 ring', () => {
+  const box = css.match(/\.board-composer-box:focus-within\s*\{([\s\S]*?)\}/);
+  assert.ok(box, '缺少 .board-composer-box:focus-within 规则');
+  assert.ok(/border-color\s*:\s*var\(--accent\)/.test(box[1]), '外层要保留 accent 边框');
+  assert.ok(/box-shadow\s*:/.test(box[1]), '外层要保留 focus ring');
+  // 全局 textarea:focus 会画 3px ring；输入框必须覆盖成 none，否则与外层叠成双层包边。
+  const inputFocus = css.match(/#board-composer-input:focus\s*\{([\s\S]*?)\}/);
+  assert.ok(inputFocus, '缺少 #board-composer-input:focus 覆盖');
+  assert.ok(/box-shadow\s*:\s*none/.test(inputFocus[1]), '内层 textarea 不能再画 focus ring');
+});
+
 let failed = 0;
 for (const t of tests) {
   try {

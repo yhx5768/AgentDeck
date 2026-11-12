@@ -4670,6 +4670,10 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
   padding: 2px 0;
 }
 #board-composer-input::placeholder { color: var(--dim); }
+/* 全局 textarea:focus 的 3px 高亮环会画在输入框自身，和
+   .board-composer-box:focus-within 的外圈叠成两层包边。抽屉 composer
+   只保留外层 ring；键盘聚焦提示仍在，只是不再重影。 */
+#board-composer-input:focus { box-shadow: none; }
 .board-composer-send {
   flex: none;
   border: 1px solid var(--accent);
