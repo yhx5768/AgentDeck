@@ -173,6 +173,13 @@ type Server struct {
 	boardDBErr  error
 	boardDBOnce sync.Once
 
+	// shareKey caches the per-data-dir HMAC key used to derive public artifact
+	// share tokens from their share ids. It lives in <data_dir>/artifact-share.key
+	// (0600) so public links survive restarts and management can rebuild the URL
+	// from the DB's token hash without storing the capability token itself.
+	shareKeyMu sync.Mutex
+	shareKey   []byte
+
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
 	httpSrv *http.Server
@@ -247,6 +254,12 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/agent-board/tasks/{id}/artifacts", s.auth(s.handleAgentBoardTaskArtifacts))
 	s.mux.Handle("POST /api/agent-board/tasks/{id}/artifacts", s.auth(s.handleAgentBoardCreateArtifact))
 	s.mux.Handle("GET /api/agent-board/artifacts/{id}", s.auth(s.handleAgentBoardArtifact))
+	// Public artifact shares: /s/{token} is the only unauthenticated board route.
+	// It serves exactly the shared artifact (never task metadata or a listing).
+	s.mux.HandleFunc("GET /s/{token}", s.handleArtifactShare)
+	s.mux.Handle("POST /api/agent-board/artifacts/{id}/shares", s.auth(s.handleAgentBoardCreateShare))
+	s.mux.Handle("GET /api/agent-board/shares", s.auth(s.handleAgentBoardListShares))
+	s.mux.Handle("DELETE /api/agent-board/shares/{id}", s.auth(s.handleAgentBoardRevokeShare))
 	s.mux.Handle("POST /api/agent-board/tasks", s.auth(s.handleAgentBoardCreateTask))
 	s.mux.Handle("PATCH /api/agent-board/tasks/{id}", s.auth(s.handleAgentBoardUpdateTask))
 	s.mux.Handle("POST /api/agent-board/tasks/{id}/worker", s.auth(s.handleAgentBoardBindWorker))
@@ -831,6 +844,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// MainAgent marks the workspace's router agent (sidebar pin + the UI's
 		// cue to install the default routing rules). Not a permission boundary.
 		MainAgent bool `json:"main_agent"`
+		// ParentID is the session this one is created under (the main agent that
+		// dispatched it as a worker). Set automatically when an agent creates a
+		// worker over the agentdeck MCP; the sidebar nests the child under it.
+		ParentID string `json:"parent_id"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
@@ -899,6 +916,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	parentID := strings.TrimSpace(body.ParentID)
+	if parentID != "" {
+		if parent := s.st.Get(parentID); parent == nil {
+			writeErr(w, http.StatusBadRequest, "unknown parent session: "+parentID)
+			return
+		}
+	}
 	now := time.Now()
 	sess := &store.Session{
 		ID:             newID(),
@@ -913,6 +937,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		PeerName:       peerName,
 		RolePrompt:     body.RolePrompt,
 		MainAgent:      body.MainAgent,
+		ParentID:       parentID,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -2847,15 +2872,18 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	sess := &store.Session{
-		ID:              newID(),
-		Name:            name,
-		CLI:             src.CLI,
-		Provider:        src.Provider,
-		ModelOverride:   src.ModelOverride,
-		EffortOverride:  src.EffortOverride,
-		PermissionMode:  src.PermissionMode,
-		RolePrompt:      src.RolePrompt,
-		MainAgent:       src.MainAgent,
+		ID:             newID(),
+		Name:           name,
+		CLI:            src.CLI,
+		Provider:       src.Provider,
+		ModelOverride:  src.ModelOverride,
+		EffortOverride: src.EffortOverride,
+		PermissionMode: src.PermissionMode,
+		RolePrompt:     src.RolePrompt,
+		MainAgent:      src.MainAgent,
+		// A fork stays a sibling: same owner (parent) as the session it forked
+		// from, so a worker's branch is still nested under the same main agent.
+		ParentID:        src.ParentID,
 		Cwd:             src.Cwd,
 		ClaudeSessionID: forkedID,
 		CreatedAt:       now,

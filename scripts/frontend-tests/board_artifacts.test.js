@@ -65,6 +65,10 @@ ${grabFn('boardMuted')}
 ${grabFn('boardArtifactSize')}
 ${grabFn('boardArtifactKindLabel')}
 ${grabFn('boardArtifactPreviewable')}
+${grabFn('boardArtifactGroupOf')}
+${grabFn('boardArtifactGroups')}
+${grabFn('boardArtifactTimeRange')}
+${grabFn('boardArtifactRoundCard')}
 ${grabFn('boardArtifactAction')}
 ${grabFn('boardArtifactItem')}
 ${grabFn('boardWrapArtifactTables')}
@@ -138,6 +142,99 @@ async function main() {
   check('复制链接按钮', copy && copy.textContent === '复制链接' && copy.dataset.value.endsWith('/A-1'));
   check('文件类型没有预览按钮',
     ![...items[1].querySelectorAll('button.board-artifact-action')].some((b) => b.textContent === '预览'));
+
+  // 2b. 按轮次分组：最新一轮置顶，同轮多文件归一起，最新标记只在第一组
+  renderOverview(baseTask({
+    artifacts: [
+      {
+        id: 'A-10', task_id: 'T-1', title: '第 10 轮报告', kind: 'html', filename: 'r10.html',
+        round: 10, round_source: 'explicit', created_at: '2026-11-09 11:00:00',
+        url: 'http://deck.local/api/agent-board/artifacts/A-10',
+      },
+      {
+        id: 'A-11a', task_id: 'T-1', title: '第 11 轮报告', kind: 'html', filename: 'r11.html',
+        round: 11, round_source: 'explicit', created_at: '2026-11-09 12:00:00',
+        url: 'http://deck.local/api/agent-board/artifacts/A-11a',
+      },
+      {
+        id: 'A-11b', task_id: 'T-1', title: '第 11 轮文字稿', kind: 'markdown', filename: 's11.md',
+        round: 11, round_source: 'explicit', created_at: '2026-11-09 12:01:00',
+        url: 'http://deck.local/api/agent-board/artifacts/A-11b',
+      },
+      {
+        id: 'A-9', task_id: 'T-1', title: '第 9 轮压缩包', kind: 'file', filename: 'r9.zip',
+        round: 9, round_source: 'explicit', created_at: '2026-11-09 10:00:00',
+        url: 'http://deck.local/api/agent-board/artifacts/A-9',
+      },
+    ],
+  }));
+  const rounds = [...doc.querySelectorAll('#board-drawer-artifacts .board-artifact-round')];
+  check('轮次倒序且最新置顶',
+    rounds.map((g) => g.dataset.roundTitle).join(',') === '第 11 轮,第 10 轮,第 9 轮',
+    rounds.map((g) => g.dataset.roundTitle).join(','));
+  check('最新标记只在第一组',
+    !!rounds[0].querySelector('.board-artifact-round-latest-tag')
+    && !rounds[1].querySelector('.board-artifact-round-latest-tag')
+    && !rounds[2].querySelector('.board-artifact-round-latest-tag'));
+  const roundMeta = rounds[0].querySelector('.board-artifact-round-meta').textContent;
+  check('组头显示时间与数量',
+    roundMeta.includes('11-09 12:00–12:01') && roundMeta.includes('2 个产物'), roundMeta);
+  check('同一轮的多个文件归入一组',
+    rounds[0].querySelectorAll('.board-artifact').length === 2
+    && rounds[1].querySelectorAll('.board-artifact').length === 1);
+  check('组内保留服务端顺序',
+    [...rounds[0].querySelectorAll('.board-artifact-title')].map((el) => el.textContent).join(',')
+      === '第 11 轮报告,第 11 轮文字稿');
+  check('分组后每行动作不回归',
+    !!rounds[0].querySelector('a.board-artifact-action')
+    && !!rounds[0].querySelector('button.board-artifact-action')
+    && !!rounds[0].querySelector('.board-copy-btn'));
+  check('分组容器铺平为透明层',
+    doc.querySelector('#board-drawer-artifacts').classList.contains('board-artifacts-grouped'));
+
+  // 2c. 旧产物 fallback：服务端推断的批次显示「较早产物」，绝不伪造「第 N 轮」；
+  //     无法聚类的进「历史产物」，最新批次同样可以带「最新」。
+  renderOverview(baseTask({
+    artifacts: [
+      {
+        id: 'L-unknown', task_id: 'T-1', title: '无时间旧产物', kind: 'file', filename: 'x.bin',
+        round: 0, round_source: '', created_at: 'not-a-time',
+        url: 'http://deck.local/api/agent-board/artifacts/L-unknown',
+      },
+      {
+        id: 'L-2', task_id: 'T-1', title: '旧批次二', kind: 'html', filename: 'old2.html',
+        round: 0, round_source: 'inferred', round_batch: 2, created_at: '2026-11-08 09:00:00',
+        url: 'http://deck.local/api/agent-board/artifacts/L-2',
+      },
+      {
+        id: 'L-1', task_id: 'T-1', title: '旧批次一', kind: 'html', filename: 'old1.html',
+        round: 0, round_source: 'inferred', round_batch: 1, created_at: '2026-11-09 09:00:00',
+        url: 'http://deck.local/api/agent-board/artifacts/L-1',
+      },
+    ],
+  }));
+  const legacyGroups = [...doc.querySelectorAll('#board-drawer-artifacts .board-artifact-round')];
+  check('旧产物按推断批次排序，未知时间进历史产物',
+    legacyGroups.map((g) => g.dataset.roundTitle).join(',') === '较早产物,较早产物,历史产物',
+    legacyGroups.map((g) => g.dataset.roundTitle).join(','));
+  check('旧产物不伪造「第 N 轮」',
+    !legacyGroups.some((g) => /第\s*\d+\s*轮/.test(g.dataset.roundTitle)));
+  check('旧产物最新批次也有最新标记',
+    !!legacyGroups[0].querySelector('.board-artifact-round-latest-tag')
+    && !legacyGroups[1].querySelector('.board-artifact-round-latest-tag'));
+  check('历史产物组保留可操作行',
+    !!legacyGroups[2].querySelector('a.board-artifact-action'));
+
+  // 2d. 无 round 字段的旧服务端数据（或纯历史数据）不会被误当成轮次
+  renderOverview(baseTask({
+    artifacts: [{
+      id: 'A-no-round', task_id: 'T-1', title: '无轮次字段', kind: 'file', filename: 'n.bin',
+      created_at: '2026-11-09 12:00:00',
+      url: 'http://deck.local/api/agent-board/artifacts/A-no-round',
+    }],
+  }));
+  check('缺 round 字段时归入历史产物',
+    doc.querySelector('#board-drawer-artifacts .board-artifact-round').dataset.roundTitle === '历史产物');
 
   // 3. 服务端下发的 legacy report_file 产物
   renderOverview(baseTask({
@@ -236,6 +333,14 @@ async function main() {
     && /\.ws-md th, \.ws-md td \{/.test(css));
   check('CSS: GFM 任务列表规则',
     /\.board-artifact-markdown li:has\(> input\[type="checkbox"\]\)/.test(css));
+  check('CSS: 分组容器透明化',
+    /#board-drawer-artifacts\.board-artifacts-grouped\s*\{[^}]*background:\s*transparent/s.test(css));
+  check('CSS: 轮次卡片有边框/圆角',
+    /\.board-artifact-round\s*\{[^}]*border:\s*1px solid var\(--border\)[^}]*border-radius/s.test(css));
+  check('CSS: 最新轮次高亮描边',
+    /\.board-artifact-round-latest\s*\{[^}]*border-color:\s*var\(--accent\)/s.test(css));
+  check('CSS: 分组不引入内层滚动',
+    !/\.board-artifact-round[^{]*\{[^}]*overflow(?:-y)?:\s*(?:auto|scroll)/s.test(css));
 
   // 8. 关联页也列出产物
   renderLinks(baseTask({

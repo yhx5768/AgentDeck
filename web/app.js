@@ -19,6 +19,9 @@ function parseFileLink(href) {
   try { p = decodeURIComponent(href); } catch (_) { p = href; }
   const m = p.match(/:(\d+)$/); // 尾部 :行号
   if (m) { line = parseInt(m[1], 10); p = p.slice(0, m.index); }
+  // 应用内接口 URL（上传附件、图片接口等）不是工作区文件路径，别让 md()
+  // 把它们改写成 file-link —— 否则看板时间线里的附件链接点不动。
+  if (p.startsWith('/api/')) return null;
   if (p.startsWith('/')) return { path: p, line }; // 绝对路径
   // 相对路径：基于当前会话 cwd 解析
   const cwd = state.current && state.current.cwd;
@@ -1210,6 +1213,41 @@ function sessionItemHTML(s, opts = {}) {
       <span class="time">${timeAgo(s.updated_at)}</span>
     </div>`;
 }
+
+// buildSessionRow renders one sidebar row. depth>0 = a nested worker (indented
+// under its parent); parentCwd is the parent's cwd so a worker living in a
+// different directory gets a path badge.
+function buildSessionRow(s, depth, parentCwd) {
+  const item = document.createElement('div');
+  item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
+  if (depth > 0) {
+    item.classList.add('session-worker');
+    item.style.setProperty('--depth', String(Math.min(depth, 6)));
+  }
+  item.dataset.sessionId = s.id;
+  item.innerHTML = sessionItemHTML(s);
+  if (depth > 0 && s.cwd && parentCwd && s.cwd !== parentCwd) {
+    const badge = document.createElement('span');
+    badge.className = 'worker-cwd';
+    badge.textContent = shortenPath(s.cwd);
+    badge.title = s.cwd;
+    item.querySelector('.name').appendChild(badge);
+  }
+  bindSessionItem(item, s);
+  return item;
+}
+
+// isSessionAncestor reports whether `node` is (transitively) a child of
+// `maybeAncestor` — used to break a parent_id cycle so a bad record cannot make
+// the sidebar loop forever.
+function isSessionAncestor(maybeAncestor, node, byId) {
+  let cur = node;
+  for (let i = 0; i < 64 && cur; i++) {
+    if (cur.id === maybeAncestor.id) return true;
+    cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+  }
+  return false;
+}
 // 「待回答」行内标签：提问不进消息流、只停在输入框上方的 dock，人不在这个会话
 // 时侧栏这行是唯一的线索，所以给它一个和状态点同级的常驻标签。
 function askFlagHTML(asks) {
@@ -1758,11 +1796,43 @@ function renderSessionList() {
     return;
   }
 
+  // ---- worker forest ----
+  // A session nests under the one that created it (`parent_id` = the main agent
+  // that dispatched it as a worker). The worker's own cwd does NOT move it out
+  // of its parent's workspace — a differing cwd only adds a badge. A session
+  // whose parent is filtered out (search / archived) renders at top level.
+  const byId = new Map(list.map((s) => [s.id, s]));
+  const childMap = new Map();
+  const roots = [];
+  for (const s of list) {
+    const parent = s.parent_id ? byId.get(s.parent_id) : null;
+    if (parent && parent.id !== s.id && !isSessionAncestor(s, parent, byId)) {
+      if (!childMap.has(parent.id)) childMap.set(parent.id, []);
+      childMap.get(parent.id).push(s);
+    } else {
+      roots.push(s);
+    }
+  }
+  // Depth-first rows for one root (nested workers directly under it), guarded
+  // against deep/looping chains.
+  const treeRows = (root) => {
+    const rows = [];
+    const seen = new Set();
+    const walk = (s, depth, parentCwd) => {
+      if (depth > 12 || seen.has(s.id)) return;
+      seen.add(s.id);
+      rows.push({ session: s, depth, parentCwd });
+      for (const k of (childMap.get(s.id) || [])) walk(k, depth + 1, s.cwd);
+    };
+    walk(root, 0, '');
+    return rows;
+  };
+
   if (state.viewGroup === 'none') {
     const flat = document.createElement('div');
     flat.className = 'session-list-flat';
     const mixed = [
-      ...list.map((s) => ({ ts: new Date(s.updated_at).getTime() || 0, session: s })),
+      ...roots.map((s) => ({ ts: new Date(s.updated_at).getTime() || 0, session: s })),
       ...(state.groups || [])
         .filter((g) => !q || (g.name || '').toLowerCase().includes(q))
         .map((g) => ({ ts: new Date(g.updated_at || 0).getTime() || 0, group: g })),
@@ -1772,22 +1842,16 @@ function renderSessionList() {
         appendGroupItem(flat, entry.group);
         continue;
       }
-      const s = entry.session;
-      const item = document.createElement('div');
-      item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
-      item.dataset.sessionId = s.id;
-      item.innerHTML = sessionItemHTML(s);
-      bindSessionItem(item, s);
-      flat.appendChild(item);
+      for (const row of treeRows(entry.session)) flat.appendChild(buildSessionRow(row.session, row.depth, row.parentCwd));
     }
     el.appendChild(flat);
     renderIcons(el);
     return;
   }
 
-  // group by cwd（单聊＋群聊按各自 cwd 落进同一工作区）
+  // group by cwd（单聊＋群聊按各自 cwd 落进同一工作区；worker 跟着主 Agent 走）
   const groups = new Map();
-  for (const s of list) {
+  for (const s of roots) {
     const key = s.cwd || '(无目录)';
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
@@ -1804,13 +1868,13 @@ function renderSessionList() {
     return tb - ta;
   });
 
-  for (const [cwd, sessions] of ordered) {
+  for (const [cwd, entries] of ordered) {
     const group = document.createElement('div');
     group.className = 'session-group' + (collapsedGroups.has(cwd) ? ' collapsed' : '');
 
     const header = document.createElement('div');
     header.className = 'group-header';
-    header.innerHTML = `<span class="chev"><i data-lucide="chevron-down"></i></span><i data-lucide="folder" class="dir-icon"></i><span class="dir"></span><span class="count">${sessions.length}</span><button class="group-migrate-btn icon-btn" title="迁移/修改工作区路径"><i data-lucide="settings"></i></button><button class="group-add-btn icon-btn" title="新建单聊 / 群聊"><i data-lucide="plus"></i></button>`;
+    header.innerHTML = `<span class="chev"><i data-lucide="chevron-down"></i></span><i data-lucide="folder" class="dir-icon"></i><span class="dir"></span><span class="count"></span><button class="group-migrate-btn icon-btn" title="迁移/修改工作区路径"><i data-lucide="settings"></i></button><button class="group-add-btn icon-btn" title="新建单聊 / 群聊"><i data-lucide="plus"></i></button>`;
     header.querySelector('.dir').textContent = shortenPath(cwd);
     header.title = cwd;
     renderIcons(header);
@@ -1830,25 +1894,30 @@ function renderSessionList() {
       e.stopPropagation();
       openWsAddMenu(cwd, e.currentTarget);
     };
+    group.appendChild(header);
+
+    let count = 0;
+    const wsSessions = []; // 本工作区的会话（含同目录的嵌套 worker），供「迁移」用
+    for (const entry of entries) {
+      if (entry.__group) {
+        appendGroupItem(group, entry);
+        count++;
+        continue;
+      }
+      for (const row of treeRows(entry)) {
+        group.appendChild(buildSessionRow(row.session, row.depth, row.parentCwd));
+        // 只迁移实际就在这个目录的会话：异目录的 worker 只是挂靠在主 Agent
+        // 下面，不能跟着主 Agent 的工作区一起搬走。
+        if ((row.session.cwd || '') === (cwd === '(无目录)' ? '' : cwd)) wsSessions.push(row.session);
+        count++;
+      }
+    }
     // "settings" button: migrate every session of this workspace to a new path
     header.querySelector('.group-migrate-btn').onclick = (e) => {
       e.stopPropagation();
-      openWsMigratePop(sessions, e.currentTarget);
+      openWsMigratePop(wsSessions, e.currentTarget);
     };
-    group.appendChild(header);
-
-    for (const s of sessions) {
-      if (s.__group) {
-        appendGroupItem(group, s);
-        continue;
-      }
-      const item = document.createElement('div');
-      item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
-      item.dataset.sessionId = s.id;
-      item.innerHTML = sessionItemHTML(s);
-      bindSessionItem(item, s);
-      group.appendChild(item);
-    }
+    header.querySelector('.count').textContent = count;
     el.appendChild(group);
   }
   renderIcons(el);
@@ -2609,6 +2678,9 @@ async function openSession(id) {
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const sharesView = $('#shares-view');
+  if (sharesView) sharesView.classList.add('hidden');
+  clearSharesHash();
   relocatePermCards();
   $('#chat-view').classList.remove('hidden');
   renderGoalBar();
@@ -2673,6 +2745,10 @@ function switchChatTab(tab) {
   if (!isBoard) { boardCloseDrawer(); boardDisconnect(); }
   if (isTraj) trajShow();
   if (isBoard) { boardConnect(); boardShow(); }
+  // display:none 的恢复/进入都不会产生 IntersectionObserver 的阈值变化（目标若
+  // 在视口上方，隐藏前后相交比例都是 0），切 tab 时必须主动按几何位置重算：
+  // 进入轨迹/看板时 gate 会收起它，切回对话时按当前滚动位置恢复。
+  syncPinnedVisibility();
 }
 
 // 本地 store 变化时后端发 refresh 事件；前端重取快照。EventSource 带 cookie，
@@ -2916,9 +2992,13 @@ function boardRenderOverview(task) {
   const artifacts = $('#board-drawer-artifacts');
   if (artifacts) {
     artifacts.innerHTML = '';
+    artifacts.classList.remove('board-artifacts-grouped');
     const list = Array.isArray(task.artifacts) ? task.artifacts : [];
     if (list.length) {
-      list.forEach((artifact) => artifacts.append(boardArtifactItem(task, artifact)));
+      artifacts.classList.add('board-artifacts-grouped');
+      boardArtifactGroups(list).forEach((group, index) => {
+        artifacts.append(boardArtifactRoundCard(group, index === 0));
+      });
     } else if (task.report_file) {
       // Older servers only expose report_file; keep the legacy presentation.
       const item = document.createElement('div');
@@ -2996,6 +3076,101 @@ function boardArtifactKindLabel(artifact) {
 function boardArtifactPreviewable(artifact) {
   return !!(artifact && !artifact.legacy && artifact.url
     && (artifact.kind === 'html' || artifact.kind === 'markdown'));
+}
+
+// 产物按轮次分组：服务端下发 round（显式轮次）或 round_source=inferred +
+// round_batch（旧产物按发布时间聚类）。前端只负责排序/取标题，不猜服务端
+// 已经给出的 round；推断出来的旧产物一律不写成「第 N 轮」。
+function boardArtifactGroupOf(artifact) {
+  const round = Number(artifact && artifact.round);
+  if (Number.isFinite(round) && round > 0) {
+    const n = Math.floor(round);
+    return { rank: 0, key: 'round:' + n, round: n, batch: 0 };
+  }
+  const batch = Number(artifact && artifact.round_batch);
+  if (artifact && artifact.round_source === 'inferred'
+    && Number.isFinite(batch) && batch > 0) {
+    return { rank: 1, key: 'inferred:' + Math.floor(batch), round: 0, batch: Math.floor(batch) };
+  }
+  return { rank: 2, key: 'history', round: 0, batch: 0 };
+}
+
+function boardArtifactGroups(artifacts) {
+  const groups = new Map();
+  (Array.isArray(artifacts) ? artifacts : []).forEach((artifact, index) => {
+    const meta = boardArtifactGroupOf(artifact);
+    let group = groups.get(meta.key);
+    if (!group) {
+      group = Object.assign({}, meta, { items: [] });
+      groups.set(meta.key, group);
+    }
+    group.items.push({ artifact, index });
+  });
+  const list = [...groups.values()];
+  list.sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    if (a.rank === 0) return b.round - a.round; // 最新一轮置顶
+    if (a.rank === 1) return a.batch - b.batch; // 1 = 最近的旧批次
+    return 0;
+  });
+  list.forEach((group) => {
+    if (group.rank === 0) group.title = '第 ' + group.round + ' 轮';
+    else if (group.rank === 1) group.title = '较早产物';
+    else group.title = '历史产物';
+  });
+  return list;
+}
+
+function boardArtifactTimeRange(items) {
+  const stamps = items
+    .map((item) => String((item.artifact && item.artifact.created_at) || '').trim())
+    .filter(Boolean)
+    .sort();
+  if (!stamps.length) return '';
+  const first = stamps[0];
+  const last = stamps[stamps.length - 1];
+  const compact = (value) => {
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/);
+    return m ? { day: m[2] + '-' + m[3], time: m[4] } : null;
+  };
+  const a = compact(first);
+  const b = compact(last);
+  if (!a || !b) return first === last ? first : first + ' – ' + last;
+  if (first === last) return a.day + ' ' + a.time;
+  if (a.day === b.day) return a.day + ' ' + a.time + '–' + b.time;
+  return a.day + ' ' + a.time + ' – ' + b.day + ' ' + b.time;
+}
+
+function boardArtifactRoundCard(group, latest) {
+  const section = document.createElement('section');
+  section.className = 'board-artifact-round' + (latest ? ' board-artifact-round-latest' : '');
+  section.dataset.roundKey = group.key;
+  section.dataset.roundTitle = group.title;
+
+  const head = document.createElement('div');
+  head.className = 'board-artifact-round-head';
+  const title = document.createElement('div');
+  title.className = 'board-artifact-round-title';
+  title.textContent = group.title;
+  head.append(title);
+  if (latest) {
+    const tag = document.createElement('span');
+    tag.className = 'board-artifact-round-latest-tag';
+    tag.textContent = '最新';
+    head.append(tag);
+  }
+  const meta = document.createElement('div');
+  meta.className = 'board-artifact-round-meta';
+  const bits = [];
+  const range = boardArtifactTimeRange(group.items);
+  if (range) bits.push(range);
+  bits.push(group.items.length + ' 个产物');
+  meta.textContent = bits.join(' · ');
+  head.append(meta);
+  section.append(head);
+
+  group.items.forEach((item) => section.append(boardArtifactItem(null, item.artifact)));
+  return section;
 }
 
 function boardArtifactAction(label, href, download) {
@@ -3086,6 +3261,17 @@ function boardArtifactItem(task, artifact) {
     actions.append(boardArtifactAction('下载', artifact.url, true));
     actions.append(boardCopyButton(artifact.url, '复制链接'));
   }
+  if (!artifact.legacy && artifact.id) {
+    const share = document.createElement('button');
+    share.type = 'button';
+    share.className = 'board-artifact-action board-artifact-share';
+    share.textContent = '分享';
+    share.onclick = (e) => {
+      e.stopPropagation();
+      boardOpenShareDialog(artifact);
+    };
+    actions.append(share);
+  }
   if (actions.children.length) main.append(actions);
   return item;
 }
@@ -3162,6 +3348,497 @@ function boardCloseArtifactPreview() {
   const body = $('#board-artifact-preview-body');
   if (body) body.innerHTML = ''; // 卸载 iframe / 取消未完成的加载
   document.body.classList.remove('board-preview-open');
+}
+
+// ---------- 看板产物公开分享 ----------
+// 公开链接不需要登录：服务端签发 /s/{token}，撤销/过期立即生效。这里只负责
+// 创建弹窗、复制与管理列表，不缓存 token（管理列表由服务端按 share id 重建 URL）。
+
+let boardShareArtifact = null;
+
+function boardShareStatusLabel(status) {
+  return { active: '有效', expired: '已过期', revoked: '已取消' }[status] || status || '未知';
+}
+
+function boardShareShowError(target, text) {
+  const el = $(target);
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+}
+
+function boardShareBusy(busy) {
+  const btn = $('#board-share-create');
+  if (!btn) return;
+  btn.disabled = !!busy;
+  btn.textContent = busy ? '创建中…' : '创建公开链接';
+}
+
+function boardOpenShareDialog(artifact) {
+  const mask = $('#board-share-modal');
+  if (!mask || !artifact || !artifact.id) return;
+  boardShareArtifact = artifact;
+  const label = $('#board-share-artifact');
+  if (label) {
+    label.textContent = (artifact.title || artifact.filename || '未命名产物')
+      + ' · ' + boardArtifactKindLabel(artifact);
+  }
+  const expiry = $('#board-share-expiry');
+  if (expiry) expiry.value = '1';
+  const url = $('#board-share-url');
+  if (url) url.value = '';
+  const result = $('#board-share-result');
+  if (result) result.classList.add('hidden');
+  const note = $('#board-share-expiry-note');
+  if (note) note.textContent = '';
+  boardShareShowError('#board-share-error', '');
+  boardShareBusy(false);
+  mask.classList.remove('hidden');
+}
+
+function boardCloseShareDialog() {
+  const mask = $('#board-share-modal');
+  if (!mask) return;
+  mask.classList.add('hidden');
+  boardShareArtifact = null;
+  const url = $('#board-share-url');
+  if (url) url.value = '';
+}
+
+async function boardCreateShare() {
+  const artifact = boardShareArtifact;
+  if (!artifact || !artifact.id) return;
+  const select = $('#board-share-expiry');
+  const days = select ? Number(select.value) : 0;
+  boardShareShowError('#board-share-error', '');
+  boardShareBusy(true);
+  try {
+    const out = await api('/api/agent-board/artifacts/'
+      + encodeURIComponent(artifact.id) + '/shares', {
+      method: 'POST',
+      body: JSON.stringify({ expiry_days: Number.isFinite(days) ? days : 0 }),
+    });
+    const share = (out && out.share) || {};
+    if (!share.url) throw new Error('服务端没有返回公开链接');
+    const url = $('#board-share-url');
+    if (url) url.value = share.url;
+    const note = $('#board-share-expiry-note');
+    if (note) {
+      note.textContent = (share.expires_at ? '到期时间：' + share.expires_at : '永久有效（不会自动过期）')
+        + (share.url_local_only ? ' · ⚠ 仅本机/局域网可达（未配置 public_base_url）' : '');
+    }
+    const result = $('#board-share-result');
+    if (result) result.classList.remove('hidden');
+  } catch (err) {
+    boardShareShowError('#board-share-error',
+      '创建失败：' + (err && err.message ? err.message : err));
+  } finally {
+    boardShareBusy(false);
+  }
+}
+
+function boardCopyShareURL(url, button) {
+  if (!url) return;
+  const done = () => {
+    if (!button) return;
+    const old = button.textContent;
+    button.textContent = '已复制';
+    setTimeout(() => { button.textContent = old; }, 1200);
+  };
+  copyText(String(url)).then(done).catch(() => {
+    if (button) button.textContent = '复制失败';
+  });
+}
+
+// ---------- 分享管理独立页（设置 → 分享管理，或 /#/shares） ----------
+// 卡片抽屉只保留「分享」创建动作；所有卡片的分享链接统一在这里管理。
+
+const SHARES_HASH = '#/shares';
+let sharesAdminItems = [];
+let sharesAdminReturn = 'empty';
+const sharesAdminFilters = { q: '', status: '', scope: '', kind: '', sort: 'created_desc' };
+
+function sharesAdminVisible() {
+  const view = $('#shares-view');
+  return !!view && !view.classList.contains('hidden');
+}
+
+function clearSharesHash() {
+  if (location.hash === SHARES_HASH) {
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
+
+function sharesAdminEmpty(text) {
+  const el = document.createElement('div');
+  el.className = 'shares-empty';
+  el.textContent = text;
+  return el;
+}
+
+function sharesAdminCurrentView() {
+  if ($('#group-view') && !$('#group-view').classList.contains('hidden')) return 'group';
+  if ($('#new-session-view') && !$('#new-session-view').classList.contains('hidden')) return 'new-session';
+  if ($('#chat-view') && !$('#chat-view').classList.contains('hidden')) return 'chat';
+  return 'empty';
+}
+
+function openSharesAdmin() {
+  const view = $('#shares-view');
+  if (!view) return;
+  if (!sharesAdminVisible()) sharesAdminReturn = sharesAdminCurrentView();
+  hideAllViews();
+  view.classList.remove('hidden');
+  if (location.hash !== SHARES_HASH) {
+    history.replaceState(null, '', location.pathname + location.search + SHARES_HASH);
+  }
+  if (typeof boardDisconnect === 'function') boardDisconnect();
+  renderIcons();
+  sharesAdminRefresh();
+}
+
+function closeSharesAdmin() {
+  const view = $('#shares-view');
+  if (view) view.classList.add('hidden');
+  clearSharesHash();
+  if (sharesAdminReturn === 'group' && state.currentGroup) {
+    $('#group-view').classList.remove('hidden');
+  } else if (sharesAdminReturn === 'new-session') {
+    $('#new-session-view').classList.remove('hidden');
+  } else if (state.current) {
+    $('#chat-view').classList.remove('hidden');
+    // 同 switchChatTab：视图从 display:none 恢复时 observer 不会回调。
+    syncPinnedVisibility();
+  } else {
+    $('#empty-state').classList.remove('hidden');
+  }
+  renderIcons();
+}
+
+// 设置弹窗里的「打开分享管理」入口：先关设置，再进独立页。
+function sharesAdminOpenFromSettings() {
+  const settings = $('#modal-settings');
+  if (settings) settings.classList.add('hidden');
+  openSharesAdmin();
+}
+
+// Filter/refresh/back/settings wiring is factored out so the jsdom tests can
+// exercise the exact same handlers the app uses.
+function sharesAdminBindControls() {
+  const bindFilter = (selector, key, event) => {
+    const el = $(selector);
+    if (!el) return;
+    el.addEventListener(event || 'change', () => {
+      sharesAdminFilters[key] = el.value;
+      sharesAdminRender();
+    });
+  };
+  bindFilter('#shares-search', 'q', 'input');
+  bindFilter('#shares-status-filter', 'status');
+  bindFilter('#shares-scope-filter', 'scope');
+  bindFilter('#shares-kind-filter', 'kind');
+  bindFilter('#shares-sort', 'sort');
+  const back = $('#shares-back');
+  if (back) back.addEventListener('click', closeSharesAdmin);
+  const refresh = $('#shares-refresh');
+  if (refresh) refresh.addEventListener('click', sharesAdminRefresh);
+  const settingsEntry = $('#btn-settings-shares');
+  if (settingsEntry) settingsEntry.addEventListener('click', sharesAdminOpenFromSettings);
+}
+
+function sharesAdminStatusCounts(items) {
+  const counts = { active: 0, expired: 0, revoked: 0 };
+  (items || []).forEach((share) => {
+    if (counts[share.status] != null) counts[share.status] += 1;
+  });
+  return counts;
+}
+
+// Scope options are rebuilt from the current data, keeping the previous
+// selection when it still exists (revoke/refresh must not silently clear it).
+function sharesAdminPopulateScope(items) {
+  const select = $('#shares-scope-filter');
+  if (!select) return;
+  const previous = select.value || sharesAdminFilters.scope;
+  select.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部任务/项目';
+  select.append(all);
+
+  const projects = new Map();
+  const tasks = new Map();
+  (items || []).forEach((share) => {
+    if (share.project) projects.set(share.project, (projects.get(share.project) || 0) + 1);
+    if (share.task_id && !tasks.has(share.task_id)) {
+      tasks.set(share.task_id, share.task_title || share.task_id);
+    }
+  });
+  if (projects.size) {
+    const group = document.createElement('optgroup');
+    group.label = '项目';
+    [...projects.keys()].sort((a, b) => a.localeCompare(b, 'zh')).forEach((project) => {
+      const option = document.createElement('option');
+      option.value = 'project:' + project;
+      option.textContent = '项目：' + project + '（' + projects.get(project) + '）';
+      group.append(option);
+    });
+    select.append(group);
+  }
+  if (tasks.size) {
+    const group = document.createElement('optgroup');
+    group.label = '任务';
+    [...tasks.entries()]
+      .sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'zh'))
+      .forEach(([taskID, title]) => {
+        const option = document.createElement('option');
+        option.value = 'task:' + taskID;
+        option.textContent = '任务：' + title + '（' + taskID + '）';
+        group.append(option);
+      });
+    select.append(group);
+  }
+  if (previous && [...select.options].some((option) => option.value === previous)) {
+    select.value = previous;
+  } else if (previous) {
+    select.value = '';
+    sharesAdminFilters.scope = '';
+  }
+}
+
+function sharesAdminFiltered() {
+  const query = String(sharesAdminFilters.q || '').trim().toLowerCase();
+  const scope = sharesAdminFilters.scope || '';
+  let items = sharesAdminItems.slice();
+  if (sharesAdminFilters.status) {
+    items = items.filter((share) => share.status === sharesAdminFilters.status);
+  }
+  if (sharesAdminFilters.kind) {
+    items = items.filter((share) => (share.artifact_kind || '') === sharesAdminFilters.kind);
+  }
+  if (scope.startsWith('project:')) {
+    const project = scope.slice('project:'.length);
+    items = items.filter((share) => (share.project || '') === project);
+  } else if (scope.startsWith('task:')) {
+    const taskID = scope.slice('task:'.length);
+    items = items.filter((share) => (share.task_id || '') === taskID);
+  }
+  if (query) {
+    items = items.filter((share) => [
+      share.artifact_title, share.artifact_filename, share.task_title,
+      share.task_id, share.artifact_id, share.url,
+    ].join(' ').toLowerCase().includes(query));
+  }
+  const text = (value) => String(value || '');
+  const tie = (a, b) => text(b.created_at).localeCompare(text(a.created_at))
+    || text(b.id).localeCompare(text(a.id));
+  const sort = sharesAdminFilters.sort;
+  if (sort === 'created_asc') {
+    items.sort((a, b) => text(a.created_at).localeCompare(text(b.created_at))
+      || text(a.id).localeCompare(text(b.id)));
+  } else if (sort === 'expires_asc') {
+    items.sort((a, b) => {
+      const ea = text(a.expires_at);
+      const eb = text(b.expires_at);
+      if (!ea && !eb) return tie(a, b);
+      if (!ea) return 1; // permanent last
+      if (!eb) return -1;
+      return ea.localeCompare(eb) || tie(a, b);
+    });
+  } else if (sort === 'expires_desc') {
+    items.sort((a, b) => {
+      const ea = text(a.expires_at);
+      const eb = text(b.expires_at);
+      if (!ea && !eb) return tie(a, b);
+      if (!ea) return -1; // permanent first
+      if (!eb) return 1;
+      return eb.localeCompare(ea) || tie(a, b);
+    });
+  } else {
+    items.sort(tie);
+  }
+  return items;
+}
+
+function sharesAdminRenderSummary(filtered) {
+  const summary = $('#shares-summary');
+  const count = sharesAdminStatusCounts(sharesAdminItems);
+  if (summary) {
+    summary.innerHTML = '';
+    [
+      ['全部', sharesAdminItems.length, ''],
+      ['有效', count.active, 'active'],
+      ['已过期', count.expired, 'expired'],
+      ['已取消', count.revoked, 'revoked'],
+    ].forEach(([label, value, cls]) => {
+      const chip = document.createElement('span');
+      chip.className = 'shares-count-chip' + (cls ? ' ' + cls : '');
+      chip.textContent = label + ' ' + value;
+      summary.append(chip);
+    });
+  }
+  const visible = $('#shares-count');
+  if (visible) {
+    visible.textContent = filtered.length === sharesAdminItems.length
+      ? '共 ' + sharesAdminItems.length + ' 条'
+      : '显示 ' + filtered.length + ' / ' + sharesAdminItems.length + ' 条';
+  }
+}
+
+function sharesAdminRow(share) {
+  const row = document.createElement('div');
+  row.className = 'shares-row';
+  row.dataset.shareId = share.id || '';
+  row.dataset.status = share.status || '';
+
+  const artifact = document.createElement('div');
+  artifact.className = 'shares-cell shares-artifact';
+  const artifactTitle = document.createElement('div');
+  artifactTitle.className = 'shares-row-title';
+  artifactTitle.textContent = share.artifact_title || share.artifact_filename || '未命名产物';
+  artifactTitle.title = artifactTitle.textContent;
+  const artifactMeta = document.createElement('div');
+  artifactMeta.className = 'shares-row-meta';
+  artifactMeta.textContent = [
+    boardArtifactKindLabel({ kind: share.artifact_kind }),
+    share.artifact_filename,
+    share.artifact_id,
+  ].filter(Boolean).join(' · ');
+  artifact.append(artifactTitle, artifactMeta);
+
+  const task = document.createElement('div');
+  task.className = 'shares-cell shares-task';
+  const taskTitle = document.createElement('div');
+  taskTitle.className = 'shares-row-title';
+  taskTitle.textContent = share.task_title || share.task_id || '—';
+  taskTitle.title = taskTitle.textContent;
+  const taskMeta = document.createElement('div');
+  taskMeta.className = 'shares-row-meta';
+  taskMeta.textContent = [share.task_id, share.project].filter(Boolean).join(' · ') || '—';
+  task.append(taskTitle, taskMeta);
+
+  const link = document.createElement('div');
+  link.className = 'shares-cell shares-link';
+  if (share.status === 'active' && share.url) {
+    const anchor = document.createElement('a');
+    anchor.className = 'shares-url';
+    anchor.href = share.url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener';
+    anchor.textContent = share.url;
+    anchor.title = share.url;
+    link.append(anchor);
+  } else {
+    const dead = document.createElement('span');
+    dead.className = 'shares-url shares-url-dead';
+    dead.textContent = share.status === 'revoked' ? '链接已取消（不可找回）' : '链接已过期（不可找回）';
+    link.append(dead);
+  }
+  const times = document.createElement('div');
+  times.className = 'shares-row-meta';
+  times.textContent = [
+    share.created_at ? '创建 ' + share.created_at : '',
+    share.expires_at ? '到期 ' + share.expires_at : '永久有效',
+  ].filter(Boolean).join(' · ');
+  link.append(times);
+
+  const status = document.createElement('span');
+  status.className = 'board-share-status ' + (share.status || 'unknown');
+  status.textContent = boardShareStatusLabel(share.status);
+
+  const actions = document.createElement('div');
+  actions.className = 'shares-cell shares-actions';
+  if (share.status === 'active' && share.url) {
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'board-artifact-action';
+    copy.textContent = '复制链接';
+    copy.onclick = () => boardCopyShareURL(share.url, copy);
+    actions.append(copy);
+  }
+  if (share.status !== 'revoked') {
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.className = 'board-artifact-action board-share-revoke';
+    revoke.textContent = '取消分享';
+    revoke.onclick = () => boardRevokeShare(share, revoke);
+    actions.append(revoke);
+  }
+  if (!actions.children.length) {
+    actions.append(document.createTextNode('—'));
+  }
+
+  row.append(artifact, task, link, status, actions);
+  return row;
+}
+
+function sharesAdminRender() {
+  const list = $('#shares-list');
+  if (!list) return;
+  sharesAdminPopulateScope(sharesAdminItems);
+  const filtered = sharesAdminFiltered();
+  sharesAdminRenderSummary(filtered);
+  list.innerHTML = '';
+  if (!sharesAdminItems.length) {
+    list.append(sharesAdminEmpty('还没有分享链接。在任务卡片的产物行点「分享」创建。'));
+    return;
+  }
+  if (!filtered.length) {
+    list.append(sharesAdminEmpty('没有匹配的分享链接。'));
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'shares-row shares-row-head';
+  ['产物', '任务', '分享链接', '状态', '操作'].forEach((label) => {
+    const cell = document.createElement('div');
+    cell.className = 'shares-cell';
+    cell.textContent = label;
+    head.append(cell);
+  });
+  list.append(head);
+  filtered.forEach((share) => list.append(sharesAdminRow(share)));
+}
+
+async function sharesAdminRefresh() {
+  const list = $('#shares-list');
+  if (list) {
+    list.innerHTML = '';
+    list.append(boardMuted('加载中…'));
+  }
+  boardShareShowError('#shares-error', '');
+  try {
+    const out = await api('/api/agent-board/shares');
+    sharesAdminItems = Array.isArray(out && out.shares) ? out.shares : [];
+    sharesAdminRender();
+  } catch (err) {
+    sharesAdminItems = [];
+    if (list) {
+      list.innerHTML = '';
+      list.append(boardMuted('读取失败'));
+    }
+    sharesAdminRenderSummary([]);
+    boardShareShowError('#shares-error',
+      '读取分享列表失败：' + (err && err.message ? err.message : err));
+  }
+}
+
+async function boardRevokeShare(share, button) {
+  if (!share || !share.id) return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = '取消中…';
+  }
+  try {
+    await api('/api/agent-board/shares/' + encodeURIComponent(share.id), { method: 'DELETE' });
+    await sharesAdminRefresh();
+  } catch (err) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '取消分享';
+    }
+    boardShareShowError('#shares-error',
+      '取消分享失败：' + (err && err.message ? err.message : err));
+  }
 }
 
 function boardEventAvatar(kind) {
@@ -3377,10 +4054,12 @@ function boardComposerStatus(text, kind = '') {
 function boardComposerSync(task) {
   const input = $('#board-composer-input');
   const send = $('#board-composer-send');
+  const attach = $('#board-composer-attach');
   if (!input || !send) return;
   const allowed = !!(state.current && state.current.main_agent);
   input.disabled = !allowed;
   send.disabled = !allowed;
+  if (attach) attach.disabled = !allowed;
   input.placeholder = allowed
     ? `发送消息到主 Agent（${state.current.peer_name || 'mainAgent'}）…`
     : '当前会话不是主 Agent，不能发送';
@@ -3388,9 +4067,149 @@ function boardComposerSync(task) {
     boardComposerTaskId = task.id || '';
     input.value = '';
     input.style.height = 'auto';
+    // 切卡清空待发附件：文件已经落在主 Agent 会话的上传目录里，但视觉上
+    // 留在抽屉里会让人以为它们跟着新卡走，发出去就挂错任务了。
+    boardAttached = [];
+    boardRenderAttachedThumbs();
     boardComposerStatus('');
   }
   boardQueueStatus();
+}
+
+// ---------- 抽屉输入框附件 ----------
+// 与主 composer 同一套规则（4 图 / 8 文件、10MB / 40MB、按引擎决定图片是否
+// 内嵌），但附件状态独立：抽屉的待发附件不能和主输入框互相污染。
+let boardAttached = [];
+
+// 任务时间线只记 Markdown 链接，指向主 Agent 会话的上传接口；base64 绝不进
+// board DB（否则每条时间线事件都会被图片本体撑爆）。链接由 md() 渲染，可点。
+function boardAttachmentLinks(attachments, sid) {
+  if (!sid || !attachments || !attachments.length) return [];
+  return attachments.map((att) => {
+    const name = att.name || '';
+    const label = att.kind === 'image' ? '图片' : '文件';
+    // 文件名可能含 [ ]，不转义会把 Markdown 链接文本截断。
+    const safeName = name.replace(/[[\]\\]/g, '\\$&');
+    const url = `/api/sessions/${encodeURIComponent(sid)}/uploads/${encodeURIComponent(name)}`;
+    return `[${label} ${safeName}](${url})`;
+  });
+}
+
+function boardEventText(text, links) {
+  return [text || '', ...(links || [])].filter(Boolean).join('\n');
+}
+
+function boardCurrentAttachments() {
+  return {
+    images: boardAttached.filter((a) => a.kind === 'image')
+      .map((a) => ({ media_type: a.media_type, data: a.data })),
+    files: boardAttached.filter((a) => a.kind === 'file')
+      .map((a) => ({ name: a.name, path: a.path })),
+    links: boardAttachmentLinks(boardAttached, state.current && state.current.id),
+  };
+}
+
+function boardClearComposer() {
+  const input = $('#board-composer-input');
+  if (input) {
+    input.value = '';
+    input.style.height = 'auto';
+  }
+  boardAttached = [];
+  boardRenderAttachedThumbs();
+}
+
+function boardRenderAttachedThumbs() {
+  renderAttachmentThumbs($('#board-composer-attached'), boardAttached);
+}
+
+async function boardAddFiles(files) {
+  if (!files || !files.length) return;
+  if (!state.current || !state.current.main_agent) {
+    boardComposerStatus('当前不是主 Agent 会话，不能添加附件', 'error');
+    return;
+  }
+  const sid = state.current.id;
+  const taskId = boardComposerTaskId;
+  // 上传是异步的：切卡/切会话后返回的结果必须丢弃，否则会挂到新卡上。
+  const stale = () => boardComposerTaskId !== taskId
+    || !state.current || state.current.id !== sid;
+  // mcode/codex 没有内嵌图片通道，图片和主 composer 一样降级成文件附件。
+  const noInlineImages = !engineTakesImages(state.current.engine || 'claude');
+  for (const f of files) {
+    if (stale()) return;
+    if (ALLOWED_MIME.includes(f.type) && !noInlineImages) {
+      const imgs = boardAttached.filter((a) => a.kind === 'image').length;
+      if (imgs >= MAX_IMAGES) {
+        boardComposerStatus(`最多 ${MAX_IMAGES} 张图片`, 'error');
+        continue;
+      }
+      if (f.size > MAX_IMAGE_BYTES) {
+        boardComposerStatus(`图片过大：${f.name}（${fmtMiB(f.size)}MB > ${MAX_IMAGE_BYTES >> 20}MB）`, 'error');
+        continue;
+      }
+      try {
+        // 图片本体仍走 base64 内嵌；另存一份到主 Agent 会话的上传目录，
+        // 任务时间线才有可点的 URL（postMessage 不回传服务端落盘名）。
+        const [data, up] = await Promise.all([
+          readAsDataURL(f).then(stripDataURLPrefix),
+          uploadAttachment(f, sid),
+        ]);
+        if (stale()) return;
+        boardAttached.push({ kind: 'image', media_type: f.type, data, name: up.name, size: up.size, sid });
+      } catch (e) {
+        if (stale()) return;
+        boardComposerStatus(`添加图片失败：${f.name || '图片'}（${e.message || 'unknown error'}）`, 'error');
+      }
+      continue;
+    }
+    const nFiles = boardAttached.filter((a) => a.kind === 'file').length;
+    if (nFiles >= MAX_FILES) {
+      boardComposerStatus(`最多 ${MAX_FILES} 个文件附件`, 'error');
+      continue;
+    }
+    if (f.size > MAX_FILE_BYTES) {
+      boardComposerStatus(`文件过大：${f.name}（${fmtMiB(f.size)}MB > ${MAX_FILE_BYTES >> 20}MB）`, 'error');
+      continue;
+    }
+    try {
+      const up = await uploadAttachment(f, sid);
+      if (stale()) return;
+      boardAttached.push({ kind: 'file', name: up.name, size: up.size, path: up.path, sid });
+    } catch (e) {
+      if (stale()) return;
+      boardComposerStatus(`上传失败：${f.name}（${e.message || 'unknown error'}）`, 'error');
+    }
+  }
+  boardRenderAttachedThumbs();
+}
+
+async function boardOnPaste(e) {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items || !items.length) return;
+  const files = [];
+  for (const item of items) {
+    if (item.kind === 'file') {
+      const f = item.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (files.length) {
+    e.preventDefault();
+    await boardAddFiles(files);
+  }
+}
+
+async function boardOnDrop(e) {
+  if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  await boardAddFiles([...e.dataTransfer.files]);
+}
+
+async function boardOnFilePicked(e) {
+  const files = [...((e.target && e.target.files) || [])];
+  if (e.target) e.target.value = '';
+  await boardAddFiles(files);
 }
 
 async function boardAppendUserEvent(taskId, text) {
@@ -3410,36 +4229,46 @@ async function boardSendToMain() {
   const input = $('#board-composer-input');
   const send = $('#board-composer-send');
   const text = input ? input.value.trim() : '';
-  if (!text) return;
+  if (!text && !boardAttached.length) return;
   if (!state.current || !state.current.main_agent) {
     boardComposerStatus('当前不是主 Agent 会话，消息未发送', 'error');
     return;
   }
+  const sid = state.current.id;
+  // 附件是在加入时上传到「当时的主 Agent 会话」的；跨会话后文件路径会指到
+  // 别的会话上传目录（服务端会 400），直接清掉让用户重新添加。
+  if (boardAttached.some((a) => a.sid && a.sid !== sid)) {
+    boardAttached = [];
+    boardRenderAttachedThumbs();
+    boardComposerStatus('会话已切换，附件已清空，请重新添加', 'error');
+    return;
+  }
+  const att = boardCurrentAttachments();
   if (send) send.disabled = true;
   const message = boardDrawerTask
     ? `${boardTaskContext(boardDrawerTask)}\n${text}`
     : text;
+  const eventText = boardEventText(text, att.links);
   try {
-    if (isRunning() || state.boardMockBusy || pendingItems(state.current.id).length) {
-      holdPending(message, [], [], {
+    if (isRunning() || state.boardMockBusy || pendingItems(sid).length) {
+      holdPending(message, att.images, att.files, {
         taskId: boardDrawerTask && boardDrawerTask.id,
         bodyText: text,
+        attachmentLinks: att.links,
       });
-      input.value = '';
-      input.style.height = 'auto';
-      boardComposerStatus(`已排队 · 队列 ${pendingItems(state.current.id).length} 条`, 'queued');
+      boardClearComposer();
+      boardComposerStatus(`已排队 · 队列 ${pendingItems(sid).length} 条`, 'queued');
       return;
     }
     boardComposerStatus('发送中…');
-    await postMessage({ text: message, images: [], files: [] });
-    await boardAppendUserEvent(boardDrawerTask && boardDrawerTask.id, text);
-    input.value = '';
-    input.style.height = 'auto';
+    await postMessage({ text: message, images: att.images, files: att.files });
+    await boardAppendUserEvent(boardDrawerTask && boardDrawerTask.id, eventText);
+    boardClearComposer();
     boardComposerStatus('已发送 · 可在「对话」查看', 'ok');
   } catch (e) {
     boardComposerStatus('发送失败：' + (e && e.message ? e.message : e), 'error');
   } finally {
-    if (send) send.disabled = false;
+    if (send) send.disabled = !(state.current && state.current.main_agent);
   }
 }
 
@@ -3450,6 +4279,22 @@ async function boardSendToMain() {
     btn.addEventListener('click', () => boardShowPane(btn.dataset.boardPane));
   });
   if (!input || !send) return;
+  const attach = $('#board-composer-attach');
+  const fileInput = $('#board-file-input');
+  const composer = $('#board-drawer-composer');
+  if (attach && fileInput) {
+    attach.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', boardOnFilePicked);
+  }
+  if (composer) {
+    composer.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    composer.addEventListener('drop', boardOnDrop);
+  }
+  input.addEventListener('paste', boardOnPaste);
   send.addEventListener('click', boardSendToMain);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -3487,6 +4332,47 @@ async function boardSendToMain() {
       boardCloseArtifactPreview();
     }
   });
+})();
+
+// 产物公开分享：创建弹窗 + 设置页里的分享管理独立页。
+(() => {
+  const modal = $('#board-share-modal');
+  if (modal) {
+    const close = $('#board-share-close');
+    if (close) close.addEventListener('click', boardCloseShareDialog);
+    const create = $('#board-share-create');
+    if (create) create.addEventListener('click', boardCreateShare);
+    const copy = $('#board-share-copy');
+    if (copy) copy.addEventListener('click', () => {
+      const url = $('#board-share-url');
+      boardCopyShareURL(url ? url.value : '', copy);
+    });
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) boardCloseShareDialog();
+    });
+  }
+  sharesAdminBindControls();
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (modal && !modal.classList.contains('hidden')) {
+      e.preventDefault();
+      boardCloseShareDialog();
+    } else if (sharesAdminVisible()) {
+      e.preventDefault();
+      closeSharesAdmin();
+    }
+  });
+  window.addEventListener('hashchange', () => {
+    if (location.hash === SHARES_HASH) openSharesAdmin();
+    else if (sharesAdminVisible()) closeSharesAdmin();
+  });
+  // Defer the initial hash route until the rest of app.js has finished its
+  // top-level let/const initialisation (hideAllViews touches those bindings).
+  if (location.hash === SHARES_HASH) {
+    setTimeout(() => {
+      if (location.hash === SHARES_HASH) openSharesAdmin();
+    }, 0);
+  }
 })();
 
 // 任务抽屉宽度：拖拽/键盘调整，localStorage 持久化。默认 620px，
@@ -4757,25 +5643,45 @@ function refreshPinnedPrompt() {
   if (fade) fade.classList.add('hidden');
   renderIcons(pp);
   updatePpExpandBtn();
-  const root = msgs;
-  const io = new IntersectionObserver((entries) => {
-    for (const ent of entries) {
-      if (ent.isIntersecting) { hidePinnedPrompt(false); return; }
-      // gate：切轨迹 tab 或 #chat-view 被隐藏时一律不显示
-      const mw = $('#msg-wrap');
-      const cv = $('#chat-view');
-      if (mw && mw.offsetParent === null) { hidePinnedPrompt(false); return; }
-      if (cv && cv.offsetParent === null) { hidePinnedPrompt(false); return; }
-      if (ent.boundingClientRect.top < root.getBoundingClientRect().top) {
-        showPinnedPrompt();
-      } else {
-        hidePinnedPrompt(false);
-      }
-    }
-  }, { root, threshold: 0 });
+  // 先把目标就位再同步显隐：判定不看 observer 回调，直接按实时几何位置算。
+  pinnedPrompt.target = last;
+  const io = new IntersectionObserver(() => {
+    // observer 只当触发源（进入/离开视口、布局变化），判定一律走实时几何值。
+    syncPinnedVisibility();
+  }, { root: msgs, threshold: 0 });
   io.observe(last);
   pinnedPrompt.observer = io;
-  pinnedPrompt.target = last;
+  syncPinnedVisibility();
+}
+
+// 悬浮条显隐的唯一判定：最后一条用户输入**完全滚出消息区顶部**才显示；
+// 仍可见、部分可见、或在视口下方一律隐藏。
+//
+// 为什么不能只靠 IntersectionObserver：它只在「相交比例跨过阈值」时回调。
+// 从长回复底部一下拖到顶部（去点「加载更多」时最常见的动作）时，目标会从
+// 视口上方直接跳到视口下方，两次都不相交、比例恒为 0，observer **一次都不
+// 会回调**，悬浮条就停在 show 状态，正好盖住顶部的「加载更多」胶囊（按钮点
+// 不到，见用户反馈）。所以滚动监听额外按 rAF 节流调本函数兜底。
+function syncPinnedVisibility() {
+  const pp = $('#pinned-prompt');
+  if (!pp) return;
+  const target = pinnedPrompt.target;
+  const usable = !!(target && target.isConnected);
+  if (target && !usable) pinnedPrompt.target = null; // 节点已被移除，等下一次 refresh 重钉
+  let want = false;
+  if (usable) {
+    // gate：切轨迹 tab 或 #chat-view 被隐藏时一律不显示
+    const mw = $('#msg-wrap');
+    const cv = $('#chat-view');
+    if (mw && mw.offsetParent !== null && cv && cv.offsetParent !== null) {
+      const tr = target.getBoundingClientRect();
+      const br = $('#messages').getBoundingClientRect();
+      want = tr.bottom <= br.top;
+    }
+  }
+  const shown = pp.classList.contains('shown');
+  if (want && !shown) showPinnedPrompt();
+  else if (!want && shown) hidePinnedPrompt(false);
 }
 
 function hidePinnedPrompt(disconnect) {
@@ -4785,7 +5691,10 @@ function hidePinnedPrompt(disconnect) {
     pinnedPrompt.observer.disconnect();
     pinnedPrompt.observer = null;
   }
-  pinnedPrompt.target = null;
+  // 目标只在真正断开（切会话 / DOM 重建）时清空。纯显隐切换必须保留目标：
+  // 否则滚回去再滚下来时 syncPinnedVisibility 没有几何目标，悬浮条再也出不
+  // 来，jumpToPinned 也无处可跳。
+  if (disconnect !== false) pinnedPrompt.target = null;
   if (pinnedPrompt.expanded) {
     pinnedPrompt.expanded = false;
     pp.classList.remove('expanded');
@@ -4882,9 +5791,18 @@ function scrollBottom() {
   const box = $('#messages');
   if (state.nearBottom) box.scrollTop = box.scrollHeight;
 }
+let pinScrollRaf = 0;
 $('#messages').addEventListener('scroll', () => {
   const box = $('#messages');
   state.nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  // 跳跃滚动（拖滚动条到顶部/Home）不会触发 observer 回调，显隐必须按几何
+  // 位置自己重算；rAF 节流保证每帧最多一次 getBoundingClientRect。
+  if (pinnedPrompt.target && !pinScrollRaf) {
+    pinScrollRaf = requestAnimationFrame(() => {
+      pinScrollRaf = 0;
+      syncPinnedVisibility();
+    });
+  }
 });
 
 function addMsg(cls, roleTag, box, ts) {
@@ -6102,7 +7020,7 @@ function wrapInMsg(node, box, ts) {
   if (last && last.classList.contains('msg-assistant')) {
     last.querySelector('.bubble').appendChild(node);
   } else {
-    addMsg('msg-assistant', 'claude', msgs, ts).appendChild(node);
+    addMsg('msg-assistant', 'agent', msgs, ts).appendChild(node);
   }
 }
 
@@ -6204,7 +7122,7 @@ function renderStreamEvent(d, box, ts) {
       const l = state.live;
       if (l && l.cur) liveFinalizeBlock(l.cur); // 新 block 开始，固化上一个（覆盖 text→text 等连续场景）
       if (cb.type === 'text') {
-        const bubble = addMsg('msg-assistant', 'claude', box, ts);
+        const bubble = addMsg('msg-assistant', 'agent', box, ts);
         bubble.classList.add('streaming');
         const b = { kind: 'text', el: bubble.parentElement, bodyEl: bubble, buf: cb.text || '', done: false, taken: false, raf: null };
         livePush(b);
@@ -6240,34 +7158,50 @@ function renderStreamEvent(d, box, ts) {
 // opencode 的 token 级增量：后端把 message.part.delta 原样透出（只有
 // field+delta，没有完整 part）。按 partID 聚进同一个气泡——同一 part 的
 // 多次 delta 追加到同一处，换 part 则新起气泡。随后到达的完整
-// message.part.updated（canonical assistant text block）会 liveTake 掉这个
-// 气泡并用全文替换，因此流式与最终内容不会重复。
+// message.part.updated（canonical assistant text block）会取代这个气泡里的
+// 正文，因此流式与最终内容不会重复。
+//
+// 两个坑（都有 oc_empty_bubble.test.js 钉住）：
+//  ① **纯空白前缀先不进 DOM**。opencode 每一步会在 reasoning 与工具之间吐一个
+//     纯空白的 text part（实测正文就是 "\n\n"），如果 delta 一到就建气泡，随后
+//     的完整 text 块会被 renderEvent 的「空正文过滤」跳过，气泡就永远挂着——
+//     就是那串「只有时间戳、没有正文」的空气泡。等出现非空白内容再建气泡，
+//     空 part 一点痕迹都不留。
+//  ② **正文只画进自己的容器**（.oc-stream-seg），不画整个 .bubble。原因是工具
+//     卡/thinking 会在正文收尾之前由 wrapInMsg 挂进同一个 .bubble（实测顺序：
+//     text delta → thinking 块 → tool_use → text 结束），而正文的收尾是整段
+//     innerHTML 替换；直接替换 .bubble 会把刚挂进来的工具卡一起擦掉，正是
+//     「工具卡不见」。
+function ocTextBubble(box, ts, text) {
+  const bubble = addMsg('msg-assistant', 'agent', box, ts);
+  const seg = document.createElement('div');
+  seg.className = 'oc-stream-seg streaming';
+  bubble.appendChild(seg);
+  return {
+    kind: 'text', el: bubble.parentElement, bodyEl: seg,
+    buf: text, done: false, taken: false, raf: null,
+  };
+}
+
 function renderOcTextDelta(d, box, ts) {
   const partId = d.partID || d.messageID;
   const text = d.delta || '';
   if (!partId || !text) return;
-  if (state.ocPartID === partId && state.ocBubble) {
-    state.ocBuf += text;
-    const b = state.ocBubble;
-    b.buf = state.ocBuf;
-    liveSchedulePaint(b);
-    return;
-  }
-  // 新 part：固化上一个气泡
-  if (state.ocBubble) {
-    liveFinalizeBlock(state.ocBubble);
+  if (state.ocPartID !== partId) {
+    // 新 part：固化上一个气泡（如果建过）
+    if (state.ocBubble) liveFinalizeBlock(state.ocBubble);
     state.ocBubble = null;
+    state.ocPartID = partId;
+    state.ocBuf = '';
   }
-  const bubble = addMsg('msg-assistant', 'claude', box, ts);
-  bubble.classList.add('streaming');
-  const b = {
-    kind: 'text', el: bubble.parentElement, bodyEl: bubble,
-    buf: text, done: false, taken: false, raf: null,
-  };
-  state.ocPartID = partId;
-  state.ocBuf = text;
-  state.ocBubble = b;
-  liveSchedulePaint(b);
+  state.ocBuf += text;
+  if (!state.ocBuf.trim()) return; // 仍是纯空白（坑 ①）：先不建气泡
+  if (!state.ocBubble) {
+    state.ocBubble = ocTextBubble(box, ts, state.ocBuf);
+  } else {
+    state.ocBubble.buf = state.ocBuf;
+  }
+  liveSchedulePaint(state.ocBubble);
 }
 
 // opencode 的推理增量。v2 把 reasoning 和正文分成两个事件命名空间
@@ -6446,7 +7380,26 @@ function renderEvent(ev, box) {
         // 空消息过滤：无正文的 text/thinking 不占位（Claude 5 会发无文本 thinking，
         // 中断/空 delta 也会留下空壳），否则时间线被空白块切断。
         if (block.type === 'text') {
-          if (!block.text || !block.text.trim()) continue;
+          if (!block.text || !block.text.trim()) {
+            // 空正文不占位（Claude 5 会发无文本 thinking；opencode 每步还会在
+            // reasoning 与工具之间吐一个纯空白的 text part，实测正文就是
+            // "\n\n"）。流式占位必须一并收掉，否则会留下空气泡——见
+            // scripts/frontend-tests/oc_empty_bubble.test.js。opencode 的纯空白
+            // part 根本不会建 ocBubble（renderOcTextDelta 里纯空白前缀不进
+            // DOM），这里若真有 ocBubble 只固化保留，绝不整颗删掉：那颗气泡里
+            // 可能已经挂了 thinking / 工具卡。
+            const lb = liveTake('text');
+            if (lb) lb.el.remove();
+            if (!block.id || state.ocPartID === block.id) {
+              if (state.ocBubble) {
+                liveFinalizeBlock(state.ocBubble);
+                state.ocBubble = null;
+              }
+              state.ocPartID = '';
+              state.ocBuf = '';
+            }
+            continue;
+          }
           const lb = liveTake('text');
           if (lb) lb.el.remove(); // 完整版替换 live 气泡，避免重复
           // opencode 流式：完整 part 的 id 与正在累积的 partID 相同时，复用那个
@@ -6461,7 +7414,7 @@ function renderEvent(ev, box) {
             state.ocBuf = '';
             break;
           }
-          const bubble = addMsg('msg-assistant', 'claude', box, ev.ts);
+          const bubble = addMsg('msg-assistant', 'agent', box, ev.ts);
           bubble.innerHTML = md(block.text);
         } else if (block.type === 'tool_use') {
           if (!block.name) continue;
@@ -6469,7 +7422,6 @@ function renderEvent(ev, box) {
         } else if (block.type === 'thinking') {
           const lb = liveTake('thinking');
           if (block.thinking && block.thinking.trim()) {
-            if (lb) lb.el.remove(); // 完整版替换 live thinking
             const details = document.createElement('details');
             details.className = 'tool-block thinking-block';
             const summary = document.createElement('summary');
@@ -6478,7 +7430,13 @@ function renderEvent(ev, box) {
             body.className = 'tool-body';
             body.textContent = block.thinking;
             details.append(summary, body);
-            wrapInMsg(details, box, ev.ts);
+            // 就地替换 live thinking：走 wrapInMsg 是「挂到最近一条 assistant
+            // 消息」，而 opencode 的 text part 会插在中间（它会在正文气泡之后再
+            // 收到完整 thinking 块），于是原消息里的 live 块被摘走后就剩一个空气
+            // 泡，后到的工具卡又跟它分了家。就地替换既保住原气泡，也让同一事件的
+            // thinking / 工具卡留在同一处。
+            if (lb && lb.el.isConnected) lb.el.replaceWith(details);
+            else wrapInMsg(details, box, ev.ts);
           } else if (lb) {
             liveFinalizeBlock(lb); // 完整版被后端 strip 成空，保留 live 版
           }
@@ -6945,10 +7903,10 @@ function stripDataURLPrefix(s) {
   return i >= 0 ? s.slice(i + 1) : s;
 }
 
-function renderAttachedThumbs() {
-  const box = $('#attached-images');
+function renderAttachmentThumbs(box, list, onRemove) {
+  if (!box) return;
   box.innerHTML = '';
-  state.attached.forEach((att, i) => {
+  list.forEach((att, i) => {
     const t = document.createElement('div');
     if (att.kind === 'image') {
       t.className = 'attached-thumb';
@@ -6962,13 +7920,19 @@ function renderAttachedThumbs() {
       t.querySelector('.af-size').textContent = fmtBytes(att.size);
     }
     t.querySelector('.x').onclick = () => {
-      state.attached.splice(i, 1);
-      if (state.current) draft().attachments = state.attached;
-      renderAttachedThumbs();
+      list.splice(i, 1);
+      if (onRemove) onRemove();
+      renderAttachmentThumbs(box, list, onRemove);
     };
     box.appendChild(t);
   });
   renderIcons(box);
+}
+
+function renderAttachedThumbs() {
+  renderAttachmentThumbs($('#attached-images'), state.attached, () => {
+    if (state.current) draft().attachments = state.attached;
+  });
 }
 
 // Is a turn currently running for the open session? Derived from the session
@@ -7120,7 +8084,10 @@ async function flushPending() {
   renderPendingBubble();
   try {
     await postMessage({ text: item.text, images: item.images, files: item.files });
-    if (item.taskId) await boardAppendUserEvent(item.taskId, item.bodyText || '');
+    if (item.taskId) {
+      await boardAppendUserEvent(item.taskId,
+        boardEventText(item.bodyText || '', item.attachmentLinks));
+    }
     removePendingItem(sid, item.id);
   } catch (e) {
     // Keep the failed message at the head so order is preserved; the user can
@@ -8458,6 +9425,9 @@ async function openNewSessionView(cwd) {
   nsPendingCwd = cwd || '';
   $('#chat-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const sharesView = $('#shares-view');
+  if (sharesView) sharesView.classList.add('hidden');
+  clearSharesHash();
   relocatePermCards();
   $('#empty-state').classList.add('hidden');
   $('#new-session-view').classList.remove('hidden');
@@ -8929,6 +9899,9 @@ function hideAllViews() {
   $('#chat-view').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
+  const shares = $('#shares-view');
+  if (shares) shares.classList.add('hidden');
+  clearSharesHash();
   closeGroupMemberPanel();
   closeGroupMentionPopup();
 }

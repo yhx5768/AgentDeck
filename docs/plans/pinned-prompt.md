@@ -51,7 +51,8 @@
 
 - 最后一条 `.msg-user` **滚出视口顶部** → 悬浮条淡入（opacity + 轻微位移，~150ms）；
 - 重新可见 → 自动淡出；
-- 判定方向：observer 报不可见时检查 `target.getBoundingClientRect().top < root.getBoundingClientRect().top`，只有从**上方**滚出才显示（防止目标在视口下方时误显示）；
+- 判定方向：只有从**上方**完全滚出才显示（目标仍可见/部分可见/在视口下方都隐藏，防止目标在视口下方时误显示）；
+- **显隐必须按实时几何位置判定，observer 只当触发源**：IntersectionObserver 只在相交比例跨过阈值时回调，从底部一下拖到顶部时目标直接从视口上方跳到下方、比例恒为 0，observer 一次都不回调（详见偏差 #10）。所以 `#messages` 的 scroll 监听按 rAF 节流调 `syncPinnedVisibility()` 兜底，observer 回调也只调它、不信任 entry 快照；
 - 会话无 user 消息 → 保持隐藏；
 - 切到「轨迹」tab → 隐藏（见步骤 4 的 switchChatTab 改动）。
 
@@ -197,7 +198,7 @@ const pinnedPrompt = {
 **注意事项**：
 - `textContent` 会带上附件 chip 的文件名（图片 thumb 无文本）——可接受，文件名本身有信息量，不做剥离；
 - observer 的 root 用 `$('#messages')`，threshold 0 即可；
-- 不要在 scroll 事件里做显隐判定（observer 已够），scroll 监听只用于 `.pp-fade`。
+- 不要在 scroll 事件里做**其它**副作用；但显隐判定**必须**在 scroll 里兜底重算（rAF 节流），不能只靠 observer——跳跃滚动时 observer 不回调（见偏差 #10）。scroll 监听同时驱动 `.pp-fade`。
 
 ### 步骤 4：接线（5 处，每处一行）
 
@@ -270,7 +271,7 @@ go test ./...            # 仅 internal/claudehist 有测试，本功能不触�
 | 14 | 手机端：条内滑动到底 | 不带动消息区滚动（overscroll 隔离） |
 | 15 | 手机端键盘弹起 | 悬浮条仍 ≤ 半屏，不糊死屏幕 |
 | 16 | 空会话 / 新会话 | 悬浮条不出现 |
-| 17 | load-more 翻历史 | 悬浮条内容不变、行为正常 |
+| 17 | load-more 翻历史 | 悬浮条内容不变、行为正常【2026-11-12：已用隔离实例 + Playwright 自动化验证——拖到顶部时悬浮条收起、「加载更多」可点中，翻页后内容照常】 |
 | 18 | 单行 / 恰好 2 行整的短输入 | 展开按钮不出现；仅内容超 2 行截断时出现（新增） |
 
 ### 重点边界
@@ -306,7 +307,7 @@ go test ./...            # 仅 internal/claudehist 有测试，本功能不触�
 - [x] 15. `switchChatTab` 的 hidden 切换从 `#messages` 改为 `#msg-wrap`（app.js:1120）
 - [x] 16. `go build` + `go vet` + `go test ./...` 全绿
 - [x] 17. harness + headless 截图：折叠/展开/渐隐/双主题/移动视口/单行短文本（`docs/_pinned_harness.html`，DOM 探针 + 截图双验证；截图已按新结构重拍存 `docs/screenshots/pinned-{all,mobile}.png`）
-- [ ] 18. 手动场景矩阵 #1–#18 逐项过（headless 已自动化覆盖 #1/2/3 折叠展开/6/7 换钉/8 rewind/9 tab gate/10/11 时序/16 空会话/18 按钮条件显隐与 UI 文字隔离；点文字 smooth 滚动跳回 #4、复制 #5、多端 #12/13、手机手感 #14/15、load-more #17 需真人真机确认）
+- [ ] 18. 手动场景矩阵 #1–#18 逐项过（headless 已自动化覆盖 #1/2/3 折叠展开/6/7 换钉/8 rewind/9 tab gate/10/11 时序/16 空会话/17 load-more/18 按钮条件显隐与 UI 文字隔离；点文字 smooth 滚动跳回 #4、复制 #5、多端 #12/13、手机手感 #14/15 需真人真机确认）
 - [x] 19. 确认 DECISION NEEDED 两项（字数统计**去掉**——实现后用户看实际效果明确不要；设置开关不做）
 - [x] 20. 验证 TODO：`resetChatForReplay` 开头已补 `hidePinnedPrompt()`（app.js:1287），无闪现风险
 
@@ -322,6 +323,7 @@ go test ./...            # 仅 internal/claudehist 有测试，本功能不触�
 7. **展开按钮条件显示**：折叠态内容不超过 2 行截断时不出现展开按钮。实测 Chrome `-webkit-line-clamp: 2` 下 `scrollHeight` 返回全文高（1 行/恰好 2 行 `scrollHeight==clientHeight`，3 行以上多出 1 行高）→ 用 `updatePpExpandBtn()` 以 `scrollHeight - clientHeight > 1` 判定；因 `.hidden` 是 `display:none`（子树不可布局，两值皆 0），换钉发生在悬浮条隐藏期间会误藏按钮——`showPinnedPrompt()` 现身时再校正一次。
 8. **「你 {时间}」前缀是旧前端残留，非现码缺陷**：`.bubble` 提取（偏差 #0）后文本已不含 role-tag 与 msg-time；用户仍看到「你 HH:MM」开头说明浏览器缓存了旧 app.js / 实例未重建。另把无 `.bubble` 结构的兜底路径改为克隆后剔除 `.role-tag/.msg-time/.rewind-btn` 再取文本，双保险。
 9. **悬浮条配色与工具调用块撞色**：原表面 `bg2 85% + border` 与 `.tool-block`（工具调用，`bg2 + border`）几乎同色，一眼分不出。新增每主题变量 `--pin-bg`（`color-mix(accent 10%, bg2)`）/ `--pin-border`（`color-mix(accent 45%, border)`），底色、边框、`.pp-fade` 渐隐终点、无 blur 兜底全部改走新变量。computed 实测（含 alpha 合成）两主题下悬浮条与工具块色差均显著（蓝 tint vs 中性灰，边框呈 accent 蓝）；与用户气泡同属蓝族但更浓一档——语义一致（都是「你」的内容）且位置/头行/边框可辨。验证细节：computed 背景色有两种格式（`color(srgb 0-1 浮点)` 与 `rgb() 0-255 整数`），对比前须归一；半透明底色对比要按所在背景合成后再比，直接比 raw rgba 会把「浅蓝近白」的 7% 用户气泡误判为深蓝。
+10. **悬浮条盖住「加载更多」且滚回顶部不消失**（2026-11-12 用户反馈）：从长回复底部把滚动条一把拖到顶部（去点「加载更多」）时，目标用户消息从视口上方**直接跳到视口下方**，IntersectionObserver 的相交比例恒为 0、**一次回调都不会触发**（headless Chrome 实测确认），旧代码停在 show 状态：悬浮条（top:8，z-index:30）正好压在「加载更多」胶囊上，`elementFromPoint` 命中 `#pinned-prompt`，按钮点不到，也违背「滚回去看见那条输入就该收起」的预期。修法：抽出 `syncPinnedVisibility()` 按实时 `getBoundingClientRect` 判定（目标底边 ≤ 滚动区顶边才显示），observer 回调与 `#messages` 的 scroll 监听（rAF 节流）都调它；`hidePinnedPrompt(false)` 不再把 `pinnedPrompt.target` 清空（纯显隐切换必须保留目标，否则滚回来悬浮条再也出不来、点文字也无处可跳）。回归测试 `scripts/frontend-tests/pinned_prompt.test.js` 钉住该场景。
 
 ### 验证方法备注（下次复用）
 

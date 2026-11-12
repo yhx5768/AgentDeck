@@ -58,6 +58,7 @@ ${grabFn('pendingItems')}
 ${grabFn('pendingQueue')}
 ${grabFn('enqueuePending')}
 ${grabFn('removePendingItem')}
+${grabFn('boardEventText')}
 ${grabFn('holdPending')}
 ${grabFn('flushPending')}
 ${grabFn('retryPending')}
@@ -161,6 +162,31 @@ test('每条消息自带的任务上下文不被后来的卡片覆盖，成功�
     { taskId: 'A', text: '请处理 A' },
     { taskId: 'B', text: '请处理 B' },
   ]);
+});
+
+test('排队项保留附件，flush 后仍写任务流（图片/文件链接）', async () => {
+  x.reset();
+  const posts = [];
+  x.setPost(async (payload) => { posts.push(payload); });
+  const images = [{ media_type: 'image/png', data: 'QUJD' }];
+  const files = [{ name: 'a.txt', path: '/data/uploads/s1/a.txt' }];
+  const links = [
+    '[图片 image.png](/api/sessions/s1/uploads/image.png)',
+    '[文件 a.txt](/api/sessions/s1/uploads/a.txt)',
+  ];
+  x.holdPending('ctx A\n仅附件', images, files, {
+    taskId: 'A', bodyText: '', attachmentLinks: links,
+  });
+  await x.flushPending();
+  assert.deepStrictEqual(plain(posts), [{
+    text: 'ctx A\n仅附件',
+    images: [{ media_type: 'image/png', data: 'QUJD' }],
+    files: [{ name: 'a.txt', path: '/data/uploads/s1/a.txt' }],
+  }], '排队项必须把 images/files 原样交给 postMessage');
+  assert.deepStrictEqual(plain(x.sentEvents), [{
+    taskId: 'A', text: links.join('\n'),
+  }], '附件-only 消息也要写看板事件，且只写上传 URL 链接');
+  assert.strictEqual(x.pendingItems('s1').length, 0);
 });
 
 test('取消排队消息会回填来源卡片，发送中的条目不取消', async () => {
