@@ -46,6 +46,8 @@ const statusCalls = [];
 async function postMessage(payload) { return postMessageImpl(payload); }
 async function boardAppendUserEvent(taskId, text) { sentEvents.push({ taskId, text }); }
 async function boardRefillFromPending(taskId, text) { refills.push({ taskId, text }); }
+function boardReplyMarkWait() {}
+function boardReplyClearWait() {}
 function renderPendingBubble() {}
 function clearPendingBubble() {}
 function setErrorBanner(message) { errors.push(message); }
@@ -182,7 +184,8 @@ test('排队项保留附件，flush 后仍写任务流（图片/文件链接）'
     text: 'ctx A\n仅附件',
     images: [{ media_type: 'image/png', data: 'QUJD' }],
     files: [{ name: 'a.txt', path: '/data/uploads/s1/a.txt' }],
-  }], '排队项必须把 images/files 原样交给 postMessage');
+    board_task_id: 'A',
+  }], '排队项必须把 images/files 原样交给 postMessage，并保留看板绑定');
   assert.deepStrictEqual(plain(x.sentEvents), [{
     taskId: 'A', text: links.join('\n'),
   }], '附件-only 消息也要写看板事件，且只写上传 URL 链接');

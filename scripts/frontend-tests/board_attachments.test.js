@@ -69,6 +69,13 @@ const uploads = [];
 const sent = [];
 const boardEvents = [];
 const held = [];
+const replyWaits = [];
+function boardReplyKeys() { return []; }
+function boardReplyMarkWait(taskId, baseline) { replyWaits.push({ taskId, baseline }); }
+function boardReplyClearWait(taskId) {
+  const i = replyWaits.findIndex((entry) => entry.taskId === taskId);
+  if (i >= 0) replyWaits.splice(i, 1);
+}
 let uploadImpl = async (f, sid) => {
   uploads.push({ name: f.name, sid });
   return { name: f.name, size: f.size, path: '/data/uploads/' + sid + '/' + f.name };
@@ -104,7 +111,7 @@ ${grabFn('boardOnFilePicked')}
 ${grabFn('boardComposerSync')}
 ${grabFn('boardSendToMain')}
 window.__x = {
-  state, statuses, uploads, sent, boardEvents, held,
+  state, statuses, uploads, sent, boardEvents, held, replyWaits,
   get attached() { return boardAttached; },
   set attached(value) { boardAttached = value; },
   get task() { return boardDrawerTask; },
@@ -131,6 +138,7 @@ window.__x = {
     sent.length = 0;
     boardEvents.length = 0;
     held.length = 0;
+    replyWaits.length = 0;
     document.querySelector('#board-composer-input').value = '';
     boardRenderAttachedThumbs();
     uploadImpl = async (f, sid) => {
@@ -217,6 +225,7 @@ test('附件-only 发送：允许空文字，images/files 传给 postMessage，�
   await x.boardSendToMain();
   assert.strictEqual(x.sent.length, 1);
   assert.ok(x.sent[0].text.includes('task_id: T-1'), '正文仍要带任务上下文');
+  assert.strictEqual(x.sent[0].board_task_id, 'T-1', '结构化绑定必须随消息发出');
   assert.deepStrictEqual(plain(x.sent[0].images), [{ media_type: 'image/png', data: 'QUJD' }]);
   assert.deepStrictEqual(plain(x.sent[0].files), []);
   assert.strictEqual(x.boardEvents.length, 1);
@@ -225,6 +234,8 @@ test('附件-only 发送：允许空文字，images/files 传给 postMessage，�
     '[图片 only.png](/api/sessions/main-1/uploads/only.png)'), x.boardEvents[0].text);
   assert.ok(!x.boardEvents[0].text.includes('base64'));
   assert.strictEqual(plain(x.attached).length, 0, '发送后清空待发附件');
+  assert.deepStrictEqual(plain(x.replyWaits), [{ taskId: 'T-1', baseline: [] }],
+    '发送成功后进入「回复中」等待状态');
 });
 
 test('主 Agent 忙碌：走 holdPending 且排队项保留附件与看板链接', async () => {
@@ -240,6 +251,7 @@ test('主 Agent 忙碌：走 holdPending 且排队项保留附件与看板链接
   assert.strictEqual(x.held[0].images.length, 1);
   assert.strictEqual(x.held[0].files.length, 1);
   assert.strictEqual(x.held[0].meta.taskId, 'T-2');
+  assert.strictEqual(x.held[0].meta.boardTaskId, 'T-2', '排队项保留结构化看板绑定');
   assert.strictEqual(x.held[0].meta.bodyText, '排队内容');
   assert.strictEqual(x.held[0].meta.attachmentLinks.length, 2);
   assert.strictEqual(x.boardEvents.length, 0, '排队项还没发送，不能先记任务流');

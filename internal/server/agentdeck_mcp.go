@@ -286,7 +286,10 @@ func (s *Server) agentdeckBoardCall(name string, args map[string]any) (string, e
 		if id == "" || text == "" {
 			return "", fmt.Errorf("board_comment requires 'id' and 'text'")
 		}
-		body := map[string]any{"text": text}
+		// Source "agentdeck" marks this as a model-authored comment (as opposed
+		// to a user message from the drawer). The automatic board-source
+		// writeback uses it to avoid duplicating a reply the model also posted.
+		body := map[string]any{"text": text, "source": "agentdeck"}
 		for _, k := range []string{"kind", "at", "source"} {
 			if v, ok := args[k]; ok {
 				body[k] = v
