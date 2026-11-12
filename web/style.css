@@ -5129,7 +5129,10 @@ body.board-preview-open { overflow: hidden; }
 .pa-wav { --worker-hue: 210; position: relative; flex: none; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: hsl(var(--worker-hue) 75% 92%); color: hsl(var(--worker-hue) 55% 28%); font-size: 14px; font-weight: 700; box-shadow: 0 0 0 2.5px var(--bg); animation: ma-worker-bob 1.4s cubic-bezier(.45, 0, .55, 1) infinite; transition: scale var(--t-fast) var(--ease); }
 .pa-wav + .pa-wav { margin-left: -8px; }
 .pa-wav:nth-child(2) { animation-delay: .14s; } .pa-wav:nth-child(3) { animation-delay: .28s; } .pa-wav:nth-child(4) { animation-delay: .42s; } .pa-wav:nth-child(5) { animation-delay: .56s; }
-.pa-wav:hover, .pa-wav:focus-visible { z-index: 5; scale: 1.08; }
+/* 左边的压在右边的上面：每个头像右上角的数字、右下角的状态点才不会被下一个盖住 */
+.pa-wav:nth-child(1) { z-index: 6; } .pa-wav:nth-child(2) { z-index: 5; } .pa-wav:nth-child(3) { z-index: 4; }
+.pa-wav:nth-child(4) { z-index: 3; } .pa-wav:nth-child(5) { z-index: 2; } .pa-wav:nth-child(n+6) { z-index: 1; }
+.pa-wav:hover, .pa-wav:focus-visible { z-index: 9; scale: 1.08; }
 .pa-wav.on { box-shadow: 0 0 0 2.5px var(--bg), 0 0 0 4.5px hsl(var(--worker-hue) 60% 50%); }
 .pa-wav.new { animation: ma-worker-in 260ms cubic-bezier(.2, 1.4, .4, 1), ma-worker-bob 1.4s cubic-bezier(.45, 0, .55, 1) 260ms infinite; }
 .pa-wav .wd { position: absolute; right: -1px; bottom: -1px; z-index: 4; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg); animation: pa-pulse-a 1.6s infinite; }
