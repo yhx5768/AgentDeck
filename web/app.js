@@ -2745,6 +2745,10 @@ function switchChatTab(tab) {
   if (!isBoard) { boardCloseDrawer(); boardDisconnect(); }
   if (isTraj) trajShow();
   if (isBoard) { boardConnect(); boardShow(); }
+  // display:none 的恢复/进入都不会产生 IntersectionObserver 的阈值变化（目标若
+  // 在视口上方，隐藏前后相交比例都是 0），切 tab 时必须主动按几何位置重算：
+  // 进入轨迹/看板时 gate 会收起它，切回对话时按当前滚动位置恢复。
+  syncPinnedVisibility();
 }
 
 // 本地 store 变化时后端发 refresh 事件；前端重取快照。EventSource 带 cookie，
@@ -3503,6 +3507,8 @@ function closeSharesAdmin() {
     $('#new-session-view').classList.remove('hidden');
   } else if (state.current) {
     $('#chat-view').classList.remove('hidden');
+    // 同 switchChatTab：视图从 display:none 恢复时 observer 不会回调。
+    syncPinnedVisibility();
   } else {
     $('#empty-state').classList.remove('hidden');
   }
@@ -5637,25 +5643,45 @@ function refreshPinnedPrompt() {
   if (fade) fade.classList.add('hidden');
   renderIcons(pp);
   updatePpExpandBtn();
-  const root = msgs;
-  const io = new IntersectionObserver((entries) => {
-    for (const ent of entries) {
-      if (ent.isIntersecting) { hidePinnedPrompt(false); return; }
-      // gate：切轨迹 tab 或 #chat-view 被隐藏时一律不显示
-      const mw = $('#msg-wrap');
-      const cv = $('#chat-view');
-      if (mw && mw.offsetParent === null) { hidePinnedPrompt(false); return; }
-      if (cv && cv.offsetParent === null) { hidePinnedPrompt(false); return; }
-      if (ent.boundingClientRect.top < root.getBoundingClientRect().top) {
-        showPinnedPrompt();
-      } else {
-        hidePinnedPrompt(false);
-      }
-    }
-  }, { root, threshold: 0 });
+  // 先把目标就位再同步显隐：判定不看 observer 回调，直接按实时几何位置算。
+  pinnedPrompt.target = last;
+  const io = new IntersectionObserver(() => {
+    // observer 只当触发源（进入/离开视口、布局变化），判定一律走实时几何值。
+    syncPinnedVisibility();
+  }, { root: msgs, threshold: 0 });
   io.observe(last);
   pinnedPrompt.observer = io;
-  pinnedPrompt.target = last;
+  syncPinnedVisibility();
+}
+
+// 悬浮条显隐的唯一判定：最后一条用户输入**完全滚出消息区顶部**才显示；
+// 仍可见、部分可见、或在视口下方一律隐藏。
+//
+// 为什么不能只靠 IntersectionObserver：它只在「相交比例跨过阈值」时回调。
+// 从长回复底部一下拖到顶部（去点「加载更多」时最常见的动作）时，目标会从
+// 视口上方直接跳到视口下方，两次都不相交、比例恒为 0，observer **一次都不
+// 会回调**，悬浮条就停在 show 状态，正好盖住顶部的「加载更多」胶囊（按钮点
+// 不到，见用户反馈）。所以滚动监听额外按 rAF 节流调本函数兜底。
+function syncPinnedVisibility() {
+  const pp = $('#pinned-prompt');
+  if (!pp) return;
+  const target = pinnedPrompt.target;
+  const usable = !!(target && target.isConnected);
+  if (target && !usable) pinnedPrompt.target = null; // 节点已被移除，等下一次 refresh 重钉
+  let want = false;
+  if (usable) {
+    // gate：切轨迹 tab 或 #chat-view 被隐藏时一律不显示
+    const mw = $('#msg-wrap');
+    const cv = $('#chat-view');
+    if (mw && mw.offsetParent !== null && cv && cv.offsetParent !== null) {
+      const tr = target.getBoundingClientRect();
+      const br = $('#messages').getBoundingClientRect();
+      want = tr.bottom <= br.top;
+    }
+  }
+  const shown = pp.classList.contains('shown');
+  if (want && !shown) showPinnedPrompt();
+  else if (!want && shown) hidePinnedPrompt(false);
 }
 
 function hidePinnedPrompt(disconnect) {
@@ -5665,7 +5691,10 @@ function hidePinnedPrompt(disconnect) {
     pinnedPrompt.observer.disconnect();
     pinnedPrompt.observer = null;
   }
-  pinnedPrompt.target = null;
+  // 目标只在真正断开（切会话 / DOM 重建）时清空。纯显隐切换必须保留目标：
+  // 否则滚回去再滚下来时 syncPinnedVisibility 没有几何目标，悬浮条再也出不
+  // 来，jumpToPinned 也无处可跳。
+  if (disconnect !== false) pinnedPrompt.target = null;
   if (pinnedPrompt.expanded) {
     pinnedPrompt.expanded = false;
     pp.classList.remove('expanded');
@@ -5762,9 +5791,18 @@ function scrollBottom() {
   const box = $('#messages');
   if (state.nearBottom) box.scrollTop = box.scrollHeight;
 }
+let pinScrollRaf = 0;
 $('#messages').addEventListener('scroll', () => {
   const box = $('#messages');
   state.nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  // 跳跃滚动（拖滚动条到顶部/Home）不会触发 observer 回调，显隐必须按几何
+  // 位置自己重算；rAF 节流保证每帧最多一次 getBoundingClientRect。
+  if (pinnedPrompt.target && !pinScrollRaf) {
+    pinScrollRaf = requestAnimationFrame(() => {
+      pinScrollRaf = 0;
+      syncPinnedVisibility();
+    });
+  }
 });
 
 function addMsg(cls, roleTag, box, ts) {
