@@ -227,6 +227,9 @@ func New(cm *config.Manager, st *store.Store, mgr *runner.Manager, static fs.FS,
 	// The runner detects worker incidents/escalations and hands them here; the
 	// stall watchdog needs the notifier, so wire both before starting it.
 	mgr.SetNotifier(s.workerNotifier())
+	// Board-source turns hand their final assistant text here, which appends it
+	// to the card timeline (idempotent on the turn's user-event seq).
+	mgr.SetTurnObserver(s.onBoardTurnFinal)
 	mgr.StartStallWatch()
 	return s
 }
@@ -1291,9 +1294,18 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		Images []runner.Image        `json:"images,omitempty"`
 		Files  []runner.UploadedFile `json:"files,omitempty"`
 		Source string                `json:"source,omitempty"`
+		// BoardTaskID is the structured binding sent by the board drawer. It
+		// is validated here and persisted on the user turn; the runner uses it
+		// to write the final assistant reply back to that card.
+		BoardTaskID string `json:"board_task_id,omitempty"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	boardTaskID, status, err := s.boardTaskForMessage(sess, body.BoardTaskID)
+	if err != nil {
+		writeErr(w, status, err.Error())
 		return
 	}
 	source := strings.TrimSpace(body.Source)
@@ -1348,7 +1360,8 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.mgr.Enqueue(id, runner.Message{
-		Text: body.Text, Images: body.Images, Files: body.Files, ImageNames: imageNames, Source: source,
+		Text: body.Text, Images: body.Images, Files: body.Files, ImageNames: imageNames,
+		Source: source, BoardTaskID: boardTaskID,
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

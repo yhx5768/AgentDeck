@@ -390,10 +390,16 @@ func (s *Store) upsertLinks(task map[string]any) error {
 	return nil
 }
 
-func (s *Store) insertEventTx(taskID, at, kind, actor, text, data, source string, position int) (bool, error) {
+func (s *Store) insertEventTx(taskID, at, kind, actor, text, data, source string, position int, idemKey string) (bool, error) {
+	if idemKey == "" {
+		// Default dedupe key: identical kind + timestamp + text is a replay.
+		// Callers that have a stable turn/event identity pass their own key so
+		// a retry with a fresh timestamp still lands once.
+		idemKey = eventKey(kind, at, text)
+	}
 	result, err := s.db.Exec(`INSERT OR IGNORE INTO task_events(task_id,at,kind,actor,text,data,source,idem_key,position)
 		VALUES(?,?,?,?,?,?,?,?,?)`, taskID, at, kind, actor, text, data, source,
-		eventKey(kind, at, text), position)
+		idemKey, position)
 	if err != nil {
 		return false, err
 	}
@@ -402,16 +408,43 @@ func (s *Store) insertEventTx(taskID, at, kind, actor, text, data, source string
 }
 
 func (s *Store) AppendEvent(taskID, kind, text, at, source string) (bool, error) {
+	return s.appendEvent(taskID, kind, text, at, source, "", nil)
+}
+
+// AppendEventOnce appends one event with an explicit idempotency key and an
+// optional structured data payload. The key is namespaced inside task_events
+// (UNIQUE(task_id, idem_key)), so callers can make an append idempotent across
+// reconnects/restarts by deriving it from stable turn identity instead of the
+// wall-clock timestamp. An empty idemKey falls back to the legacy
+// kind|at|text key.
+func (s *Store) AppendEventOnce(taskID, kind, text, at, source, idemKey string, data map[string]any) (bool, error) {
+	return s.appendEvent(taskID, kind, text, at, source, idemKey, data)
+}
+
+func (s *Store) appendEvent(taskID, kind, text, at, source, idemKey string, data map[string]any) (bool, error) {
 	kind = strings.TrimSpace(kind)
-	text = strings.TrimSpace(text)
-	if kind == "" || text == "" {
+	if kind == "" || strings.TrimSpace(text) == "" {
 		return false, fmt.Errorf("kind/text required")
+	}
+	if idemKey == "" {
+		// Legacy path: trim for the kind|at|text dedupe key. Explicit-key
+		// callers (automatic board writeback) keep the text byte-for-byte —
+		// "the final reply, verbatim, Markdown included".
+		text = strings.TrimSpace(text)
 	}
 	if at == "" {
 		at = now()
 	}
 	if source == "" {
 		source = "local"
+	}
+	dataJSON := ""
+	if len(data) > 0 {
+		raw, err := json.Marshal(data)
+		if err != nil {
+			return false, err
+		}
+		dataJSON = string(raw)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -422,7 +455,7 @@ func (s *Store) AppendEvent(taskID, kind, text, at, source string) (bool, error)
 	if exists == 0 {
 		return false, fmt.Errorf("task not found")
 	}
-	created, err := s.insertEventTx(taskID, at, kind, actorFor(kind), text, "", source, 0)
+	created, err := s.insertEventTx(taskID, at, kind, actorFor(kind), text, dataJSON, source, 0, idemKey)
 	if err != nil {
 		return false, err
 	}
@@ -431,6 +464,33 @@ func (s *Store) AppendEvent(taskID, kind, text, at, source string) (bool, error)
 			kind, at, at, taskID)
 	}
 	return created, nil
+}
+
+// HasManualReplyText reports whether a manually posted reply with this exact
+// text is already on the card. "Manual" means an agentdeck board_comment
+// (source="agentdeck") or an explicit 主 Agent 回复 event — the automatic
+// writeback itself (source="turn") is excluded, and ordinary user messages
+// (source="drawer", kind=用户消息) never match even when their text happens to
+// equal the model's answer.
+func (s *Store) HasManualReplyText(taskID, text string) (bool, error) {
+	return s.hasEventWhere(taskID,
+		"source<>'turn' AND (source='agentdeck' OR kind='主 Agent 回复') AND TRIM(text, char(32,9,10,13))=?",
+		strings.TrimSpace(text))
+}
+
+// HasAutoReplyText reports whether an automatic board-source reply with this
+// exact text is already on the card. Automatic events are written with
+// source="turn" and kind="主 Agent 回复".
+func (s *Store) HasAutoReplyText(taskID, text string) (bool, error) {
+	return s.hasEventWhere(taskID,
+		"kind='主 Agent 回复' AND source='turn' AND TRIM(text, char(32,9,10,13))=?", strings.TrimSpace(text))
+}
+
+func (s *Store) hasEventWhere(taskID, where string, args ...any) (bool, error) {
+	query := "SELECT COUNT(*) FROM task_events WHERE task_id=? AND " + where
+	var n int
+	err := s.db.QueryRow(query, append([]any{taskID}, args...)...).Scan(&n)
+	return n > 0, err
 }
 
 func (s *Store) BindWorker(taskID, worker, session, cwd string) error {
@@ -457,7 +517,7 @@ func (s *Store) BindWorker(taskID, worker, session, cwd string) error {
 		return err
 	}
 	_, _ = s.insertEventTx(taskID, at, "派工", "mainAgent",
-		fmt.Sprintf("worker=%s session=%s cwd=%s", worker, session, cwd), "", "local", 0)
+		fmt.Sprintf("worker=%s session=%s cwd=%s", worker, session, cwd), "", "local", 0, "")
 	return nil
 }
 
@@ -827,7 +887,7 @@ func (s *Store) CreateArtifact(input map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	_, _ = s.insertEventTx(taskID, at, "产物", "system",
-		fmt.Sprintf("新增产物：%s（%s）", title, filename), "", "local", 0)
+		fmt.Sprintf("新增产物：%s（%s）", title, filename), "", "local", 0, "")
 	_, _ = s.db.Exec(`UPDATE tasks SET last_event=?, updated_at=CASE WHEN ? > updated_at THEN ? ELSE updated_at END WHERE id=?`,
 		"产物", at, at, taskID)
 	artifact, err := s.GetArtifact(id)
@@ -1118,7 +1178,7 @@ func (s *Store) CreateTask(input map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, _ = s.insertEventTx(id, at, "建卡", "system", "任务创建", "", "local", 0)
+	_, _ = s.insertEventTx(id, at, "建卡", "system", "任务创建", "", "local", 0, "")
 	_ = s.upsertLinks(map[string]any{
 		"id":      id,
 		"session": session, "report_file": reportFile,
@@ -1196,7 +1256,7 @@ func (s *Store) UpdateTask(id string, patch map[string]any) (map[string]any, err
 		return nil, err
 	}
 	if status != row.status {
-		_, _ = s.insertEventTx(id, at, "状态", "mainAgent", row.status+" → "+status, "", "local", 0)
+		_, _ = s.insertEventTx(id, at, "状态", "mainAgent", row.status+" → "+status, "", "local", 0, "")
 	}
 	if assignee != "" && (assignee != row.assignee || sessionID != row.session || cwd != row.cwd) {
 		if err := s.upsertWorkerLocked(assignee, sessionID, cwd, at); err != nil {

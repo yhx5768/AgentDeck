@@ -4684,6 +4684,14 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
   margin-right: 6px;
 }
 .board-drawer-event.board-event-user::before { border-color: var(--green); }
+.board-drawer-event.board-event-fresh {
+  animation: board-event-fresh 1.8s ease-out 1;
+  border-radius: 6px;
+}
+@keyframes board-event-fresh {
+  from { background: var(--accent-dim); }
+  to { background: transparent; }
+}
 .board-drawer-event-kind.kind-user { color: var(--green); background: var(--bg2); }
 .board-drawer-event-text { color: var(--fg); margin-top: 2px; word-break: break-word; }
 .board-drawer-event-text.md > :first-child { margin-top: 0; }
