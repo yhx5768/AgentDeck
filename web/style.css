@@ -5179,6 +5179,7 @@ body:not(.pa-on) .pa-aside-handle, body:not(.pa-on) .pa-tabbar { display: none; 
 /* ---------- 中栏：需要你队列 ---------- */
 #needs-view { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
 #needs-view.hidden { display: none; }
+body.pa-handle-on #needs-view { padding-right: 32px; }
 #main:has(#needs-view:not(.hidden)) .drawer-standalone { display: none !important; }
 .pa-qh { display: flex; align-items: center; gap: var(--sp-4); flex: none; min-height: 60px; padding: var(--sp-3) var(--sp-6); padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-3)); }
 .pa-qh-t { min-width: 0; }
@@ -5420,6 +5421,8 @@ body:not(.pa-on) .pa-aside-handle, body:not(.pa-on) .pa-tabbar { display: none; 
   .pa-af { padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
   .pa-af .perm-btn { height: 42px; flex: 1 1 auto; }
   .pa-acmp { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+  /* 原版手机端的输入框是贴视口底部的 fixed 浮岛，底部 tab 栏出现时要抬到它上面 */
+  body.pa-tabbar-on #composer { bottom: calc(var(--pa-tabbar-h) + env(safe-area-inset-bottom, 0px) + var(--sp-3)); }
   body.pa-tabbar-on #main { height: calc(100vh - var(--pa-tabbar-h) - env(safe-area-inset-bottom, 0px)); height: calc(100dvh - var(--pa-tabbar-h) - env(safe-area-inset-bottom, 0px)); }
   .pa-tabbar { position: fixed; z-index: 50; left: 0; right: 0; bottom: 0; display: flex; height: calc(var(--pa-tabbar-h) + env(safe-area-inset-bottom, 0px)); padding-bottom: env(safe-area-inset-bottom, 0px); border-top: 1px solid var(--border); background: var(--bg2); }
   .pa-tabbar.hidden { display: none; }

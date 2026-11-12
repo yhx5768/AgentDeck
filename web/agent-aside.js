@@ -62,7 +62,7 @@ function paHideAside() {
   if (h) h.classList.add('hidden');
   const tb = $('#pa-tabbar');
   if (tb) tb.classList.add('hidden');
-  document.body.classList.remove('pa-aside-on', 'pa-aside-sheet');
+  document.body.classList.remove('pa-aside-on', 'pa-aside-sheet', 'pa-handle-on');
   pa.asideShown = false;
   paSyncMask(false);
 }
@@ -79,6 +79,7 @@ function paRenderHandle() {
   if (!h) return;
   const show = agentModeOn() && !paAsideVisible() && !paIsMobile();
   h.classList.toggle('hidden', !show);
+  document.body.classList.toggle('pa-handle-on', show); // 队列给把手让出右边缘，别把行尾的时间 / 说明盖住
   if (!show) return;
   const n = pa.needs.counts.all || 0;
   h.innerHTML = paSvg('panelR') + (n ? '<b>' + (n > 9 ? '9+' : n) + '</b>' : '');
