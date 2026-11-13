@@ -511,8 +511,10 @@ function paRenderNav() {
   if (!nav || !agentModeOn()) return;
   const c = pa.needs.counts;
   const hot = paHasLivePerm();
-  const waiting = (c.blocked || 0) + (c.review || 0);
-  const sig = [pa.view, c.all, hot, waiting, pa.unseen].join('|');
+  // 看板入口显示快照里的全部任务数（含新建/已完成），不是待人工 + 待验收。
+  // 服务端快照默认已排除 archived；这里再兜一层，避免旧快照/测试数据带进来。
+  const boardN = paBoardTasks().filter((t) => t && !t.archived).length;
+  const sig = [pa.view, c.all, hot, boardN, pa.unseen].join('|');
   if (nav.dataset.sig === sig && nav.childElementCount) return;
   nav.dataset.sig = sig;
   nav.textContent = '';
@@ -525,7 +527,7 @@ function paRenderNav() {
   nav.append(
     item('queue', 'inbox', '需要你', hot ? paEl('i', { class: 'pa-live' }) : null, cnt(c.all, hot ? 'hot' : 'warm', '在等你处理的事')),
     item('chat', 'bot', '主 Agent 会话', pa.unseen ? paEl('em', { class: 'pa-cnt', text: '+' + pa.unseen, title: '新回报已折叠，不打扰' }) : null),
-    item('board', 'kanban', '看板任务', cnt(waiting, 'warm', '待人工 / 待验收的卡片')),
+    item('board', 'kanban', '看板任务', cnt(boardN, 'warm', '看板任务总数（含新建/已完成）')),
   );
 }
 
