@@ -476,13 +476,36 @@ function paPermPreview(tool, inp) {
   return s || JSON.stringify(inp, null, 2);
 }
 
+// worker 最近一条「说得上话」的记录（看板时间线是新→旧，取第一条匹配的）。
 function paLatestWorkerSay(task) {
   const kinds = ['受阻', '评论', '回报', '最近回报', '需确认'];
   const ev = ((task && task.timeline) || []).find((e) => kinds.includes(e.kind) && String(e.text || '').trim());
   return ev ? String(ev.text).trim() : '';
 }
-function paSay(text, label) {
-  return paEl('div', { class: 'pa-say-w' }, paEl('h4', { html: paSvg('msg', 's') + label }), paEl('blockquote', { class: 'pa-say', text: paClip(text, 900) }));
+// worker 的说明 / 回报：走主对话同一套 md()（marked + DOMPurify，breaks 保留换行），保留引用条和
+// 标签；长文本默认折起，点「展开全文」看完整内容，短文本直出。
+const PA_SAY_CHARS = 400;
+const PA_SAY_LINES = 7;
+function paSay(text, label, opts) {
+  const o = opts || {};
+  const raw = String(text == null ? '' : text).trim();
+  const block = paEl('blockquote', { class: 'pa-say md' });
+  block.innerHTML = md(raw, { artifacts: false }); // md 内部已 DOMPurify
+  const wrap = paEl('div', { class: 'pa-say-w' }, paEl('h4', { html: paSvg('msg', 's') + label }), block);
+  const long = o.collapsible && (raw.length > PA_SAY_CHARS || raw.split('\n').length > PA_SAY_LINES);
+  if (long) {
+    wrap.classList.add('long');
+    block.classList.add('clip');
+    const more = paEl('button', { type: 'button', class: 'pa-say-more', 'aria-expanded': 'false', text: '展开全文' });
+    more.addEventListener('click', () => {
+      const open = block.classList.toggle('open');
+      block.classList.toggle('clip', !open);
+      more.setAttribute('aria-expanded', open ? 'true' : 'false');
+      more.textContent = open ? '收起' : '展开全文';
+    });
+    wrap.append(more);
+  }
+  return wrap;
 }
 
 function paPayload(it) {
@@ -508,7 +531,7 @@ function paPayload(it) {
   const say = paLatestWorkerSay(task);
   const out = [];
   if (it.summary) out.push(paEl('p', { class: 'pa-qtext', text: it.summary }));
-  if (say && say !== it.summary) out.push(paSay(say, it.kind === 'blocked' ? 'worker 的说明' : 'worker 的回报'));
+  if (say && say !== it.summary) out.push(paSay(say, it.kind === 'blocked' ? 'worker 的说明' : 'worker 的回报', { collapsible: true }));
   if (it.kind === 'review') out.push(paEl('p', { class: 'pa-hint', text: '交付物见下方「产物」；通过后卡片移到「已完成」，打回会让 worker 按你的意见返工。' }));
   if (!out.length) out.push(paEl('p', { class: 'pa-none', text: '这张卡没有写明原因。可以在「动态」里看 worker 最近说了什么。' }));
   return out;

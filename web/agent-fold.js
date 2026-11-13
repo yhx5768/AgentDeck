@@ -70,13 +70,13 @@ function paToolMeta(tb) {
   if (PA_READ_TOOL.test(name)) return { type: 'read', name: name.split('__').pop(), sum };
   return { type: 'other', name: name.split('__').pop() || name || '工具', sum };
 }
-// 一个「静默步骤」= 没有正文、至少有一张工具卡（thinking 也算）的助手消息。返回各工具卡的分类；
-// 带正文 / 没有工具卡的步骤返回 null（不折）。
-function paSilentStep(n) {
-  if (n.nodeType !== 1 || !n.classList.contains('msg-assistant') || paHasVisibleText(n)) return null;
+// 一个助手步骤：至少有一张工具卡（thinking 也算）。partial = 这条消息还有正文——正文留在对话流里，
+// 只把工具部分折到它下面；否则整条消息折进组里。没有工具卡返回 null。
+function paStepOf(n) {
+  if (n.nodeType !== 1 || !n.classList.contains('msg-assistant')) return null;
   const blocks = [...n.querySelectorAll(':scope > .bubble > .tool-block')];
   if (!blocks.length) return null;
-  return blocks.map(paToolMeta);
+  return { msg: n, blocks, metas: blocks.map(paToolMeta), partial: paHasVisibleText(n) };
 }
 function paCountBy(list) {
   const m = new Map();
@@ -137,8 +137,10 @@ function paOpText(c) {
 }
 
 // 一个静默步骤在折叠组里的一行：时间 + 这步在干什么（看板操作给动作，混合工具给工具名 / 摘要，
-// 只有 thinking 就给「思考」和第一行）。
-function paMakeStepRow(node, metas) {
+// 只有 thinking 就给「思考」和第一行）。带正文的消息只把工具卡搬进行里，正文留在原处。
+function paMakeStepRow(step) {
+  const node = step.msg;
+  const metas = step.metas;
   const ts = paParseTime(((node.querySelector('.msg-time') || {}).textContent || '').trim()) || Date.now();
   const calls = metas.filter((m) => m.type !== 'thinking');
   const think = metas.length - calls.length;
@@ -163,8 +165,9 @@ function paMakeStepRow(node, metas) {
   const typesStr = Object.entries(types).map(([k, v]) => k + ':' + v).join(',');
   const verbsStr = calls.filter((c) => c.type === 'board').length
     ? paCountBy(calls.filter((c) => c.type === 'board').map((c) => c.verb)) : '';
-  const row = paEl('div', { class: 'pa-rep step', dataset: {
+  const row = paEl('div', { class: 'pa-rep step' + (step.partial ? ' part' : ''), dataset: {
     ts: String(ts), n: String(calls.length), think: String(think), pure: pure ? '1' : '0', types: typesStr, verbs: verbsStr,
+    partial: step.partial ? '1' : '0',
   } });
   const head = paEl('button', { type: 'button', class: 'pa-rep-h', 'aria-expanded': 'false' },
     paEl('time', { text: paHM(ts) }), paEl('span', { class: 'w', text: w }),
@@ -174,7 +177,16 @@ function paMakeStepRow(node, metas) {
     const open = row.classList.toggle('open');
     head.setAttribute('aria-expanded', open ? 'true' : 'false');
   });
-  row.append(head, paEl('div', { class: 'pa-rep-b' }, node));
+  if (step.partial) {
+    // 工具卡搬到组里，正文和消息壳留在对话流；还原时按这个引用放回去
+    const part = paEl('div', { class: 'pa-tool-part' });
+    part.append(...step.blocks);
+    row.__paSrc = node;
+    row.__paBlocks = step.blocks;
+    row.append(head, paEl('div', { class: 'pa-rep-b' }, part));
+  } else {
+    row.append(head, paEl('div', { class: 'pa-rep-b' }, node));
+  }
   return row;
 }
 
@@ -285,12 +297,21 @@ function paFoldRun(members, kind) {
   const existing = members.find(paIsFold);
   const target = existing || paMakeFold(kind);
   const wasOpen = members.some((m) => paIsFold(m) && m.classList.contains('open'));
-  // 先把组摆到这一串的第一个位置——后面 paMakeRow 会把气泡搬进行里，members[0] 就不在文档流里了
-  if (target !== members[0]) members[0].before(target);
+  const lead = silent && !paIsFold(members[0]) ? paStepOf(members[0]) : null;
+  if (lead && lead.partial) {
+    // 带正文的回复：正文留在原处，组挂在这条回复下面
+    members[0].after(target);
+  } else if (target !== members[0]) {
+    // 纯工具 / thinking 的步骤：组占这一段第一个位置，消息随后被搬进组里
+    members[0].before(target);
+  }
   const rows = [];
   members.forEach((m) => {
     if (paIsFold(m)) rows.push(...m.querySelectorAll(':scope > .pa-fold-b > .pa-rep'));
-    else rows.push(silent ? paMakeStepRow(m, paSilentStep(m) || []) : paMakeRow(m));
+    else if (silent) {
+      const step = paStepOf(m);
+      if (step) rows.push(paMakeStepRow(step));
+    } else rows.push(paMakeRow(m));
   });
   const body = target.querySelector(':scope > .pa-fold-b');
   body.textContent = '';
@@ -335,9 +356,28 @@ function paFoldScan(box) {
   repRuns = process('rep',
     (n) => paIsPeer(n) || (paIsFold(n) && !paIsSilentFold(n)),
     (n) => !(paIsSilent(n) || paIsSilentFold(n)));
-  process('silent',
-    (n) => paIsSilentFold(n) || (!paIsFold(n) && !paIsPeer(n) && !!paSilentStep(n)),
-    (n) => !paIsSilent(n));
+  // 静默步骤：纯工具 / thinking 的连续步骤成组；带正文的步骤起新的一组（工具折到那条回复下面，
+  // 正文不能跟着进组）。回报组 / 用户输入 / 正文回复是边界。
+  const found = [];
+  let run = null;
+  for (const n of [...box.children]) {
+    if (paIsSilentFold(n)) {
+      if (!run) { run = []; found.push(run); }
+      run.push(n);
+      continue;
+    }
+    const step = paStepOf(n);
+    if (step) {
+      if (step.partial) { run = [n]; found.push(run); }
+      else { if (!run) { run = []; found.push(run); } run.push(n); }
+      continue;
+    }
+    if (!paIsSilent(n)) run = null;
+  }
+  found.forEach((r) => {
+    if (r.length === 1 && paIsFold(r[0])) paUpdateSilent(r[0]);
+    else paFoldRun(r, 'silent');
+  });
   if (repRuns && pa.unseen) paRenderNav();
 }
 
@@ -367,8 +407,30 @@ function agentUnfoldAll() {
   const box = $('#messages');
   if (!box) return;
   box.querySelectorAll('.pa-fold').forEach((fold) => {
-    const nodes = [...fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep > .pa-rep-b > .msg')];
-    fold.replaceWith(...nodes);
+    const out = [];
+    fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep').forEach((row) => {
+      if (row.dataset.partial === '1') {
+        // 带正文的消息：把工具卡放回原消息（消息还在就放回它下面）
+        const part = row.querySelector(':scope > .pa-rep-b > .pa-tool-part');
+        const blocks = part ? [...part.children] : [];
+        const src = row.__paSrc;
+        const bubble = src && src.isConnected ? src.querySelector(':scope > .bubble') : null;
+        if (bubble) { bubble.append(...blocks); return; }
+        if (blocks.length) {
+          const msg = document.createElement('div');
+          msg.className = 'msg msg-assistant';
+          const b = document.createElement('div');
+          b.className = 'bubble';
+          b.append(...blocks);
+          msg.append(b);
+          out.push(msg);
+        }
+      } else {
+        const msg = row.querySelector(':scope > .pa-rep-b > .msg');
+        if (msg) out.push(msg);
+      }
+    });
+    fold.replaceWith(...out);
   });
 }
 // 队列 / worker 状态变了，已折叠的组头部要跟着刷新（已入「需要你」的计数）
