@@ -8,6 +8,10 @@ AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流
 
 > 项目内部标识仍是 `cc-webui`（Go module、二进制、`CC_WEBUI_*` 环境变量、`ccgw_token` Cookie、`~/.config/cc-webui`），只有展示名换成了 AgentDeck。
 
+![Personal Agent 工作台](docs/screenshots/readme-pa-overview.png)
+
+*Personal Agent 工作台：左栏是主 Agent 与运行中的 worker；中栏是主 Agent 会话，worker 回报和看板操作按轮折叠；右栏是卡片详情——权限门、提问、验收都能就地处理。*
+
 ---
 
 ## 为什么需要 AgentDeck
@@ -33,6 +37,18 @@ AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流
 - **作答**：权限/提问直达 worker；拍板/验收先送达 worker，再记时间线和更新看板，失败保留条目可重试；A2A 使用操作级幂等键，不会因重试吞掉第二次决定。
 - **真实数据**：`/api/needs-you`、`/api/agent-board(+events)`、`/api/sessions/{id}/permissions/pending`、`/api/a2a/send`、`/api/agent-board/tasks/{id}/events` 等，没有前端 mock。
 
+**需要你队列与权限审批**
+
+![需要你队列](docs/screenshots/readme-pa-needs-you.png)
+
+*权限门、提问、待人工、待验收合成一条按紧急度排序的队列；右栏直接允许本次 / 本会话允许 / 拒绝，倒计时和超时回执都是真实状态。*
+
+**看板任务与卡片详情**
+
+![看板任务](docs/screenshots/readme-pa-board.png)
+
+*看板按状态分列；点开卡片在右栏看概览、动态和产物，验收 / 打回也都落在这张卡上。*
+
 设计细节见 [AGENTS.md §17](AGENTS.md) 与 [docs/needs-you-rd.md](docs/needs-you-rd.md)。
 
 ## 多 CLI 与跨引擎 A2A
@@ -45,13 +61,29 @@ AgentDeck 的五个引擎（claude / opencode / mcode / qoder / codex）不是�
 - **所有引擎都注入 agentdeck MCP**：会话管理（`list_sessions` / `new_session` / `get_session` / `stop_session`）、A2A（`send_message`，支持 `send_id` 幂等）、读/搜（`read_session_messages` / `search_messages`）和主 Agent 的看板工具（`board_*`）。
 - **运行时通知也走 A2A**：worker 异常结束、卡住、停在人工门时，runtime 会向主 Agent 发通知；主 Agent 据此记账或在看板置「待人工」。
 
-```text
-主 Agent（claude / ducc）
-  ├─ A2A → worker-支付（opencode）
-  ├─ A2A → worker-迁移（codex）
-  ├─ 看板任务 ← worker / runtime 回报
-  └─ Personal Agent 队列 ← 权限门、提问、待人工、待验收
+```mermaid
+flowchart TB
+  MAIN["mainAgent（claude / ducc / 任意引擎）"]
+  W1["worker·支付（opencode）"]
+  W2["worker·迁移（codex）"]
+  W3["worker·登录（claude）"]
+  BOARD[("看板 SQLite")]
+  QUEUE["需要你队列"]
+  MAIN -->|"A2A send_message"| W1
+  MAIN -->|"A2A send_message"| W2
+  MAIN -->|"A2A send_message"| W3
+  W1 -->|"回报（source:a2a）"| MAIN
+  W2 -->|"回报（source:a2a）"| MAIN
+  W3 -->|"回报（source:a2a）"| MAIN
+  W1 & W2 & W3 -->|"board_* 工具"| BOARD
+  MAIN -->|"board_* 工具"| BOARD
+  BOARD -->|"待人工 / 待验收"| QUEUE
+  MAIN -->|"权限门 / 提问"| QUEUE
 ```
+
+![主 Agent 会话中的 A2A 收发](docs/screenshots/readme-pa-a2a.png)
+
+*主 Agent 会话：连续 worker 回报按轮折叠；`send_message` 的派工卡片与 worker 的 peer 气泡同屏出现，不需要轮询或共享剪贴板。*
 
 详见 [a2a-rd.md](a2a-rd.md)、[docs/main-agent-best-practices.md](docs/main-agent-best-practices.md) 和 [AGENTS.md §17](AGENTS.md)。
 
@@ -84,6 +116,37 @@ AgentDeck 的五个引擎（claude / opencode / mcode / qoder / codex）不是�
 | TUI 与 Web 自由切换 | 每个会话都有 session id，点「resume」复制命令即可回到 TUI 继续跟进，Web 里做的一切状态都在。claude/qoder 的命令带 `--model`/档位，provider env 非空时再带一个物化好的 `--settings`；opencode 是 `-s <sid>`，mcode 是 `--session <mvs_…>`，codex 是 `resume <sid>` 带模型/档位/沙箱。 |
 | 移动优先 PWA | 抽屉导航、底部操作面板、响应式布局、深浅主题切换，iOS 独立 PWA 会避开状态栏安全区。 |
 | 安全网关 | 单一 `gateway_token` 鉴权；文件与图片预览严格限制在会话工作区内。 |
+
+## 界面一览
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/readme-workspace.png" alt="工作区面板"></td>
+    <td width="50%"><img src="docs/screenshots/readme-trajectory.png" alt="轨迹视图"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>工作区面板：文件树 + 预览 + git 状态，路径锁定在当前会话 cwd</sub></td>
+    <td align="center"><sub>轨迹视图：同一份事件流按轮投影成台账，可按角色筛选、搜索</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/readme-stats.png" alt="使用统计"></td>
+    <td align="center"><img src="docs/screenshots/readme-mobile.png" width="300" alt="移动端"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>使用统计：五引擎合并计数 + GitHub 式热力图（演示数据）</sub></td>
+    <td align="center"><sub>移动端：响应式布局 + 底部「需要你 / 对话 / 看板」切换</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/readme-a2a-chat.png" alt="跨会话消息"></td>
+    <td><img src="docs/screenshots/readme-ask-banner.png" alt="提问卡片"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>跨会话消息：SendMessage 发件卡片，正文与收件人都在卡上</sub></td>
+    <td align="center"><sub>提问强提示：55 秒倒计时 + 顶部横幅，跨会话也能看见</sub></td>
+  </tr>
+</table>
+
+> 以上截图来自隔离演示实例，会话、看板与统计均为演示数据。
 
 > **浏览器 PoC（实验分支）**：设置页可开启本地 Chrome，Claude 通过 MCP 使用 `browser_*` 工具，Web 面板可看实时画面并人工接管。默认关闭；Claude/Qoder/Codex/OpenCode 已接，mcode 受项目 .mcp.json 限制未接；能力边界、配置和未完成项见 [docs/browser-poc.md](docs/browser-poc.md)。
 
@@ -215,6 +278,21 @@ providers:
 ## 工作原理（简要）
 
 AgentDeck 有五个引擎，由 `config.yaml` 里 cli/provider 的 `kind` 决定（`claude` 缺省，另有 `opencode`、`mcode`、`qoder` 与 `codex`）。会话绑定单一引擎，创建时 cli 与 provider 的 kind 必须一致。
+
+```mermaid
+flowchart LR
+  CLI["五个编码 CLI<br/>claude · opencode · mcode · qoder · codex"]
+  RUN["AgentDeck Runner<br/>每轮进程 / 共享 serve"]
+  EV["统一 canonical 事件<br/>SSE 回放 + 实时"]
+  WEB["Web 控制台<br/>会话 · 工具卡 · 轨迹 · 工作区"]
+  PA["Personal Agent<br/>需要你 · 主 Agent · 看板"]
+  BROWSER["浏览器 / 手机 PWA"]
+  A2A["A2A 总线<br/>+ agentdeck MCP"]
+  CLI --> RUN --> EV --> WEB --> BROWSER
+  EV --> PA --> BROWSER
+  A2A <--> RUN
+  A2A <--> PA
+```
 
 | 引擎 | 实况通道 | 会话 id | 历史回放来源 |
 |---|---|---|---|
