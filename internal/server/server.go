@@ -164,6 +164,12 @@ type Server struct {
 	// sendDedup makes send_message idempotent on an optional send_id.
 	sendDedup sendDedup
 
+	// maWorkerStore holds the Settings page's worker-defaults override
+	// (<data_dir>/main-agent/worker.json). Lazy: a Server constructed in tests
+	// without New still resolves it from the live config's data_dir.
+	maWorkerMu    sync.Mutex
+	maWorkerStore *mainAgentWorkerStore
+
 	// boardHub fans out agent-board changes to SSE subscribers. The board is
 	// always stored at <data_dir>/agent-board.db; no file watcher is needed.
 	boardHub *boardHub
@@ -250,6 +256,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/providers", s.auth(s.handleProviders))
 	s.mux.Handle("GET /api/config", s.auth(s.handleConfig))
 	s.mux.Handle("GET /api/main-agent-prompt", s.auth(s.handleMainAgentPrompt))
+	s.mux.Handle("GET /api/main-agent/worker", s.auth(s.handleMainAgentWorker))
+	s.mux.Handle("PUT /api/main-agent/worker", s.auth(s.handleSaveMainAgentWorker))
 	s.mux.Handle("GET /api/needs-you", s.auth(s.handleNeedsYou))
 	s.mux.Handle("GET /api/agent-board", s.auth(s.handleAgentBoardDB))
 	s.mux.Handle("GET /api/agent-board/events", s.auth(s.handleAgentBoardEvents))

@@ -80,6 +80,9 @@ default_cwd: "~"
 # GET /api/main-agent-prompt 下发的就是拼好的提示；前端「作为主 Agent」开关把它写进
 # 会话的 role_prompt（改这里后要在 📡 面板把开关关掉再打开、或用角色提示弹窗的
 # 「填入主 Agent 默认」，才会装进已有会话）。
+# 设置页的「worker 默认档」保存在服务器（<data_dir>/main-agent/worker.json），按字段
+# 覆盖这里；设置页留空 = 继承 config。取值优先级：运行期设置 → main_agent.worker →
+# 内置默认（未设置则提示里不写这一句）。
 # main_agent:
 #   worker:              # 主 Agent 建 worker（new_session）时的默认档，会拼进提示
 #     cli: "claude"

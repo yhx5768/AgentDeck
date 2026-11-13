@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -165,5 +166,236 @@ func TestMainAgentPromptFromConfig(t *testing.T) {
 	s2 := &Server{cm: config.NewManager(filepath.Join(dir, "config.yaml"), cfg)}
 	if got := s2.mainAgentPrompt(); got != "CUSTOM PROMPT" {
 		t.Fatalf("override = %q", got)
+	}
+}
+
+// getMainAgentWorkerView calls the Settings read endpoint.
+func getMainAgentWorkerView(t *testing.T, s *Server) mainAgentWorkerView {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/main-agent/worker", nil)
+	w := httptest.NewRecorder()
+	s.handleMainAgentWorker(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get worker settings: code = %d, body=%s", w.Code, w.Body.String())
+	}
+	var view mainAgentWorkerView
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode worker settings: %v", err)
+	}
+	return view
+}
+
+// putMainAgentWorker calls the Settings write endpoint.
+func putMainAgentWorker(t *testing.T, s *Server, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/main-agent/worker", bytes.NewReader(raw))
+	w := httptest.NewRecorder()
+	s.handleSaveMainAgentWorker(w, req)
+	return w
+}
+
+// TestMainAgentWorkerSettingsOverride pins the runtime-setting precedence:
+// the Settings page wins over config.yaml, field by field, and the built-in
+// prompt interpolates the merged profile.
+func TestMainAgentWorkerSettingsOverride(t *testing.T) {
+	s, _ := createResidentServer(t)
+	no := false
+	s.cm.Get().MainAgent = &config.MainAgentConfig{Worker: config.WorkerDefaults{
+		CLI: "claude", Provider: "gw", Model: "m1", Effort: "low", Resident: &no,
+	}}
+
+	view := getMainAgentWorkerView(t, s)
+	if view.Worker.CLI != "claude" || view.Worker.Provider != "gw" ||
+		view.Worker.Model != "m1" || view.Worker.Effort != "low" ||
+		view.Worker.Resident == nil || *view.Worker.Resident {
+		t.Fatalf("initial effective worker = %+v", view.Worker)
+	}
+	if view.WorkerLine != "claude / gw / m1 / low / 非常驻" {
+		t.Fatalf("initial worker_line = %q", view.WorkerLine)
+	}
+	if view.Sources["effort"] != "config" || view.Sources["resident"] != "config" {
+		t.Fatalf("initial sources = %+v", view.Sources)
+	}
+	if view.PromptCustomized {
+		t.Fatal("prompt_customized = true without main_agent.prompt")
+	}
+	if p := s.mainAgentPrompt(); !strings.Contains(p, "默认 claude / gw / m1 / low / 非常驻") {
+		t.Fatalf("prompt did not interpolate config worker defaults:\n%s", p)
+	}
+
+	yes := true
+	w := putMainAgentWorker(t, s, map[string]any{
+		"cli": "claude", "provider": "gw", "model": "m1", "effort": "high", "resident": yes,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("save: code = %d, body=%s", w.Code, w.Body.String())
+	}
+	view = getMainAgentWorkerView(t, s)
+	if view.Worker.Effort != "high" || view.Worker.Resident == nil || !*view.Worker.Resident {
+		t.Fatalf("saved effective worker = %+v", view.Worker)
+	}
+	if view.Sources["effort"] != "setting" || view.Sources["resident"] != "setting" {
+		t.Fatalf("saved sources = %+v", view.Sources)
+	}
+	if view.WorkerLine != "claude / gw / m1 / high / 常驻" {
+		t.Fatalf("saved worker_line = %q", view.WorkerLine)
+	}
+	if p := s.mainAgentPrompt(); !strings.Contains(p, "默认 claude / gw / m1 / high / 常驻") {
+		t.Fatalf("prompt did not interpolate the runtime override:\n%s", p)
+	}
+}
+
+// TestMainAgentWorkerSettingsInheritAndClear: empty override fields inherit
+// config.yaml, and a full empty save clears the runtime layer again.
+func TestMainAgentWorkerSettingsInheritAndClear(t *testing.T) {
+	s, _ := createResidentServer(t)
+	yes := true
+	s.cm.Get().MainAgent = &config.MainAgentConfig{Worker: config.WorkerDefaults{
+		CLI: "claude", Provider: "gw", Model: "m1", Effort: "low", Resident: &yes,
+	}}
+
+	w := putMainAgentWorker(t, s, map[string]any{"effort": "max"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("save effort only: code = %d, body=%s", w.Code, w.Body.String())
+	}
+	view := getMainAgentWorkerView(t, s)
+	if view.Worker.CLI != "claude" || view.Worker.Provider != "gw" || view.Worker.Model != "m1" {
+		t.Fatalf("inherited fields = %+v", view.Worker)
+	}
+	if view.Worker.Effort != "max" || view.Sources["effort"] != "setting" {
+		t.Fatalf("effort override = %q (%s)", view.Worker.Effort, view.Sources["effort"])
+	}
+	if view.Worker.Resident == nil || !*view.Worker.Resident || view.Sources["resident"] != "config" {
+		t.Fatalf("resident did not inherit config: %+v / %s", view.Worker.Resident, view.Sources["resident"])
+	}
+	if view.WorkerLine != "claude / gw / m1 / max / 常驻" {
+		t.Fatalf("worker_line = %q", view.WorkerLine)
+	}
+
+	// A null resident (JSON null) and empty strings clear every override.
+	w = putMainAgentWorker(t, s, map[string]any{
+		"cli": "", "provider": "", "model": "", "effort": "", "resident": nil,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear: code = %d, body=%s", w.Code, w.Body.String())
+	}
+	view = getMainAgentWorkerView(t, s)
+	if view.Overrides.CLI != "" || view.Overrides.Provider != "" ||
+		view.Overrides.Model != "" || view.Overrides.Effort != "" || view.Overrides.Resident != nil {
+		t.Fatalf("overrides not cleared: %+v", view.Overrides)
+	}
+	if view.Worker.Effort != "low" || view.Sources["effort"] != "config" {
+		t.Fatalf("effort did not fall back to config: %q (%s)", view.Worker.Effort, view.Sources["effort"])
+	}
+}
+
+// TestMainAgentWorkerSettingsPersists: the override is written under the data
+// dir and a fresh Server (same config manager) reads it back — the Settings
+// page is server-side, not localStorage.
+func TestMainAgentWorkerSettingsPersists(t *testing.T) {
+	s, _ := createResidentServer(t)
+	w := putMainAgentWorker(t, s, map[string]any{
+		"cli": "claude", "provider": "gw", "model": "m1", "effort": "high",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("save: code = %d, body=%s", w.Code, w.Body.String())
+	}
+	path := filepath.Join(s.cfg().DataDir, filepath.FromSlash(mainAgentWorkerFile))
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("override file not written: %v", err)
+	}
+
+	s2 := &Server{cm: s.cm, st: s.st, mgr: s.mgr}
+	view := getMainAgentWorkerView(t, s2)
+	if view.Overrides.CLI != "claude" || view.Overrides.Provider != "gw" ||
+		view.Overrides.Model != "m1" || view.Overrides.Effort != "high" {
+		t.Fatalf("reloaded overrides = %+v", view.Overrides)
+	}
+	if p := s2.mainAgentPrompt(); !strings.Contains(p, "默认 claude / gw / m1 / high") {
+		t.Fatalf("reloaded prompt lost the override:\n%s", p)
+	}
+}
+
+// TestMainAgentWorkerSettingsValidation: invalid values are rejected with a
+// message and never persisted.
+func TestMainAgentWorkerSettingsValidation(t *testing.T) {
+	s, _ := createResidentServer(t)
+	cases := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"unknown cli", map[string]any{"cli": "nope"}, "未知 cli"},
+		{"unknown provider", map[string]any{"provider": "nope"}, "未知 provider"},
+		{"engine mismatch", map[string]any{"cli": "claude", "provider": "oc-p"}, "引擎不匹配"},
+		{"model without provider", map[string]any{"cli": "claude", "model": "m1"}, "先选择 provider"},
+		{"unknown model", map[string]any{"cli": "claude", "provider": "gw", "model": "nope"}, "未知模型"},
+		{"invalid effort", map[string]any{"cli": "claude", "provider": "gw", "model": "m1", "effort": "ultra"}, "invalid effort"},
+		{"resident non-claude", map[string]any{"cli": "oc", "provider": "oc-p", "resident": true}, "只有 claude"},
+		{"resident without cli", map[string]any{"resident": true}, "先选择 claude cli"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := putMainAgentWorker(t, s, tc.body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400 (body=%s)", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.want) {
+				t.Fatalf("error = %s, want %q", w.Body.String(), tc.want)
+			}
+			view := getMainAgentWorkerView(t, s)
+			if view.Overrides.CLI != "" || view.Overrides.Provider != "" ||
+				view.Overrides.Model != "" || view.Overrides.Effort != "" || view.Overrides.Resident != nil {
+				t.Fatalf("invalid save persisted: %+v", view.Overrides)
+			}
+		})
+	}
+}
+
+// TestMainAgentWorkerRoutes pins the authenticated routes the Settings page
+// uses (a handler-only test would not catch a missing mux registration).
+func TestMainAgentWorkerRoutes(t *testing.T) {
+	s, _ := createResidentServer(t)
+	s.mux = http.NewServeMux()
+	s.routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/main-agent/worker", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET route: code = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	raw, _ := json.Marshal(map[string]any{"effort": "high"})
+	req = httptest.NewRequest(http.MethodPut, "/api/main-agent/worker", bytes.NewReader(raw))
+	w = httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT route: code = %d, body=%s", w.Code, w.Body.String())
+	}
+	var view mainAgentWorkerView
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Overrides.Effort != "high" {
+		t.Fatalf("overrides = %+v", view.Overrides)
+	}
+}
+
+// TestMainAgentWorkerViewCustomPrompt: a custom main_agent.prompt wins over
+// the whole template, and the Settings view tells the UI so it can warn.
+func TestMainAgentWorkerViewCustomPrompt(t *testing.T) {
+	s, _ := createResidentServer(t)
+	s.cm.Get().MainAgent = &config.MainAgentConfig{Prompt: "CUSTOM"}
+	view := getMainAgentWorkerView(t, s)
+	if !view.PromptCustomized {
+		t.Fatal("prompt_customized = false with main_agent.prompt set")
+	}
+	if got := s.mainAgentPrompt(); got != "CUSTOM" {
+		t.Fatalf("prompt = %q", got)
 	}
 }

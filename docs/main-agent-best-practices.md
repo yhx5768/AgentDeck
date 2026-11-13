@@ -56,7 +56,7 @@ sequenceDiagram
 
 ### 3.1 默认配置
 
-> 主 Agent 建 worker 的默认档现在由 **`config.yaml` 的 `main_agent.worker`** 配（cli/provider/model/effort/resident），会被拼进预载的角色提示里；下表是 ducc 环境的一个样例，本机以 config 的 `clis`/`providers` 为准。
+> 主 Agent 建 worker 的默认档由**设置页「worker 默认档」**（服务端持久化，优先）或 **`config.yaml` 的 `main_agent.worker`** 配（cli/provider/model/effort/resident），会被拼进预载的角色提示里；设置页留空 = 继承 config。下表是 ducc 环境的一个样例，本机以 config 的 `clis`/`providers` 为准。
 
 | 项 | 默认值 | 说明 |
 |---|---|---|

@@ -13,18 +13,15 @@ import (
 // so the UI's "is this still the default?" comparison can never drift.
 //
 // The prompt is assembled from settings: the worker-default line is
-// interpolated from config.yaml's `main_agent.worker`, and a non-empty
-// `main_agent.prompt` replaces the built-in template entirely.
+// interpolated from the runtime Settings override first, then config.yaml's
+// `main_agent.worker`, and a non-empty `main_agent.prompt` replaces the
+// built-in template entirely.
 func (s *Server) mainAgentPrompt() string {
 	cfg := s.cfg()
 	if cfg != nil && cfg.MainAgent != nil && strings.TrimSpace(cfg.MainAgent.Prompt) != "" {
 		return cfg.MainAgent.Prompt
 	}
-	var worker string
-	if cfg != nil && cfg.MainAgent != nil {
-		worker = workerDefaultLine(cfg.MainAgent.Worker)
-	}
-	return buildMainAgentPrompt(worker)
+	return buildMainAgentPrompt(workerDefaultLine(s.effectiveWorkerDefaults()))
 }
 
 // workerDefaultLine renders the configured worker defaults as
