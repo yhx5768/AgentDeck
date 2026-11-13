@@ -23,6 +23,7 @@ let paFoldRaf = 0;
 function paIsPeer(n) { return n.nodeType === 1 && n.classList.contains('msg-peer') && !n.closest('.pa-fold'); }
 function paIsFold(n) { return n.nodeType === 1 && n.classList.contains('pa-fold'); }
 function paIsSilentFold(n) { return paIsFold(n) && n.classList.contains('silent'); }
+function paIsA2aFold(n) { return paIsFold(n) && n.classList.contains('a2a'); }
 
 // 主 Agent 的一步里有没有给人看的正文。只有工具卡 / thinking 的步骤是「静默」的。
 function paHasVisibleText(msg) {
@@ -70,13 +71,23 @@ function paToolMeta(tb) {
   if (PA_READ_TOOL.test(name)) return { type: 'read', name: name.split('__').pop(), sum };
   return { type: 'other', name: name.split('__').pop() || name || '工具', sum };
 }
-// 一个助手步骤：至少有一张工具卡（thinking 也算）。partial = 这条消息还有正文——正文留在对话流里，
-// 只把工具部分折到它下面；否则整条消息折进组里。没有工具卡返回 null。
+// 一个助手步骤：至少有一张工具卡（thinking 也算）。出站 A2A 发件卡（.tool-peer-send）单独分出来：
+// 它们是给人看的「发送」记录，不能跟普通工具一起埋进静默折叠。
+//   - sendOnly：整条消息只有发件卡（无正文、无其它工具）——可以整条进 A2A 发送组；
+//   - partial：消息里还有正文或发件卡要留在原处，只把 others（其它工具 / thinking）折起来；
+//   - 没有工具卡返回 null。
 function paStepOf(n) {
   if (n.nodeType !== 1 || !n.classList.contains('msg-assistant')) return null;
   const blocks = [...n.querySelectorAll(':scope > .bubble > .tool-block')];
   if (!blocks.length) return null;
-  return { msg: n, blocks, metas: blocks.map(paToolMeta), partial: paHasVisibleText(n) };
+  const sends = blocks.filter((b) => b.classList.contains('tool-peer-send'));
+  const others = blocks.filter((b) => !b.classList.contains('tool-peer-send'));
+  const text = paHasVisibleText(n);
+  return {
+    msg: n, blocks, sends, others, metas: others.map(paToolMeta),
+    partial: text || sends.length > 0,
+    sendOnly: sends.length > 0 && others.length === 0 && !text,
+  };
 }
 function paCountBy(list) {
   const m = new Map();
@@ -178,11 +189,11 @@ function paMakeStepRow(step) {
     head.setAttribute('aria-expanded', open ? 'true' : 'false');
   });
   if (step.partial) {
-    // 工具卡搬到组里，正文和消息壳留在对话流；还原时按这个引用放回去
+    // 只把「其它工具」搬到组里；正文和发件卡留在消息壳里；还原时按这个引用放回去
     const part = paEl('div', { class: 'pa-tool-part' });
-    part.append(...step.blocks);
+    part.append(...step.others);
     row.__paSrc = node;
-    row.__paBlocks = step.blocks;
+    row.__paBlocks = step.others;
     row.append(head, paEl('div', { class: 'pa-rep-b' }, part));
   } else {
     row.append(head, paEl('div', { class: 'pa-rep-b' }, node));
@@ -190,22 +201,89 @@ function paMakeStepRow(step) {
   return row;
 }
 
+// ---------- 出站 A2A 发送组 ----------
+// 发件卡是给人看的：单条保持原样可见；连续多条的 send-only 步骤才折成「N 条 A2A 发送」，
+// 头部保留收件人 / 任务 id / 预览，点开看每条原始发件卡（收件人跳转、markdown、投递结果都在卡里）。
+function paSendCards(msg) {
+  return [...msg.querySelectorAll(':scope > .bubble > .tool-peer-send')];
+}
+function paSendMeta(card) {
+  const to = String(card.dataset.peerSendTo || ((card.querySelector('.peer-send-head .peer-send-to') || {}).textContent || '')).trim();
+  const id = String(card.dataset.peerSendId || '').trim();
+  const text = String(((card.querySelector('.peer-send-msg') || {}).textContent) || '').trim();
+  const summary = String(((card.querySelector(':scope > summary .tool-summary-text') || {}).textContent) || '').trim();
+  const tag = paTagOf(text);
+  return {
+    to, id, tag, failed: card.classList.contains('peer-send-failed'),
+    preview: paClip(paFirstLine(paUntag(text)) || paFirstLine(text) || summary, 100),
+  };
+}
+function paMakeA2aRow(node) {
+  const metas = paSendCards(node).map(paSendMeta);
+  const ts = paParseTime(((node.querySelector('.msg-time') || {}).textContent || '').trim()) || Date.now();
+  const tos = [...new Set(metas.map((m) => m.to).filter(Boolean))];
+  const ids = [...new Set(metas.map((m) => m.id).filter(Boolean))];
+  const pv = paClip(metas.map((m) => m.preview).filter(Boolean).join('　'), 160);
+  const fail = metas.filter((m) => m.failed).length;
+  const row = paEl('div', { class: 'pa-rep a2a-send', dataset: {
+    ts: String(ts), n: String(metas.length), tos: JSON.stringify(tos), ids: JSON.stringify(ids), pv, fail: String(fail),
+  } });
+  const pills = [paEl('span', { class: 'w', text: '⇢' })];
+  metas[0] && metas[0].tag ? pills.push(paEl('span', { class: 'pa-pill v', text: metas[0].tag })) : null;
+  (tos.length ? tos.slice(0, 3) : ['A2A']).forEach((to) => pills.push(paEl('span', { class: 'pa-pill v', title: to, text: paClip(to, 14) })));
+  if (ids.length) pills.push(paEl('span', { class: 'pa-pill mono', title: ids.join(' · '), text: '#' + paClip(ids.join(' · #'), 26) }));
+  if (fail) pills.push(paEl('span', { class: 'pa-pill bad', text: '失败' }));
+  const head = paEl('button', { type: 'button', class: 'pa-rep-h', 'aria-expanded': 'false' },
+    paEl('time', { text: paHM(ts) }), ...pills, paEl('span', { class: 'tx', text: pv }));
+  head.addEventListener('click', () => {
+    const open = row.classList.toggle('open');
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  row.append(head, paEl('div', { class: 'pa-rep-b' }, node));
+  return row;
+}
+function paUpdateA2a(fold) {
+  const rows = [...fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep')];
+  const tos = new Set();
+  const ids = new Set();
+  let n = 0, fail = 0, pv = '';
+  rows.forEach((r) => {
+    n += +r.dataset.n || 0;
+    fail += +r.dataset.fail || 0;
+    try { JSON.parse(r.dataset.tos || '[]').forEach((x) => tos.add(x)); } catch (_) { /* 忽略坏数据 */ }
+    try { JSON.parse(r.dataset.ids || '[]').forEach((x) => ids.add(x)); } catch (_) { /* 忽略坏数据 */ }
+    if (!pv && r.dataset.pv) pv = r.dataset.pv;
+  });
+  const open = fold.classList.contains('open');
+  const head = fold.querySelector(':scope > .pa-fold-h');
+  head.textContent = '';
+  const chips = paEl('span', { class: 'ws' });
+  [...tos].slice(0, 5).forEach((to) => chips.append(paEl('span', { class: 'pa-pill v', title: to, text: paClip(to, 12) })));
+  [...ids].slice(0, 3).forEach((id) => chips.append(paEl('span', { class: 'pa-pill mono', title: id, text: '#' + paClip(id, 16) })));
+  if (fail) chips.append(paEl('span', { class: 'pa-pill bad', text: '失败 ×' + fail }));
+  head.append(paEl('span', { class: 'chev', html: paSvg('chevR', 's') }),
+    paEl('span', { class: 'pa-fold-t' },
+      paEl('b', { text: n + ' 条 A2A 发送' }),
+      pv ? paEl('span', { class: 'pv', text: pv }) : null,
+      paEl('span', { class: 'st', text: open ? '已展开' : '已折叠' })), chips);
+}
+
 function paMakeFold(kind) {
-  const fold = paEl('div', { class: 'pa-fold' + (kind === 'silent' ? ' silent' : '') });
+  const fold = paEl('div', { class: 'pa-fold' + (kind === 'silent' ? ' silent' : kind === 'a2a' ? ' a2a' : '') });
   const head = paEl('button', { type: 'button', class: 'pa-fold-h', 'aria-expanded': 'false' });
   head.addEventListener('click', (e) => {
     if (e.target.closest('.lk')) return;
     const open = fold.classList.toggle('open');
     head.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (fold.dataset.key) pa.foldOpen[fold.dataset.key] = open;
-    (paIsSilentFold(fold) ? paUpdateSilent : paUpdateFold)(fold);
+    (paIsSilentFold(fold) ? paUpdateSilent : paIsA2aFold(fold) ? paUpdateA2a : paUpdateFold)(fold);
   });
   fold.append(head, paEl('div', { class: 'pa-fold-b' }));
   return fold;
 }
 // 重算一组的头部：去重、计数、worker chip、已入「需要你」。
 function paUpdateFold(fold) {
-  const rows = [...fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep')];
+  const rows = [...fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep')].filter((r) => r.dataset.dk);
   const seen = new Map();
   let dups = 0;
   rows.forEach((r) => {
@@ -294,6 +372,7 @@ function paUpdateSilent(fold) {
 
 function paFoldRun(members, kind) {
   const silent = kind === 'silent';
+  const a2a = kind === 'a2a';
   const existing = members.find(paIsFold);
   const target = existing || paMakeFold(kind);
   const wasOpen = members.some((m) => paIsFold(m) && m.classList.contains('open'));
@@ -302,7 +381,7 @@ function paFoldRun(members, kind) {
     // 带正文的回复：正文留在原处，组挂在这条回复下面
     members[0].after(target);
   } else if (target !== members[0]) {
-    // 纯工具 / thinking 的步骤：组占这一段第一个位置，消息随后被搬进组里
+    // 纯工具 / thinking 的步骤 / 发件消息：组占这一段第一个位置，消息随后被搬进组里
     members[0].before(target);
   }
   const rows = [];
@@ -311,14 +390,15 @@ function paFoldRun(members, kind) {
     else if (silent) {
       const step = paStepOf(m);
       if (step) rows.push(paMakeStepRow(step));
-    } else rows.push(paMakeRow(m));
+    } else if (a2a) rows.push(paMakeA2aRow(m));
+    else rows.push(paMakeRow(m));
   });
   const body = target.querySelector(':scope > .pa-fold-b');
   body.textContent = '';
   body.append(...rows);
   members.forEach((m) => { if (paIsFold(m) && m !== target) m.remove(); });
   const first = rows[0];
-  target.dataset.key = first ? (silent ? 'silent' : first.dataset.from) + '@' + first.dataset.ts : '';
+  target.dataset.key = first ? (silent ? 'silent' : a2a ? 'a2a' : first.dataset.from) + '@' + first.dataset.ts : '';
   // 「加载更多」往前插了更早的回报，组的 key（第一条回报）会变；已展开的组不能因此合上
   const want = wasOpen || !!pa.foldOpen[target.dataset.key];
   if (want) pa.foldOpen[target.dataset.key] = true;
@@ -327,7 +407,7 @@ function paFoldRun(members, kind) {
     const h = target.querySelector(':scope > .pa-fold-h');
     if (h) h.setAttribute('aria-expanded', want ? 'true' : 'false');
   }
-  (silent ? paUpdateSilent : paUpdateFold)(target);
+  (silent ? paUpdateSilent : a2a ? paUpdateA2a : paUpdateFold)(target);
 }
 
 // 一次扫描处理两种组：worker 回报组（入站 peer 气泡）和静默步骤组（没有正文、只有工具 / thinking 的
@@ -353,8 +433,28 @@ function paFoldScan(box) {
     });
     return found.length;
   };
+  // 0) 出站 A2A 发送组：只折「连续 send-only 步骤、且总发送数 ≥2」；单条发件卡保持可见。
+  const ignorable = (n) => n.nodeType === 1 && (n.classList.contains('meta-line') || n.classList.contains('result-meta') || n.classList.contains('hidden'));
+  const sendFound = [];
+  let sendRun = null;
+  for (const n of [...box.children]) {
+    const step = !paIsFold(n) && n.nodeType === 1 && n.classList.contains('msg-assistant') ? paStepOf(n) : null;
+    if (paIsA2aFold(n) || (step && step.sendOnly)) {
+      if (!sendRun) { sendRun = []; sendFound.push(sendRun); }
+      sendRun.push(n);
+      continue;
+    }
+    if (!ignorable(n)) sendRun = null;
+  }
+  const runSends = (r) => r.reduce((sum, m) => sum + (paIsA2aFold(m)
+    ? [...m.querySelectorAll(':scope > .pa-fold-b > .pa-rep')].reduce((x, row) => x + (+row.dataset.n || 0), 0)
+    : paSendCards(m).length), 0);
+  sendFound.forEach((r) => {
+    if (r.length === 1 && paIsA2aFold(r[0])) paUpdateA2a(r[0]);
+    else if (runSends(r) >= 2) paFoldRun(r, 'a2a');
+  });
   repRuns = process('rep',
-    (n) => paIsPeer(n) || (paIsFold(n) && !paIsSilentFold(n)),
+    (n) => paIsPeer(n) || (paIsFold(n) && !paIsSilentFold(n) && !paIsA2aFold(n)),
     (n) => !(paIsSilent(n) || paIsSilentFold(n)));
   // 静默步骤：纯工具 / thinking 的连续步骤成组；带正文的步骤起新的一组（工具折到那条回复下面，
   // 正文不能跟着进组）。回报组 / 用户输入 / 正文回复是边界。
@@ -368,6 +468,8 @@ function paFoldScan(box) {
     }
     const step = paStepOf(n);
     if (step) {
+      // 发件卡 / 带正文的回复要留在对话流里，不能整条进静默组
+      if (step.sendOnly || !step.others.length) { run = null; continue; }
       if (step.partial) { run = [n]; found.push(run); }
       else { if (!run) { run = []; found.push(run); } run.push(n); }
       continue;
@@ -436,6 +538,6 @@ function agentUnfoldAll() {
 // 队列 / worker 状态变了，已折叠的组头部要跟着刷新（已入「需要你」的计数）
 function agentFoldRefresh() {
   const box = $('#messages');
-  if (box && agentModeOn()) box.querySelectorAll('.pa-fold:not(.silent)').forEach(paUpdateFold);
+  if (box && agentModeOn()) box.querySelectorAll('.pa-fold:not(.silent):not(.a2a)').forEach(paUpdateFold);
 }
 

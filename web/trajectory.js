@@ -71,7 +71,8 @@ function isA2ASendTool(name) {
 // 轨迹视图与对话流渲染共用这一个判定，两处对「是不是 A2A 发」永远一致。
 function a2aSendInfo(toolName, input) {
   if (isA2ASendTool(toolName)) {
-    return { to: String((input && input.to) || ''), message: String((input && input.message) || ''), native: true };
+    return { to: String((input && input.to) || ''), message: String((input && input.message) || ''),
+             send_id: String((input && (input.task_id || input.send_id)) || ''), native: true };
   }
   const code = input && (input.code || input.command);
   if (typeof code !== 'string') return null;
@@ -81,7 +82,8 @@ function a2aSendInfo(toolName, input) {
   if (!/agentdeck[._]+send_message\s*\(/i.test(code)) return null;
   const to = (code.match(/to\s*:\s*["'`]([^"'`]+)["'`]/) || [])[1] || '';
   const msg = (code.match(/message\s*:\s*["'`]([\s\S]*?)["'`]\s*[,}\n)]/) || [])[1] || '';
-  return { to, message: msg || code, native: false, code };
+  const sendId = (code.match(/send_id\s*:\s*["'`]([^"'`]+)["'`]/) || [])[1] || '';
+  return { to, message: msg || code, send_id: sendId, native: false, code };
 }
 
 // A2A（会话间消息）方向：in = 收到其他会话的 peer 消息，out = 调用发送工具

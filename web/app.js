@@ -6256,6 +6256,10 @@ function buildPeerSendView(input, details, body) {
   details.classList.add('tool-peer-send');
   body.classList.add('peer-send-body');
   const to = String(input.to || '');
+  // Personal Agent 的 A2A 发送折叠按这两个字段汇总收件人 / 任务 id（不改渲染）
+  details.dataset.peerSendTo = to;
+  const sendRef = String(input.send_id || '');
+  if (sendRef) details.dataset.peerSendId = sendRef;
   if (to) {
     const head = document.createElement('div');
     head.className = 'peer-send-head';

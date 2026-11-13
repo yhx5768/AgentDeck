@@ -5411,6 +5411,12 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
 .pa-fold.silent { background: transparent; }
 .pa-fold + .pa-fold.silent { margin-top: calc(-1 * var(--sp-3)); }
 .pa-rep.step .pa-rep-h .w { color: var(--dim); }
+/* 出站 A2A 发送组：紫色发件卡自己的组，头部保留收件人 / 任务 id / 预览 */
+.pa-fold.a2a { border-color: color-mix(in srgb, var(--thinking) 30%, var(--border)); background: color-mix(in srgb, var(--thinking) 5%, var(--bg2)); }
+.pa-rep.a2a-send .pa-rep-h .w { color: var(--thinking); font-weight: 700; }
+.pa-pill.mono { font-family: var(--font-mono); letter-spacing: -.01em; }
+.pa-pill.bad { color: var(--red); background: color-mix(in srgb, var(--red) 12%, var(--bg)); }
+.pa-fold-t .pv { color: var(--dim); max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 带正文的回复只把工具卡搬进组里（正文留在原处），组里的工具卡按列表排 */
 .pa-tool-part { display: grid; gap: var(--sp-2); }
 .pa-rep-b .pa-tool-part .tool-block { margin: 0; }
@@ -5435,6 +5441,7 @@ body.pa-on #messages .meta-line, body.pa-on #messages .result-meta { display: no
   .pa-af { padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
   .pa-say { line-height: 1.55; }
   .pa-say.clip { max-height: 7.8em; }
+  .pa-fold-t .pv { max-width: 100%; }
   .pa-af .perm-btn { height: 42px; flex: 1 1 auto; }
   .pa-acmp { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
   /* 原版手机端的输入框是贴视口底部的 fixed 浮岛，底部 tab 栏出现时要抬到它上面 */
