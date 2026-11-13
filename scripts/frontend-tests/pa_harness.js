@@ -101,7 +101,7 @@ function switchChatTab(tab) {
   document.querySelectorAll('.chat-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   agentOnTabSwitch(tab);
 }
-function scrollBottom() {}
+function scrollBottom() { window.__scrolled = (window.__scrolled || 0) + 1; }
 function pushToast(t) { window.__toasts.push(t); const el = document.createElement('div'); el.innerHTML = '<div class="toast-icon"></div><span class="toast-timer"></span>'; return { el, timers: [] }; }
 function dropToast(id) { window.__dropped.push(id); }
 function notifyPrefs() { return { sound: false }; }
@@ -136,6 +136,7 @@ function makeEnv(opts = {}) {
   w.__toasts = [];
   w.__dropped = [];
   w.__mdCalls = [];
+  w.__scrolled = 0;
   w.__api = opts.api || {};
   Object.defineProperty(w, 'innerWidth', { value: opts.width || 1440, configurable: true, writable: true });
   if (opts.mode) w.localStorage.setItem('cc-webui:mode', opts.mode);

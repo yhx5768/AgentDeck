@@ -857,6 +857,36 @@ function paFeedView(task) {
   boardRenderTimeline(task, { filters, timeline, filter: pa.ui.tf, onFilter: (k) => { pa.ui.tf = k; agentRenderAside(true); } });
   return [filters, timeline];
 }
+// 右栏底部的「在对话查看」：切到主 Agent 会话；手机 / 浮层顺手收起右栏（docked 保留右栏），
+// 强制滚到最新消息并给 chat 视图一个短暂的边框反馈（已经在该视图时也能看出点到了）。
+async function paGoChat() {
+  const ok = await agentShowView('chat');
+  if (!ok) return;
+  if (!paDocked()) paCloseAside();
+  else paSyncAside();
+  paJumpChat();
+}
+function paJumpChat() {
+  const view = $('#chat-view');
+  if (!view) return;
+  view.classList.remove('pa-jump');
+  void view.offsetWidth; // 重启动画
+  view.classList.add('pa-jump');
+  setTimeout(() => view.classList.remove('pa-jump'), 750);
+  const scroll = () => {
+    const box = $('#messages');
+    if (!box) return;
+    state.nearBottom = true; // scrollBottom() 平时只在贴底时跟随；这里是用户显式要求回到底部
+    box.scrollTop = box.scrollHeight;
+    if (typeof scrollBottom === 'function') scrollBottom();
+  };
+  scroll();
+  requestAnimationFrame(scroll);
+  setTimeout(scroll, 120);
+  setTimeout(scroll, 400);
+  setTimeout(scroll, 900);
+}
+
 // ---------- 常驻留言框 ----------
 // 给主 Agent 留言：带上选中卡片的上下文和结构化 board_task_id，服务端据此把主 Agent
 // 这一轮的最终回复自动写回卡片时间线（与看板抽屉里的 composer 同一条链路）。
@@ -910,7 +940,7 @@ function paRenderComposer() {
       ta, picker,
       paEl('button', { type: 'button', class: 'pa-csend', id: 'pa-csend', text: '发送', disabled: off || c.busy ? true : null, onclick: paSendNote })),
     paEl('div', { class: 'pa-cmeta' }, paEl('span', { text: 'Enter 发送 · Shift+Enter 换行' }), paEl('span', { class: 'pa-sp' }),
-      paEl('button', { type: 'button', class: 'pa-link', text: '在对话查看 ↗', onclick: () => agentShowView('chat') })));
+      paEl('button', { type: 'button', class: 'pa-link', text: '在对话查看 ↗', onclick: () => paGoChat() })));
   grow();
   if (foc) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
 }

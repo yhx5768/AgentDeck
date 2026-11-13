@@ -5381,6 +5381,12 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
 .pa-cmeta { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 0 2px; font-size: var(--fs-xs); color: var(--dim); }
 .pa-link { padding: 0; border: 0; background: none; color: var(--accent); font-size: var(--fs-xs); font-weight: 600; }
 .pa-link:hover { text-decoration: underline; }
+/* 「在对话查看」跳过去后给 chat 视图一个短暂的边框反馈：已经在该视图时也能看出点到了 */
+#chat-view.pa-jump { animation: pa-chat-jump 700ms var(--ease) 1; }
+@keyframes pa-chat-jump {
+  0% { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+  100% { box-shadow: inset 0 0 0 2px transparent; }
+}
 /* ---------- 主 Agent 会话：worker 回报折叠 ---------- */
 .pa-fold { max-width: 880px; margin: 0 auto var(--sp-5); border: 1px solid var(--border); border-radius: var(--r-xl); background: var(--bg2); animation: msg-in var(--t-normal) var(--ease); }
 .pa-fold-h { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border: 0; background: none; color: var(--dim); font-size: var(--fs-sm); text-align: left; }

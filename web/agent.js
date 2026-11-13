@@ -690,9 +690,9 @@ async function paCreateMainAgent(btn) {
 // ---------- 中栏切换 ----------
 // queue 是 #needs-view；chat / board 是主 Agent 会话 #chat-view 的两个 tab（真实 SSE）。
 function agentShowView(view) {
-  if (!agentModeOn()) return;
-  if (view === 'queue') paShowQueue();
-  else paShowMain(view === 'board' ? 'board' : 'chat');
+  if (!agentModeOn()) return false;
+  if (view === 'queue') return paShowQueue();
+  return paShowMain(view === 'board' ? 'board' : 'chat');
 }
 function paShowQueue() {
   if (typeof hideAllViews === 'function') hideAllViews();
@@ -705,10 +705,11 @@ function paShowQueue() {
   paRenderNav();
   agentRenderCluster();
   paSyncAside();
+  return true;
 }
 async function paShowMain(view) {
   const main = paPrimaryMain();
-  if (!main) { paShowQueue(); return; }
+  if (!main) { paShowQueue(); return false; }
   try {
     if (!state.current || state.current.id !== main.id) {
       await openSession(main.id);
@@ -721,7 +722,7 @@ async function paShowMain(view) {
     switchChatTab(view);
   } catch (e) {
     if (typeof pushToast === 'function') pushToast({ id: 'pa-open-main', title: '打开主 Agent 会话失败', body: (e && e.message) || String(e) });
-    return;
+    return false;
   }
   pa.view = view;
   pa.resumeQueue = false;
@@ -730,6 +731,7 @@ async function paShowMain(view) {
   paRenderNav();
   agentRenderCluster();
   paSyncAside();
+  return true;
 }
 
 // 以下三个由 app.js 在对应时机调（typeof 守卫，普通对话模式下全部空转）。
