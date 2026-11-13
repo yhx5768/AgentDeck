@@ -45,7 +45,7 @@ async function main() {
 
   console.log('右栏');
   ev("document.querySelector('#agent-aside').classList.remove('hidden'); pa.asideOpen = true; pa.ui.sel = ''; pa.ui.card = ''; agentRenderAside(true)");
-  check('没选卡片：空态说明怎么选', /选一张卡片/.test(doc.querySelector('#agent-aside .pa-empty').textContent) && !doc.querySelector('#agent-aside .pa-af'));
+  check('没有用户选择：默认就是最新「待人工」卡（不是空态）', ev('pa.ui.explicit') === false && /待人工/.test(doc.querySelector('.pa-ah').textContent) && /订单库分表迁移/.test(doc.querySelector('.pa-dt').textContent));
   check('常驻留言框始终在', !!doc.querySelector('#agent-aside #pa-cnote') && doc.querySelector('#pa-cnote').placeholder.includes('mainAgent'));
   ev("agentSelectItem('perm:p1')");
   check('权限门：卡片头 + 命令预览 + worker 说明', /进行中/.test(doc.querySelector('.pa-ah').textContent) && /git push/.test(doc.querySelector('.pa-cmd').textContent) && /覆盖远端分支/.test(doc.querySelector('.pa-say').textContent));
@@ -162,7 +162,7 @@ async function main() {
     { at: '2026-11-13 09:21:00', kind: '主 Agent 回复', text: '收到，退款链路先暂停', data: { turn_id: 't1' } },
     { at: '2026-11-13 09:30:00', kind: '评论', text: '单测 18/18 通过' },
   ])}`);
-  e5.ev("document.querySelector('#agent-aside').classList.remove('hidden'); pa.asideOpen = true; pa.view = 'queue'; pa.ui.card = 'refund'; pa.ui.sel = ''; pa.ui.tab = 'feed'; agentRenderAside(true)");
+  e5.ev("document.querySelector('#agent-aside').classList.remove('hidden'); pa.asideOpen = true; pa.view = 'queue'; agentOpenCard('refund'); pa.ui.tab = 'feed'; agentRenderAside(true)");
   const chips = () => [...e5.doc.querySelectorAll('#agent-aside .board-drawer-filters .board-filter-chip')].map((c) => c.textContent);
   check('筛选 chip 就是抽屉那套：全部 + 按事件类型（主 Agent 回复 / 用户消息 在前，其余按出现顺序）', J(chips()) === J(['全部 5', '主 Agent 回复 1', '用户消息 1', '建卡 1', '评论 2']), J(chips()));
   const row0 = e5.doc.querySelector('#agent-aside .board-drawer-timeline .board-drawer-event');
@@ -174,8 +174,41 @@ async function main() {
   check('点 chip 筛选：只剩这一类，chip 高亮', e5.doc.querySelectorAll('#agent-aside .board-drawer-event').length === 2 && e5.doc.querySelector('.board-filter-chip.active').textContent === '评论 2' && e5.ev('pa.ui.tf') === '评论');
   e5.ev("agentOpenCard('shard'); pa.ui.tab = 'feed'; agentRenderAside(true)");
   check('换一张卡，筛选回到「全部」（和抽屉一致）', e5.ev('pa.ui.tf') === 'all' && !!e5.doc.querySelector('.board-filter-chip.active') && /^全部/.test(e5.doc.querySelector('.board-filter-chip.active').textContent));
-  e5.ev("pa.ui.card = 'refund'; pa.ui.tab = 'ov'; agentRenderAside(true)");
+  e5.ev("agentOpenCard('refund'); pa.ui.tab = 'ov'; agentRenderAside(true)");
   check('概览里的「最近动态」是同一种行，只取最近 3 条', e5.doc.querySelectorAll('#agent-aside .pa-recent .board-drawer-event').length === 3);
+
+
+  console.log('展开态的折叠把手');
+  const e6 = mk({ name: 'Soar.AI' });
+  e6.ev("pa.asideOpen = true; pa.view = 'queue'; document.querySelector('#agent-aside').classList.remove('hidden'); paSyncAside()");
+  const h = e6.doc.querySelector('#pa-aside-handle');
+  check('展开：把手可见、切到面板左缘（collapse）、图标朝右收起', !h.classList.contains('hidden') && h.classList.contains('collapse') && h.title === '收起右栏');
+  check('可访问：aria-label=收起右栏、aria-expanded=true、指向右栏', h.getAttribute('aria-label') === '收起右栏' && h.getAttribute('aria-expanded') === 'true' && h.getAttribute('aria-controls') === 'agent-aside');
+  check('是原生 button（键盘可达）', h.tagName === 'BUTTON' && h.type === 'button' && h.tabIndex === 0);
+  check('角标 = 待办数', !!h.querySelector('b') && h.querySelector('b').textContent === '5');
+  check('右上角 × 还在，两类关闭都可用', !!e6.doc.querySelector('#agent-aside .pa-xclose'));
+  h.focus();
+  check('键盘焦点能落在把手上', e6.doc.activeElement === h);
+  h.click();
+  check('点折叠把手 → 右栏收起（和 × 同一条关闭语义）', e6.doc.querySelector('#agent-aside').classList.contains('hidden') && e6.ev('pa.asideOpen') === false && e6.ev('pa.ui.explicit') === false);
+  check('收起后把手回到右缘、变成展开、角标还在', !h.classList.contains('collapse') && !h.classList.contains('hidden') && h.getAttribute('aria-label') === '展开卡片详情' && h.querySelector('b').textContent === '5');
+  check('收起后队列重新给右缘让位（pa-handle-on）', e6.doc.body.classList.contains('pa-handle-on'));
+  e6.ev('pa.needs.counts.all = 2; paRenderHandle()');
+  check('待办数变了，把手角标跟着刷新', h.querySelector('b').textContent === '2');
+  h.click();
+  check('再点展开 → 右栏回来、把手回到面板左缘、aria 变回收起', !e6.doc.querySelector('#agent-aside').classList.contains('hidden') && h.classList.contains('collapse') && h.getAttribute('aria-label') === '收起右栏');
+  check('展开时不给右缘让位（pa-handle-on 撤掉）', !e6.doc.body.classList.contains('pa-handle-on'));
+  e6.ev("agentOnSessionOpened(state.sessions.find(x => x.id === 's-pay'))");
+  check('worker 会话收起右栏时，把手也不显示', h.classList.contains('hidden'));
+  e6.ev("agentOnSessionOpened(state.sessions.find(x => x.main_agent))");
+  Object.defineProperty(e6.w, 'innerWidth', { value: 1024, configurable: true });
+  e6.ev("pa.asideOpen = true; pa.asideShown = true; paSyncAside()");
+  check('浮层展开：不显示左缘 tab（不压遮罩下的内容），靠右上角 × / 点遮罩关', h.classList.contains('hidden'));
+  e6.ev("pa.asideShown = false; paSyncAside()");
+  check('浮层收起：把手回到右缘可展开', !h.classList.contains('hidden') && !h.classList.contains('collapse') && h.getAttribute('aria-label') === '展开卡片详情');
+  Object.defineProperty(e6.w, 'innerWidth', { value: 390, configurable: true });
+  e6.ev('paRenderHandle()');
+  check('手机 sheet 不显示折叠 tab（靠右上角 × / 左上角返回）', h.classList.contains('hidden'));
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);

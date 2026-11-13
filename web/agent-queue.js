@@ -168,10 +168,25 @@ function paQueueGroupHead(g) {
 // 选中项消失（别处作答 / 超时）就挪到当前第一项；刚作答的条目靠 pin 留住，回执还要给人看。
 function paEnsureSel() {
   if (!agentModeOn() || pa.view !== 'queue') return;
+  // 用户显式选中的卡可能没有队列条目（比如一张没有 needs-you 待办的待人工卡）：别用「第一条」把它顶掉。
+  // 选中项彻底失效（条目没了、卡也没有）时才交还默认规则。
+  if (pa.ui.explicit) {
+    const sel = pa.ui.sel || '';
+    const selOk = !sel || (sel.startsWith('done:')
+      ? pa.done.some((d) => 'done:' + d.id === sel)
+      : !!paItemById(sel));
+    if (selOk && (sel || pa.ui.card)) return;
+    if (typeof paClearExplicit === 'function') paClearExplicit();
+    pa.ui.sel = '';
+    pa.ui.card = '';
+  }
   const flat = paQueueFlat();
   const ok = (id) => id && flat.some((x) => (x.kind && x.state ? x.id : 'done:' + x.id) === id);
   if (ok(pa.ui.sel) || (pa.ui.pin && pa.ui.sel === pa.ui.pin)) return;
-  const first = flat.find((x) => x.state) || null;
+  // 没有用户选择时，默认焦点是「最新待人工」卡：队列也停在它上面，两边不打架
+  const def = typeof paNewestBlockedTask === 'function' ? paNewestBlockedTask() : null;
+  const prefer = def ? flat.find((x) => x.state && x.task_id === def.id) : null;
+  const first = prefer || flat.find((x) => x.state) || null;
   if (first) { pa.ui.sel = first.id; pa.ui.card = first.task_id || ''; pa.ui.tab = 'ov'; }
   else if (pa.ui.sel) { pa.ui.sel = ''; }
 }
@@ -185,6 +200,8 @@ function agentSelectItem(id, opts) {
   pa.ui.sel = id;
   pa.ui.card = (isDone ? it.taskId : it.task_id) || '';
   pa.ui.tab = 'ov';
+  // 右栏临时跟随这次选择。右栏关着时的键盘移动（reveal:false）不算：重新打开仍回到最新待人工。
+  if (opts.reveal !== false || paAsideVisible()) paMarkExplicit(isDone ? { task_id: it.taskId } : it);
   agentRenderQueue(true);
   agentRenderCluster();
   paSyncAside(opts.reveal !== false);

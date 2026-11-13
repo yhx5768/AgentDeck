@@ -68,10 +68,14 @@ function paHideAside() {
   document.body.classList.remove('pa-aside-on', 'pa-aside-sheet', 'pa-handle-on');
   pa.asideShown = false;
   paSyncMask(false);
+  paClearExplicit();
 }
 function paCloseAside() {
   if (paDocked()) { pa.asideOpen = false; paSet(PA_ASIDE_KEY, 'closed'); }
   else pa.asideShown = false;
+  // 关闭 = 放弃这次临时跟随；重新打开回到「最新待人工」
+  paResetFocusToDefault();
+  if (typeof agentRenderQueue === 'function') agentRenderQueue(true);
   paSyncAside();
   agentRenderCluster();
 }
@@ -80,13 +84,21 @@ function paCloseAside() {
 function paRenderHandle() {
   const h = $('#pa-aside-handle');
   if (!h) return;
-  const show = paAsideAllowed() && !paAsideVisible() && !paIsMobile();
+  const open = paAsideVisible();
+  // 右栏收起时把手在右缘（展开）；桌面并排展开时挪到面板左缘（收起）。浮层展开时它
+  // 会压在遮罩下的内容上，就不显示（用右上角 × / 点遮罩关）；手机整屏 sheet 也不用。
+  const show = paAsideAllowed() && !paIsMobile() && (!open || paDocked());
   h.classList.toggle('hidden', !show);
-  document.body.classList.toggle('pa-handle-on', show); // 队列给把手让出右边缘，别把行尾的时间 / 说明盖住
+  h.classList.toggle('collapse', show && open);
+  document.body.classList.toggle('pa-handle-on', show && !open); // 收起时队列给右缘把手让位
   if (!show) return;
   const n = pa.needs.counts.all || 0;
-  h.innerHTML = paSvg('panelR') + (n ? '<b>' + (n > 9 ? '9+' : n) + '</b>' : '');
-  h.onclick = () => paSyncAside(true);
+  h.innerHTML = paSvg(open ? 'chevR' : 'panelR', open ? 'l' : '') + (n ? '<b>' + (n > 9 ? '9+' : n) + '</b>' : '');
+  h.title = open ? '收起右栏' : '展开卡片详情';
+  h.setAttribute('aria-label', h.title);
+  h.setAttribute('aria-expanded', open ? 'true' : 'false');
+  h.setAttribute('aria-controls', 'agent-aside');
+  h.onclick = () => (open ? paCloseAside() : paSyncAside(true));
 }
 
 // 手机底部三标签（对话 / 需要你 / 看板），桌面不显示。
@@ -121,6 +133,7 @@ function agentOpenCard(taskId, itemId) {
   pa.ui.sel = pick ? pick.id : '';
   pa.ui.pin = '';
   pa.ui.tab = 'ov';
+  paMarkExplicit({ task_id: taskId });
   state.boardSelectedId = taskId;
   document.querySelectorAll('.board-card').forEach((el) => {
     el.classList.toggle('board-card-selected', el.dataset.taskId === taskId);
@@ -141,24 +154,97 @@ function paWorkerOf(task) {
   if (!task) return null;
   return (task.session && paSessionById(task.session)) || (task.worker && paSessionByAddr(task.worker)) || null;
 }
+// ---------- 焦点：默认「最新待人工」 ----------
+// 没有用户显式选中时，右栏常驻显示最新一张「待人工」卡：有 needs-you 待办的卡优先（右栏在那里
+// 能直接作答），其余按 updated_at 倒序；同刻按 id 稳定排序。
+function paNewestBlockedTask() {
+  const list = paBoardTasks().filter((t) => t && t.status === '待人工');
+  if (!list.length) return null;
+  const rank = (t) => [paItemsOfTask(t.id).length ? 1 : 0, paParseTime(t.updated_at) || 0];
+  list.sort((a, b) => {
+    const ra = rank(a), rb = rank(b);
+    if (ra[0] !== rb[0]) return rb[0] - ra[0];
+    if (ra[1] !== rb[1]) return rb[1] - ra[1];
+    return String(a.id).localeCompare(String(b.id));
+  });
+  return list[0];
+}
+function paFocusCardId() { return paAsideFocus().taskId || ''; }
+function paClearExplicit() { pa.ui.explicit = false; pa.ui.explicitBlocked = false; }
+// 用户点了队列行 / 看板卡 / 头像：右栏临时跟随。它是不是「待人工」卡要记下来——之后这张卡被
+// 处理掉（离开待人工）焦点就交还默认规则；选的是别的状态的卡（比如待验收）则一直跟到关闭 / 换选。
+function paMarkExplicit(it) {
+  pa.ui.explicit = true;
+  const t = it && (it.task_id ? paTaskById(it.task_id) : (it.id ? paTaskById(it.id) : null));
+  pa.ui.explicitBlocked = !!(t && t.status === '待人工');
+}
+// 回到默认焦点：选中项跟着指到那张卡上的第一条待办，队列高亮和右栏保持一致。
+function paResetFocusToDefault() {
+  paClearExplicit();
+  const t = paNewestBlockedTask();
+  pa.ui.pin = '';
+  pa.ui.tab = 'ov';
+  pa.ui.defaultCard = t ? t.id : '';
+  if (t) {
+    const it = paItemsOfTask(t.id)[0];
+    pa.ui.card = t.id;
+    pa.ui.sel = it ? it.id : '';
+  } else {
+    pa.ui.card = '';
+    pa.ui.sel = '';
+  }
+}
+// 默认焦点换了一张卡（不是用户点的）：队列高亮跟过去，两边不打架。只在默认卡变化时同步，
+// 不覆盖用户用 j/k 在队列里移动出来的选中。
+function paSyncDefaultSelection(t) {
+  const id = t ? t.id : '';
+  if (pa.ui.defaultCard === id) return;
+  pa.ui.defaultCard = id;
+  if (!t) return;
+  const it = paItemsOfTask(t.id)[0];
+  pa.ui.card = t.id;
+  pa.ui.sel = it ? it.id : '';
+  pa.ui.pin = '';
+  if (typeof agentRenderQueue === 'function') agentRenderQueue();
+}
+// 当前该显示什么：显式焦点（失效就作废、交还默认）→ 最新待人工 → 空。
+function paAsideFocus() {
+  if (pa.ui.explicit) {
+    const sel = pa.ui.sel || '';
+    const done = sel.startsWith('done:') ? (pa.done.find((d) => 'done:' + d.id === sel) || null) : null;
+    const item = done ? null : paItemById(sel);
+    const cardId = pa.ui.card || (item && item.task_id) || (done && done.taskId) || '';
+    const card = cardId ? paTaskById(cardId) : null;
+    // 卡不在快照里（已归档 / 快照没加载）不算失效：照旧显示「找不到这张卡」，等用户关掉或换选
+    const stale = done ? false
+      : (!cardId && !item) || (pa.ui.explicitBlocked && card && card.status !== '待人工');
+    if (!stale) {
+      let focus = item && (!cardId || item.task_id === cardId) ? item : null;
+      if (!focus && !done && cardId) focus = paItemsOfTask(cardId)[0] || null;
+      return { taskId: cardId, task: card, item: focus, done, explicit: true };
+    }
+    // 卡被处理掉 / 不在快照里了：不留在一条已经没有动作的卡上
+    paResetFocusToDefault();
+    if (typeof agentRenderQueue === 'function') agentRenderQueue();
+  }
+  const t = paNewestBlockedTask();
+  paSyncDefaultSelection(t);
+  return { taskId: t ? t.id : '', task: t, item: null, done: null, explicit: false };
+}
+
 function paAsideModel() {
-  const sel = pa.ui.sel || '';
-  let done = null;
-  let item = null;
-  if (sel.startsWith('done:')) done = pa.done.find((d) => 'done:' + d.id === sel) || null;
-  else item = paItemById(sel);
-  const taskId = pa.ui.card || (item && item.task_id) || (done && done.taskId) || '';
-  const task = taskId ? paTaskById(taskId) : null;
-  // 焦点条目：选中的待办（要属于这张卡），否则这张卡上最急的一条
-  let focus = item && (!taskId || item.task_id === taskId) ? item : null;
-  if (!focus && !done && taskId) focus = paItemsOfTask(taskId)[0] || null;
-  return { taskId, task, item: focus, done, openOnCard: taskId ? paItemsOfTask(taskId) : (focus ? [focus] : []) };
+  const f = paAsideFocus();
+  const taskId = f.taskId;
+  const task = f.task;
+  let focus = f.item;
+  if (!focus && !f.done && taskId) focus = paItemsOfTask(taskId)[0] || null;
+  return { taskId, task, item: focus, done: f.done, openOnCard: taskId ? paItemsOfTask(taskId) : (focus ? [focus] : []) };
 }
 function paAsideSig(m) {
   const t = m.task;
   const w = paWorkerOf(t);
   return [
-    pa.ui.sel, pa.ui.card, pa.ui.tab, pa.ui.tf,
+    pa.ui.sel, pa.ui.card, pa.ui.explicit, pa.ui.tab, pa.ui.tf,
     m.item ? m.item.id + '|' + m.item.state + '|' + m.item.title : '',
     m.done ? m.done.id + '|' + m.done.steps.map((s) => s.ok).join('') : '',
     t ? [t.id, t.status, t.updated_at, (t.timeline || []).length, (t.artifacts || []).length, t.progress].join(',') : (m.taskId ? 'missing:' + !!state.agentBoard : ''),
@@ -227,7 +313,7 @@ function paAsideHeader(m) {
     left.push(paEl('h2', { class: 'pa-h2', text: '卡片详情' }));
   }
   return paEl('header', { class: 'pa-ah' },
-    paEl('button', { type: 'button', class: 'icon-btn pa-back', title: '返回', 'aria-label': '返回', html: paSvg('back'), onclick: paCloseAside }),
+    paEl('button', { type: 'button', class: 'icon-btn pa-back', title: '收起右栏', 'aria-label': '收起右栏', html: paSvg('back'), onclick: paCloseAside }),
     left, paEl('span', { class: 'pa-sp' }),
     w ? paEl('button', { type: 'button', class: 'icon-btn', title: '打开 ' + w.name + ' 的会话\n次要入口：作答和跟进都能在这张卡里完成', 'aria-label': '打开 worker 会话', html: paSvg('arrowUR'), onclick: () => openSession(w.id) }) : null,
     paEl('button', { type: 'button', class: 'icon-btn pa-xclose', title: '关闭右栏', 'aria-label': '关闭右栏', html: paSvg('x'), onclick: paCloseAside }));
@@ -607,6 +693,10 @@ async function paDo(it, spec) {
   pa.ui.sel = 'done:' + d.id;
   pa.ui.pin = pa.ui.sel;
   pa.ui.card = d.taskId || pa.ui.card;
+  // 刚处理完的这条停在自己的回执上（不立刻跳走）；关闭或换选后回到默认规则。
+  // 后台被别人处理掉的卡（不是在这里操作的）会照规则自动切到下一张待人工。
+  pa.ui.explicit = true;
+  pa.ui.explicitBlocked = false;
   paAfterNeeds();
   agentRefreshNeeds();
   paEnsureBoard(true);

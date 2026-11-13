@@ -5171,14 +5171,19 @@ body.board-preview-open { overflow: hidden; }
 .pa-live { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--red); animation: pulse .9s infinite; }
 .pa-live + .pa-cnt { margin-left: 6px; }
 /* ---------- 布局：右栏 / 重开入口 / 手机标签栏 ---------- */
-.pa-aside { flex: none; display: flex; flex-direction: column; width: 400px; min-width: 0; min-height: 0; background: var(--bg); border-left: 1px solid var(--border); }
+.pa-aside { flex: none; display: flex; flex-direction: column; width: var(--pa-aside-w, 400px); min-width: 0; min-height: 0; background: var(--bg); border-left: 1px solid var(--border); }
 .pa-aside.hidden { display: none; }
+body.pa-on { --pa-aside-w: 400px; }
 .pa-aside:not(.pa-docked) { position: fixed; z-index: 58; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); box-shadow: -14px 0 36px rgba(0, 0, 0, .18); animation: pa-aside-in 200ms var(--ease); }
 @keyframes pa-aside-in { from { transform: translateX(24px); opacity: 0; } }
 #app:has(#ws-panel:not(.ws-panel-closed)) #agent-aside.pa-docked { display: none; }
 .pa-aside-main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pa-aside-handle { position: fixed; z-index: 44; right: 0; top: 50%; transform: translateY(-50%); width: 28px; height: 68px; padding: 0; border: 1px solid var(--border); border-right: 0; border-radius: var(--r-xl) 0 0 var(--r-xl); background: var(--bg2); color: var(--dim); box-shadow: var(--shadow-md); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: color var(--t-fast) var(--ease), width var(--t-fast) var(--ease); }
+/* 展开态：同一颗把手挪到面板左缘，图标朝右（收起）；不压面板内容，也不挡抽屉 resizer（在面板里侧）。
+   只在并排（docked）时出现；浮层展开用右上角 × / 遮罩关。 */
+.pa-aside-handle.collapse { z-index: 60; right: var(--pa-aside-w, 400px); }
 .pa-aside-handle:hover { color: var(--fg); width: 34px; }
+.pa-aside-handle:focus-visible { color: var(--fg); width: 34px; outline: 2px solid var(--accent); outline-offset: -2px; }
 .pa-aside-handle b { min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-full); background: var(--red); color: #fff; font-size: 10px; line-height: 16px; text-align: center; }
 .pa-aside-handle.hidden { display: none; }
 body:not(.pa-on) .pa-aside-handle, body:not(.pa-on) .pa-tabbar { display: none; }
@@ -5388,10 +5393,10 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
 .pa-rep-b .msg { margin: 0; max-width: none; animation: none; }
 .pa-rep-b .msg-peer .bubble { max-width: none; }
 .pa-fold.fresh { animation: pa-flash 1.8s ease-out; }
-/* 看板操作组：比回报组更轻（透明底），紧贴在它下面 */
-.pa-fold.ops { background: transparent; }
-.pa-fold + .pa-fold.ops { margin-top: calc(-1 * var(--sp-3)); }
-.pa-rep.op .pa-rep-h .w { color: var(--dim); }
+/* 静默步骤组：比回报组更轻（透明底），紧贴在它下面 */
+.pa-fold.silent { background: transparent; }
+.pa-fold + .pa-fold.silent { margin-top: calc(-1 * var(--sp-3)); }
+.pa-rep.step .pa-rep-h .w { color: var(--dim); }
 .pa-rep-b .msg-assistant .bubble { max-width: none; }
 
 /* ---------- 窄屏 / 手机 ---------- */
@@ -5407,7 +5412,6 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
   .pa-aside:not(.pa-docked) { inset: 0; width: auto; z-index: 62; box-shadow: none; border-left: 0; animation: pa-sheet-in 220ms var(--ease); }
   @keyframes pa-sheet-in { from { transform: translateY(24px); opacity: 0; } }
   .pa-back { display: inline-flex; }
-  .pa-xclose { display: none; }
   .pa-ah { padding-top: env(safe-area-inset-top, 0px); height: calc(52px + env(safe-area-inset-top, 0px)); }
   .pa-af { padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
   .pa-af .perm-btn { height: 42px; flex: 1 1 auto; }

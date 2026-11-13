@@ -64,7 +64,7 @@ const HTML = `<!doctype html><html><body>
     </div>
   </main>
   <aside id="agent-aside" class="pa-aside hidden"></aside>
-  <button id="pa-aside-handle" class="pa-aside-handle hidden"></button>
+  <button id="pa-aside-handle" class="pa-aside-handle hidden" type="button" title="展开卡片详情" aria-label="展开卡片详情"></button>
   <nav id="pa-tabbar" class="pa-tabbar hidden"></nav>
 </div>
 <div id="modal-settings"><button id="btn-settings"></button>

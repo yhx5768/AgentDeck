@@ -147,7 +147,8 @@ async function main() {
 
   env = fresh();
   ({ w, doc, ev } = env);
-  ev("pa.ui.sel = ''; pa.ui.card = ''; agentRenderAside(true)");
+  // 没有待人工卡时右栏才是「没选卡片」的空态；有待人工时默认焦点就是它（见 needs_focus）
+  ev("pa.ui.sel = ''; pa.ui.card = ''; pa.ui.explicit = false; state.agentBoard.tasks.forEach(t => { if (t.status === '待人工') t.status = '进行中' }); agentRenderAside(true)");
   ta().value = '汇总一下今天的进展';
   ta().dispatchEvent(new w.Event('input'));
   await ev('paSendNote()');

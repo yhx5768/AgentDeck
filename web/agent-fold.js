@@ -8,9 +8,10 @@
  *   - 同一 worker、同一正文的重复入站（A2A 总线与 Claude 原生 peer 两条路径各来一次、
  *     重放与实时各来一次）只算一条，多出来的藏起来并在头部标注「去重 N」；
  *   - 展开后每条回报一行摘要，点开才是原始气泡（保留 md 渲染）。
- * 主 Agent 自己处理回报时调的看板工具（board_comment / board_update …，或 Bash 里的 agentdeck board …）
- * 一轮下来是一长串几乎一样的工具卡：「纯看板操作」的助手步骤（没有正文、工具全是看板操作）单独折成一组
- * 「N 次看板操作」，同样默认折叠、点开看每一步；带正文的回复、混着别的工具的步骤都不动。
+ * 主 Agent 自己执行时的「静默步骤」（没有正文、只有工具调用 / thinking）同样会刷屏：连续的一段折成
+ * 一组「N 个工具调用 · M 步操作」，默认折叠、点开看每一步（每步一行摘要，点开才是原始工具卡）。
+ * 头部按工具类型小计（看板 / 读取会话 / Bash / 其他）；整段都是看板操作时改给动作小计（评论 ×N、
+ * 更新 ×N）。thinking 一起收进组里，不单独刷屏；带正文的回复、用户输入、worker 回报组不折。
  * 只在 DOM 层做，不改任何事件、不影响主 Agent 的上下文；关掉 Personal Agent 模式会原样还原。
  * 对 replay / 实时 / 「加载更多」都幂等：扫整个 #messages，已折叠的组会被识别并合并。
  */
@@ -21,7 +22,7 @@ let paFoldRaf = 0;
 
 function paIsPeer(n) { return n.nodeType === 1 && n.classList.contains('msg-peer') && !n.closest('.pa-fold'); }
 function paIsFold(n) { return n.nodeType === 1 && n.classList.contains('pa-fold'); }
-function paIsOpsFold(n) { return paIsFold(n) && n.classList.contains('ops'); }
+function paIsSilentFold(n) { return paIsFold(n) && n.classList.contains('silent'); }
 
 // 主 Agent 的一步里有没有给人看的正文。只有工具卡 / thinking 的步骤是「静默」的。
 function paHasVisibleText(msg) {
@@ -43,14 +44,15 @@ function paIsSilent(n) {
   return false;
 }
 
-// ---------- 看板操作的识别 ----------
+// ---------- 静默步骤 / 工具分类 ----------
 const PA_BOARD_TOOL = /(?:^|__|\.)board_(list|get|create|update|comment|bind_worker)$/i; // agentdeck MCP：mcp__agentdeck__board_comment
 const PA_BOARD_CMD = /\bagentdeck(?:\.py)?\s+board\s+([\w-]+)/i; // Bash：agentdeck board comment --task …
+const PA_READ_TOOL = /(?:^|__|\.)(get_session|read_session_messages|search_messages|list_sessions)$/i;
 const PA_VERB = { comment: '评论', update: '更新', create: '建卡', get: '读取', list: '列表', bind_worker: '派工', status: '状态', assign: '派工', artifact: '产物', archive: '归档' };
+const PA_TYPES = [['board', '看板'], ['read', '读取会话'], ['bash', 'Bash'], ['other', '其他']];
 
-// 一张工具卡是不是看板操作：是就返回 { verb, input, sum }，否则 null。
-function paBoardCall(tb) {
-  if (tb.classList.contains('thinking-block')) return null;
+function paToolMeta(tb) {
+  if (tb.classList.contains('thinking-block')) return { type: 'thinking', name: '思考', sum: '' };
   const txt = (sel) => ((tb.querySelector(sel) || {}).textContent || '').trim();
   const name = txt(':scope > summary .tool-name');
   const sum = txt(':scope > summary .tool-summary-text');
@@ -58,22 +60,28 @@ function paBoardCall(tb) {
   if (m) {
     let input = null;
     try { input = JSON.parse(txt(':scope > .tool-body')); } catch (_) { /* 摘要里有就够用 */ }
-    return { verb: m[1].toLowerCase(), input: input && typeof input === 'object' ? input : null, sum };
+    return { type: 'board', verb: m[1].toLowerCase(), name: 'board_' + m[1].toLowerCase(), sum, input: input && typeof input === 'object' ? input : null };
   }
   if (/^bash$/i.test(name)) {
     const c = PA_BOARD_CMD.exec(sum);
-    if (c) return { verb: c[1].toLowerCase(), input: null, sum };
+    if (c) return { type: 'board', verb: c[1].toLowerCase(), name: 'Bash', sum, input: null };
+    return { type: 'bash', name: 'Bash', sum };
   }
-  return null;
+  if (PA_READ_TOOL.test(name)) return { type: 'read', name: name.split('__').pop(), sum };
+  return { type: 'other', name: name.split('__').pop() || name || '工具', sum };
 }
-// 「纯看板操作」步骤：助手消息里没有正文、至少有一张工具卡、而且每张（thinking 不算）都是看板操作。
-// 返回这些调用，不是就返回 null。
-function paOpCalls(n) {
+// 一个「静默步骤」= 没有正文、至少有一张工具卡（thinking 也算）的助手消息。返回各工具卡的分类；
+// 带正文 / 没有工具卡的步骤返回 null（不折）。
+function paSilentStep(n) {
   if (n.nodeType !== 1 || !n.classList.contains('msg-assistant') || paHasVisibleText(n)) return null;
-  const tbs = [...n.querySelectorAll(':scope > .bubble > .tool-block')].filter((t) => !t.classList.contains('thinking-block'));
-  if (!tbs.length) return null;
-  const calls = tbs.map(paBoardCall);
-  return calls.every(Boolean) ? calls : null;
+  const blocks = [...n.querySelectorAll(':scope > .bubble > .tool-block')];
+  if (!blocks.length) return null;
+  return blocks.map(paToolMeta);
+}
+function paCountBy(list) {
+  const m = new Map();
+  list.forEach((k) => m.set(k, (m.get(k) || 0) + 1));
+  return [...m.entries()].map(([k, v]) => k + ':' + v).join(',');
 }
 
 function paPeerFrom(node) {
@@ -127,14 +135,41 @@ function paOpText(c) {
   t = String(t).replace(/\s+/g, ' ').trim();
   return (card ? paClip(card, 16) + ' · ' : '') + paClip(t, 100);
 }
-function paMakeOpRow(node, calls) {
+
+// 一个静默步骤在折叠组里的一行：时间 + 这步在干什么（看板操作给动作，混合工具给工具名 / 摘要，
+// 只有 thinking 就给「思考」和第一行）。
+function paMakeStepRow(node, metas) {
   const ts = paParseTime(((node.querySelector('.msg-time') || {}).textContent || '').trim()) || Date.now();
-  const verbs = calls.map((c) => c.verb);
-  const row = paEl('div', { class: 'pa-rep op', dataset: { ts: String(ts), n: String(calls.length), verbs: verbs.join(',') } });
+  const calls = metas.filter((m) => m.type !== 'thinking');
+  const think = metas.length - calls.length;
+  const pure = calls.length > 0 && calls.every((c) => c.type === 'board');
+  let w, pill, tx;
+  if (!calls.length) {
+    w = '思考';
+    pill = '思考';
+    tx = paFirstLine(((node.querySelector('.thinking-block .tool-body') || {}).textContent || '')) || '这一步只有思考';
+  } else if (pure) {
+    w = '看板';
+    pill = [...new Set(calls.map((c) => PA_VERB[c.verb] || c.verb))].join(' / ');
+    tx = calls.map(paOpText).join('　');
+  } else {
+    w = '工具';
+    pill = calls.length + ' 个工具';
+    tx = calls.map((c) => c.name + (c.sum ? ' · ' + c.sum : '')).join('　');
+  }
+  tx = paClip(String(tx).replace(/\s+/g, ' ').trim(), 180);
+  const types = {};
+  calls.forEach((c) => { types[c.type] = (types[c.type] || 0) + 1; });
+  const typesStr = Object.entries(types).map(([k, v]) => k + ':' + v).join(',');
+  const verbsStr = calls.filter((c) => c.type === 'board').length
+    ? paCountBy(calls.filter((c) => c.type === 'board').map((c) => c.verb)) : '';
+  const row = paEl('div', { class: 'pa-rep step', dataset: {
+    ts: String(ts), n: String(calls.length), think: String(think), pure: pure ? '1' : '0', types: typesStr, verbs: verbsStr,
+  } });
   const head = paEl('button', { type: 'button', class: 'pa-rep-h', 'aria-expanded': 'false' },
-    paEl('time', { text: paHM(ts) }), paEl('span', { class: 'w', text: '看板' }),
-    paEl('span', { class: 'pa-pill', text: [...new Set(verbs)].map((v) => PA_VERB[v] || v).join(' / ') }),
-    paEl('span', { class: 'tx', text: calls.map(paOpText).join('　') }));
+    paEl('time', { text: paHM(ts) }), paEl('span', { class: 'w', text: w }),
+    paEl('span', { class: 'pa-pill', text: pill }),
+    paEl('span', { class: 'tx', text: tx }));
   head.addEventListener('click', () => {
     const open = row.classList.toggle('open');
     head.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -144,14 +179,14 @@ function paMakeOpRow(node, calls) {
 }
 
 function paMakeFold(kind) {
-  const fold = paEl('div', { class: 'pa-fold' + (kind === 'ops' ? ' ops' : '') });
+  const fold = paEl('div', { class: 'pa-fold' + (kind === 'silent' ? ' silent' : '') });
   const head = paEl('button', { type: 'button', class: 'pa-fold-h', 'aria-expanded': 'false' });
   head.addEventListener('click', (e) => {
     if (e.target.closest('.lk')) return;
     const open = fold.classList.toggle('open');
     head.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (fold.dataset.key) pa.foldOpen[fold.dataset.key] = open;
-    (paIsOpsFold(fold) ? paUpdateOps : paUpdateFold)(fold);
+    (paIsSilentFold(fold) ? paUpdateSilent : paUpdateFold)(fold);
   });
   fold.append(head, paEl('div', { class: 'pa-fold-b' }));
   return fold;
@@ -204,23 +239,49 @@ function paUpdateFold(fold) {
   head.append(paEl('span', { class: 'chev', html: paSvg('chevR', 's') }), titleEl, chips);
 }
 
-// 看板操作组的头部：总次数 + 按动作分的小计。
-function paUpdateOps(fold) {
+// 静默步骤组的头部：总工具调用 / 步数 + 类型小计；整组都是看板操作时改给动作小计。
+function paUpdateSilent(fold) {
   const rows = [...fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep')];
-  const n = rows.reduce((sum, r) => sum + (+r.dataset.n || 1), 0);
-  const by = new Map();
-  rows.forEach((r) => (r.dataset.verbs || '').split(',').filter(Boolean).forEach((v) => by.set(v, (by.get(v) || 0) + 1)));
+  let calls = 0, think = 0, any = false, pure = true;
+  const types = new Map();
+  const verbs = new Map();
+  rows.forEach((r) => {
+    const n = +r.dataset.n || 0;
+    calls += n;
+    think += +r.dataset.think || 0;
+    if (n) any = true;
+    if (r.dataset.pure !== '1') pure = false;
+    (r.dataset.types || '').split(',').filter(Boolean).forEach((p) => {
+      const [k, v] = p.split(':');
+      types.set(k, (types.get(k) || 0) + (+v || 1));
+    });
+    (r.dataset.verbs || '').split(',').filter(Boolean).forEach((p) => {
+      const [k, v] = p.split(':');
+      verbs.set(k, (verbs.get(k) || 0) + (+v || 1));
+    });
+  });
+  pure = pure && any; // 至少有一个调用，且全部是看板操作
   const open = fold.classList.contains('open');
   const head = fold.querySelector(':scope > .pa-fold-h');
   head.textContent = '';
   const chips = paEl('span', { class: 'ws' });
-  [...by.entries()].slice(0, 5).forEach(([v, c]) => chips.append(paEl('span', { class: 'pa-pill', text: (PA_VERB[v] || v) + (c > 1 ? ' ×' + c : '') })));
+  if (pure) {
+    [...verbs.entries()].slice(0, 6).forEach(([v, n]) => chips.append(paEl('span', { class: 'pa-pill', text: (PA_VERB[v] || v) + (n > 1 ? ' ×' + n : '') })));
+  } else {
+    PA_TYPES.forEach(([k, label]) => {
+      const n = types.get(k) || 0;
+      if (n) chips.append(paEl('span', { class: 'pa-pill', text: label + (n > 1 ? ' ×' + n : '') }));
+    });
+    if (!calls && think) chips.append(paEl('span', { class: 'pa-pill', text: '思考 ×' + think }));
+  }
   head.append(paEl('span', { class: 'chev', html: paSvg('chevR', 's') }),
-    paEl('span', { class: 'pa-fold-t' }, paEl('b', { text: n + ' 次看板操作' }), paEl('span', { class: 'st', text: open ? '已展开' : '已折叠' })), chips);
+    paEl('span', { class: 'pa-fold-t' },
+      paEl('b', { text: calls ? calls + ' 个工具调用 · ' + rows.length + ' 步操作' : rows.length + ' 步思考' }),
+      paEl('span', { class: 'st', text: open ? '已展开' : '已折叠' })), chips);
 }
 
 function paFoldRun(members, kind) {
-  const ops = kind === 'ops';
+  const silent = kind === 'silent';
   const existing = members.find(paIsFold);
   const target = existing || paMakeFold(kind);
   const wasOpen = members.some((m) => paIsFold(m) && m.classList.contains('open'));
@@ -229,14 +290,14 @@ function paFoldRun(members, kind) {
   const rows = [];
   members.forEach((m) => {
     if (paIsFold(m)) rows.push(...m.querySelectorAll(':scope > .pa-fold-b > .pa-rep'));
-    else rows.push(ops ? paMakeOpRow(m, paOpCalls(m)) : paMakeRow(m));
+    else rows.push(silent ? paMakeStepRow(m, paSilentStep(m) || []) : paMakeRow(m));
   });
   const body = target.querySelector(':scope > .pa-fold-b');
   body.textContent = '';
   body.append(...rows);
   members.forEach((m) => { if (paIsFold(m) && m !== target) m.remove(); });
   const first = rows[0];
-  target.dataset.key = first ? (ops ? 'ops' : first.dataset.from) + '@' + first.dataset.ts : '';
+  target.dataset.key = first ? (silent ? 'silent' : first.dataset.from) + '@' + first.dataset.ts : '';
   // 「加载更多」往前插了更早的回报，组的 key（第一条回报）会变；已展开的组不能因此合上
   const want = wasOpen || !!pa.foldOpen[target.dataset.key];
   if (want) pa.foldOpen[target.dataset.key] = true;
@@ -245,35 +306,39 @@ function paFoldRun(members, kind) {
     const h = target.querySelector(':scope > .pa-fold-h');
     if (h) h.setAttribute('aria-expanded', want ? 'true' : 'false');
   }
-  (ops ? paUpdateOps : paUpdateFold)(target);
+  (silent ? paUpdateSilent : paUpdateFold)(target);
 }
 
-// 一次扫描只处理一种组：回报组（入站 peer 气泡）或看板操作组（纯看板操作的助手步骤）。
-// 两种组互不打断——对另一种来说，它们和别的静默步骤一样是「透明」的；用户输入、主 Agent 的正文回复切开轮次。
+// 一次扫描处理两种组：worker 回报组（入站 peer 气泡）和静默步骤组（没有正文、只有工具 / thinking 的
+// 连续助手步骤）。回报组对静默步骤透明（回报可以跨过静默步骤连成一轮）；静默组以回报组 / 用户输入 /
+// 正文回复为边界，不跨过去吞内容。
 function paFoldScan(box) {
-  let runs = 0;
-  ['rep', 'ops'].forEach((kind) => {
-    const isMember = kind === 'ops'
-      ? (n) => paIsOpsFold(n) || (!paIsFold(n) && !!paOpCalls(n))
-      : (n) => paIsPeer(n) || (paIsFold(n) && !paIsOpsFold(n));
+  let repRuns = 0;
+  const process = (kind, isMember, isBarrier) => {
     const found = [];
     let run = null;
     for (const n of [...box.children]) {
       if (isMember(n)) {
         if (!run) { run = []; found.push(run); }
         run.push(n);
-      } else if (!(paIsSilent(n) || paIsFold(n) || paIsPeer(n))) {
+      } else if (isBarrier(n)) {
         run = null;
       }
     }
     // 只有一个已折叠的组、没有新来的：不用重建，只刷新头部（worker 状态可能变了）
     found.forEach((r) => {
-      if (r.length === 1 && paIsFold(r[0])) (kind === 'ops' ? paUpdateOps : paUpdateFold)(r[0]);
+      if (r.length === 1 && paIsFold(r[0])) (kind === 'silent' ? paUpdateSilent : paUpdateFold)(r[0]);
       else paFoldRun(r, kind);
     });
-    if (kind === 'rep') runs = found.length;
-  });
-  if (runs && pa.unseen) paRenderNav();
+    return found.length;
+  };
+  repRuns = process('rep',
+    (n) => paIsPeer(n) || (paIsFold(n) && !paIsSilentFold(n)),
+    (n) => !(paIsSilent(n) || paIsSilentFold(n)));
+  process('silent',
+    (n) => paIsSilentFold(n) || (!paIsFold(n) && !paIsPeer(n) && !!paSilentStep(n)),
+    (n) => !paIsSilent(n));
+  if (repRuns && pa.unseen) paRenderNav();
 }
 
 // ---------- 对外挂点（app.js 里 typeof 守卫调用） ----------
@@ -309,6 +374,6 @@ function agentUnfoldAll() {
 // 队列 / worker 状态变了，已折叠的组头部要跟着刷新（已入「需要你」的计数）
 function agentFoldRefresh() {
   const box = $('#messages');
-  if (box && agentModeOn()) box.querySelectorAll('.pa-fold:not(.ops)').forEach(paUpdateFold);
+  if (box && agentModeOn()) box.querySelectorAll('.pa-fold:not(.silent)').forEach(paUpdateFold);
 }
 
