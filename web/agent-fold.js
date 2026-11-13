@@ -12,8 +12,9 @@
  * 一组「N 个工具调用 · M 步操作」，默认折叠、点开看每一步（每步一行摘要，点开才是原始工具卡）。
  * 头部按工具类型小计（看板 / 读取会话 / Bash / 其他）；整段都是看板操作时改给动作小计（评论 ×N、
  * 更新 ×N）。thinking 一起收进组里，不单独刷屏；带正文的回复、用户输入、worker 回报组不折。
- * 出站 A2A 发件卡（含单条）单独折成「N 条 A2A 发送」，默认折叠，组头保留收件人 / 任务 id /
- * 预览 / 失败标记；只有 send-only 步骤成组，带正文的混合步骤仍把正文和发件卡留在原处。
+ * 出站 A2A 发件卡（含单条）单独折成「N 条 A2A 发送」，默认展开一层（组头 + 每条摘要行），
+ * 组头保留收件人 / 任务 id / 预览 / 失败标记，用户可手动折叠；只有 send-only 步骤成组，
+ * 带正文的混合步骤仍把正文和发件卡留在原处。
  * 只在 DOM 层做，不改任何事件、不影响主 Agent 的上下文；关掉 Personal Agent 模式会原样还原。
  * 对 replay / 实时 / 「加载更多」都幂等：扫整个 #messages，已折叠的组会被识别并合并。
  */
@@ -402,10 +403,10 @@ function paFoldRun(members, kind) {
   const first = rows[0];
   target.dataset.key = first ? (silent ? 'silent' : a2a ? 'a2a' : first.dataset.from) + '@' + first.dataset.ts : '';
   const key = target.dataset.key;
-  // worker 回报组默认展开（回报重要）；静默步骤和 A2A 发送组仍默认折叠。
-  // 用户手动折叠过就按 pa.foldOpen 的显式状态来；「加载更多」前插更早的回报会让组 key 变，
+  // worker 回报组和 A2A 发送组默认展开；静默步骤组仍默认折叠。
+  // 用户手动折叠/展开过就按 pa.foldOpen 的显式状态来；「加载更多」前插更早的内容会让组 key 变，
   // existing 的 DOM 展开状态优先，所以不会把用户折叠的组又撑开。
-  const openByDefault = !silent && !a2a;
+  const openByDefault = !silent;
   const want = existing
     ? (wasOpen || !!(key && pa.foldOpen[key]))
     : (key && (key in pa.foldOpen) ? !!pa.foldOpen[key] : openByDefault);
@@ -441,7 +442,7 @@ function paFoldScan(box) {
     });
     return found.length;
   };
-  // 0) 出站 A2A 发送组：每一段连续 send-only 步骤都折（含单条），默认折叠。
+  // 0) 出站 A2A 发送组：每一段连续 send-only 步骤都折（含单条），默认展开一层、显示每条摘要行。
   const ignorable = (n) => n.nodeType === 1 && (n.classList.contains('meta-line') || n.classList.contains('result-meta') || n.classList.contains('hidden'));
   const sendFound = [];
   let sendRun = null;

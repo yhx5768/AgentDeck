@@ -51,7 +51,7 @@ async function main() {
   const b = build(doc);
   b.user('开始');
   b.peer('w·支付重构', '【进度】回调幂等键已加', T0 + 1000);
-  // 单条发送：也折进独立的 A2A 发送组，默认折叠
+  // 单条发送：也折进独立的 A2A 发送组，默认展开一层
   const solo = b.asst(b.sendHtml('w·支付重构', '【派工】跟进退款卡剩余事项', 'solo-refund'), '10:00:01');
   b.text('已安排支付重构跟进。', '10:00:02');
   // 两条连续 send-only：并进同一个 A2A 发送组（第二条投递失败）
@@ -69,42 +69,41 @@ async function main() {
   const a2a = () => [...doc.querySelectorAll('#messages > .pa-fold.a2a')];
   const rep = () => [...doc.querySelectorAll('#messages > .pa-fold:not(.silent):not(.a2a)')];
   const silent = () => [...doc.querySelectorAll('#messages > .pa-fold.silent')];
-  check('单条 A2A 发送也折进独立组，默认折叠，对话流里不再直接露出发件卡', a2a().length === 3
-    && solo.closest('.pa-fold') === a2a()[0] && solo.parentElement !== b.box && !a2a()[0].classList.contains('open'));
+  check('单条 A2A 发送也折进独立组，默认展开，组头 + 一行摘要可见', a2a().length === 3
+    && solo.closest('.pa-fold') === a2a()[0] && solo.parentElement !== b.box
+    && a2a()[0].classList.contains('open')
+    && a2a()[0].querySelector('.pa-fold-h').getAttribute('aria-expanded') === 'true');
   const soloHead = a2a()[0].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
   check('单条组头部：1 条 A2A 发送 + 收件人 chip + 任务 id + 预览', /^1 条 A2A 发送/.test(soloHead)
     && /支付重构/.test(soloHead) && /solo-refund/.test(soloHead) && /跟进退款卡剩余事项/.test(soloHead)
-    && /已折叠/.test(soloHead), soloHead);
-  check('单条组里一行摘要，点开才看原始发件卡', a2a()[0].querySelectorAll('.pa-rep.a2a-send').length === 1
+    && /已展开/.test(soloHead), soloHead);
+  check('单条组默认展开时原始发件卡在组内，但摘要行仍收起', a2a()[0].querySelectorAll('.pa-rep.a2a-send').length === 1
     && /solo-refund/.test(a2a()[0].querySelector('.pa-rep.a2a-send').textContent)
-    && !a2a()[0].querySelector('.pa-rep.open'));
+    && !a2a()[0].querySelector('.pa-rep.a2a-send').classList.contains('open')
+    && !!a2a()[0].querySelector('.pa-rep-b > .msg-assistant .tool-peer-send'));
   a2a()[0].querySelector('.pa-fold-h').click();
   const soloKey = a2a()[0].dataset.key;
-  check('展开单条组后是原始发件卡（收件人 / 正文 / 投递结果所在节点）', a2a()[0].classList.contains('open')
-    && a2a()[0].querySelector('.pa-fold-h').getAttribute('aria-expanded') === 'true'
-    && a2a()[0].querySelector('.pa-rep-b > .msg-assistant > .bubble > .tool-peer-send') === solo.querySelector('.tool-peer-send')
-    && /跟进退款卡剩余事项/.test(a2a()[0].textContent));
-  check('手动展开状态记进 pa.foldOpen，扫描不覆盖', ev(`pa.foldOpen[${J(soloKey)}]`) === true
-    && /已展开/.test(a2a()[0].querySelector('.pa-fold-h').textContent));
+  check('手动折叠单条组：状态记进 pa.foldOpen', !a2a()[0].classList.contains('open')
+    && ev(`pa.foldOpen[${J(soloKey)}]`) === false
+    && /已折叠/.test(a2a()[0].querySelector('.pa-fold-h').textContent));
   ev('agentFoldNow()');
-  check('重复扫描保持手动展开', a2a()[0].classList.contains('open') && ev(`pa.foldOpen[${J(soloKey)}]`) === true);
-  check('两条连续发送折成独立的「2 条 A2A 发送」组，默认折叠', a2a().length === 3 && !a2a()[1].classList.contains('open'));
+  check('重复扫描保持手动折叠', !a2a()[0].classList.contains('open') && ev(`pa.foldOpen[${J(soloKey)}]`) === false);
+  check('两条连续发送折成独立的「2 条 A2A 发送」组，默认展开', a2a().length === 3 && a2a()[1].classList.contains('open'));
   const h = a2a()[1].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
-  check('组头部：N 条 A2A 发送 + 收件人 chip + 任务 id + 预览', /^2 条 A2A 发送/.test(h)
-    && /支付重构/.test(h) && /登录改版/.test(h) && /dispatch-refund/.test(h) && /退款失败口径确认/.test(h), h);
+  check('组头部：N 条 A2A 发送 + 收件人 chip + 任务 id + 预览 + 已展开', /^2 条 A2A 发送/.test(h)
+    && /支付重构/.test(h) && /登录改版/.test(h) && /dispatch-refund/.test(h) && /退款失败口径确认/.test(h)
+    && /已展开/.test(h), h);
   check('组头标出投递失败', /失败 ×1/.test(h), h);
   check('组里每条一行：收件人 / id / 预览，点开才看原始发件卡', a2a()[1].querySelectorAll('.pa-rep.a2a-send').length === 2
     && /dispatch-login/.test(a2a()[1].querySelectorAll('.pa-rep.a2a-send')[1].textContent)
     && /风控文案继续推进/.test(a2a()[1].querySelectorAll('.pa-rep.a2a-send')[1].textContent)
-    && !a2a()[1].querySelector('.pa-rep-b .tool-peer-send').closest('.open'));
-  a2a()[1].querySelector('.pa-fold-h').click();
-  check('点头部展开，组内恢复原始发件卡（markdown/收件人/结果都在卡里）', a2a()[1].classList.contains('open')
-    && a2a()[1].querySelectorAll('.pa-rep-b > .msg-assistant .tool-peer-send').length === 2
-    && /dispatch-login/.test(a2a()[1].textContent));
+    && [...a2a()[1].querySelectorAll('.pa-rep.a2a-send')].every((r) => !r.classList.contains('open'))
+    && a2a()[1].querySelectorAll('.pa-rep-b > .msg-assistant .tool-peer-send').length === 2);
   a2a()[1].querySelectorAll('.pa-rep-h')[1].click();
   check('点一行展开发件卡', a2a()[1].querySelectorAll('.pa-rep')[1].classList.contains('open') && !!a2a()[1].querySelectorAll('.pa-rep')[1].querySelector('.peer-send-to'));
   const h2 = a2a()[2].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
-  check('一条消息里两张发件卡也算 2 条，成一个组、一行', a2a()[2].querySelectorAll('.pa-rep.a2a-send').length === 1 && /^2 条 A2A 发送/.test(h2) && two.closest('.pa-fold') === a2a()[2], h2);
+  check('一条消息里两张发件卡也算 2 条，成一个默认展开的组、一行', a2a()[2].classList.contains('open')
+    && a2a()[2].querySelectorAll('.pa-rep.a2a-send').length === 1 && /^2 条 A2A 发送/.test(h2) && two.closest('.pa-fold') === a2a()[2], h2);
   check('混合步骤：正文和发件卡留在消息里，其它工具折到下面', mixed.parentElement === b.box && !!mixed.querySelector('.tool-peer-send')
     && !mixed.querySelector('.tool-block:not(.tool-peer-send)') && mixed.nextElementSibling === silent()[0]
     && silent()[0].querySelectorAll('.pa-rep.step').length === 1 && !silent()[0].querySelector('.tool-peer-send'));
@@ -113,31 +112,33 @@ async function main() {
   const snapshot = b.box.innerHTML;
   ev('agentFoldNow()');
   check('重复扫描幂等', b.box.innerHTML === snapshot);
-  // load more：在第一个 A2A 组（单条组）前插一条更早的发送，并进同一组且保持手动展开
+  // load more：在已手动折叠的单条组前插一条更早的发送，合并后必须保持折叠
   const early = b.asst(b.sendHtml('w·对账脚本', '【派工】对账脚本继续重跑', 'early-recon'), '09:59:00');
   const target = a2a()[0];
   target.before(early);
   ev('agentFoldNow()');
   const after = a2a()[0];
-  check('前插更早的发送并进同一组，计数增加，手动展开不被重置', a2a().length === 3
+  check('前插更早的发送并进手动折叠的组，计数增加但保持折叠', a2a().length === 3
     && after.querySelectorAll('.pa-rep.a2a-send').length === 2
     && /^2 条 A2A 发送/.test(after.querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' '))
-    && after.classList.contains('open') && ev(`pa.foldOpen[${J(after.dataset.key)}]`) === true);
-  // 手动折叠后，实时新来的发送并进同一组也不能把它撑开
+    && !after.classList.contains('open') && ev(`pa.foldOpen[${J(after.dataset.key)}]`) === false);
+  // 手动展开后，实时新来的发送并进同一组也不能覆盖展开状态
   after.querySelector('.pa-fold-h').click();
-  const collapsedKey = after.dataset.key;
-  check('手动折叠状态记进 pa.foldOpen', !after.classList.contains('open') && ev(`pa.foldOpen[${J(collapsedKey)}]`) === false);
+  const expandedKey = after.dataset.key;
+  check('手动展开合并后的组，状态记进 pa.foldOpen', after.classList.contains('open')
+    && /已展开/.test(after.querySelector('.pa-fold-h').textContent)
+    && ev(`pa.foldOpen[${J(expandedKey)}]`) === true);
   const live = b.asst(b.sendHtml('w·对账脚本', '【催办】对账脚本最新进度', 'live-recon'), '10:25:00');
   after.after(live);
   ev('agentFoldNow()');
   const afterLive = a2a()[0];
-  check('实时新发送并进手动折叠的组，计数增加但不强制展开', a2a().length === 3
+  check('实时新发送并进手动展开的组，计数增加且保持展开', a2a().length === 3
     && afterLive.querySelectorAll('.pa-rep.a2a-send').length === 3
     && /^3 条 A2A 发送/.test(afterLive.querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' '))
-    && !afterLive.classList.contains('open') && ev(`pa.foldOpen[${J(afterLive.dataset.key)}]`) === false);
-  const closedSnap = b.box.innerHTML;
+    && afterLive.classList.contains('open') && ev(`pa.foldOpen[${J(afterLive.dataset.key)}]`) === true);
+  const openSnap = b.box.innerHTML;
   ev('agentFoldNow()');
-  check('重复扫描保持手动折叠', b.box.innerHTML === closedSnap && !a2a()[0].classList.contains('open'));
+  check('重复扫描保持手动展开', b.box.innerHTML === openSnap && a2a()[0].classList.contains('open'));
   ev('agentUnfoldAll()');
   check('还原：折叠组全拆掉，发件卡回到原消息里', doc.querySelectorAll('.pa-fold').length === 0
     && solo.parentElement === b.box && early.parentElement === b.box && live.parentElement === b.box
