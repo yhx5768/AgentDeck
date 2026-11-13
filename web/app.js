@@ -7449,15 +7449,130 @@ function setErrorBanner(text, opts) {
 // 会话上传目录里，经 /api/sessions/{id}/uploads/{name} 取回（server 的
 // handleSessionUpload）。乐观气泡用的是本地 base64，回放/刷新后走这里，所以切
 // 会话回来图片仍在。
+//
+// 排版：正文在上、图片在下成块。单图放大展示（宽不超气泡、高封顶），多图走
+// 等宽两列网格（最后一行不足时左对齐）。每张图裹一个 <button>：天然可 Tab
+// 聚焦、Enter/空格打开；加载中显示骨架、失败显示占位图标；点击开页面级灯箱。
+function userImageSrc(name) {
+  return `/api/sessions/${state.current.id}/uploads/${encodeURIComponent(name)}`;
+}
+
+// 单图展示上限，与 style.css 里 .user-imgs.n1 .user-img .thumb 的 max-* 保持一致。
+const USER_IMG_MAX_W = 360;
+const USER_IMG_MAX_H = 340;
+
+// 单图在加载完成后按原始比例算一个落定的宽度并写成行内样式：否则 CSS 里的
+// max-width:100% 在 shrink-to-fit 阶段会被当成 none，内联块会按原图宽度撑开，
+// 图片右边留出一条空白。高度交给 aspect-ratio（宽已定 + height:auto）与
+// max-height:340px 兜底；宽度的 max-width:100% 让窄屏还能等比缩小。
+function sizeSingleUserImage(im) {
+  const nw = im.naturalWidth || 0;
+  const nh = im.naturalHeight || 0;
+  if (!nw || !nh) return;
+  const scale = Math.min(USER_IMG_MAX_W / nw, USER_IMG_MAX_H / nh, 1);
+  im.style.width = Math.max(1, Math.round(nw * scale)) + 'px';
+}
+
+function buildUserImage(src, label) {
+  const wrap = document.createElement('button');
+  wrap.type = 'button';
+  wrap.className = 'user-img loading';
+  wrap.setAttribute('aria-label', label);
+  const im = document.createElement('img');
+  im.className = 'thumb';
+  im.alt = '';
+  im.decoding = 'async';
+  im.src = src;
+  im.addEventListener('load', () => {
+    const boxEl = wrap.parentElement;
+    if (boxEl && boxEl.classList.contains('n1')) sizeSingleUserImage(im);
+    wrap.classList.remove('loading');
+  }, { once: true });
+  im.addEventListener('error', () => {
+    wrap.classList.remove('loading');
+    wrap.classList.add('error');
+    wrap.setAttribute('aria-label', '图片加载失败');
+  }, { once: true });
+  wrap.appendChild(im);
+  wrap.addEventListener('click', () => {
+    if (!wrap.classList.contains('error')) openUserImageLightbox(src, label);
+  });
+  return wrap;
+}
+
+function appendUserImages(bubble, srcs) {
+  const box = document.createElement('div');
+  box.className = 'user-imgs n' + Math.min(srcs.length, 4);
+  srcs.forEach((src, i) => {
+    box.appendChild(buildUserImage(src, '查看图片 ' + (i + 1) + '/' + srcs.length));
+  });
+  bubble.appendChild(box);
+}
+
 function renderUserImages(bubble, names) {
   if (!Array.isArray(names) || !names.length || !state.current) return;
-  for (const name of names) {
-    const im = document.createElement('img');
-    im.className = 'thumb';
-    im.src = `/api/sessions/${state.current.id}/uploads/${encodeURIComponent(name)}`;
-    im.alt = '';
-    bubble.appendChild(im);
-  }
+  appendUserImages(bubble, names.map((name) => userImageSrc(name)));
+}
+
+// 正文在上、图片在下：两条路径（回放/实时与乐观气泡）都按这个顺序追加。
+function appendUserContent(bubble, text, names) {
+  if (text) bubble.appendChild(document.createTextNode(text));
+  renderUserImages(bubble, names);
+}
+
+// 页面级图片灯箱：所有用户消息图片共用一份，第一次点击才创建。Esc / 点遮罩 /
+// 关闭按钮都能关；关闭后把焦点还给刚才那张缩略图。
+let userImgLightbox = null;
+let userImgLightboxReturnFocus = null;
+
+function ensureUserImageLightbox() {
+  if (userImgLightbox) return userImgLightbox;
+  const mask = document.createElement('div');
+  mask.className = 'user-img-lightbox hidden';
+  mask.setAttribute('role', 'dialog');
+  mask.setAttribute('aria-modal', 'true');
+  mask.setAttribute('aria-label', '图片预览');
+  const im = document.createElement('img');
+  im.alt = '';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'uib-close';
+  close.setAttribute('aria-label', '关闭预览');
+  close.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+  close.addEventListener('click', closeUserImageLightbox);
+  mask.appendChild(im);
+  mask.appendChild(close);
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask) closeUserImageLightbox();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !mask.classList.contains('hidden')) {
+      e.stopPropagation();
+      closeUserImageLightbox();
+    }
+  }, true);
+  document.body.appendChild(mask);
+  userImgLightbox = mask;
+  return mask;
+}
+
+function openUserImageLightbox(src, label) {
+  const mask = ensureUserImageLightbox();
+  const im = mask.querySelector('img');
+  im.src = src;
+  im.alt = label || '图片预览';
+  userImgLightboxReturnFocus = document.activeElement;
+  mask.classList.remove('hidden');
+  mask.querySelector('.uib-close').focus();
+}
+
+function closeUserImageLightbox() {
+  if (!userImgLightbox || userImgLightbox.classList.contains('hidden')) return;
+  userImgLightbox.classList.add('hidden');
+  userImgLightbox.querySelector('img').removeAttribute('src');
+  const back = userImgLightboxReturnFocus;
+  userImgLightboxReturnFocus = null;
+  if (back && typeof back.focus === 'function' && document.contains(back)) back.focus();
 }
 
 function renderEvent(ev, box) {
@@ -7482,8 +7597,7 @@ function renderEvent(ev, box) {
     const last = box.lastElementChild;
     if (last && last.classList.contains('msg-optimistic')) last.remove();
     const bubble = addMsg('msg-user', '你', box, ev.ts);
-    renderUserImages(bubble, d.images);
-    if (d.text) bubble.appendChild(document.createTextNode(d.text));
+    appendUserContent(bubble, d.text, d.images);
     // A checkpoint uuid means this message can be rewound (files + dialogue).
     if (d && d.checkpoint) {
       const msgDiv = bubble.parentElement;
@@ -8675,16 +8789,9 @@ function syncTaskPanel() {
 
 function appendOptimisticUser(text, images, files) {
   const bubble = addMsg('msg-user msg-optimistic', '你', null, new Date());
-  if (images && images.length) {
-    for (const img of images) {
-      const im = document.createElement('img');
-      im.className = 'thumb';
-      im.src = `data:${img.media_type};base64,${img.data}`;
-      im.alt = '';
-      bubble.appendChild(im);
-    }
-  }
+  if (text) bubble.appendChild(document.createTextNode(text));
   if (files && files.length) {
+    if (text) bubble.appendChild(document.createTextNode(' '));
     for (const f of files) {
       const chip = document.createElement('span');
       chip.className = 'file-chip';
@@ -8695,7 +8802,9 @@ function appendOptimisticUser(text, images, files) {
       bubble.appendChild(chip);
     }
   }
-  if (text) bubble.appendChild(document.createTextNode((text ? ' ' : '') + text));
+  if (images && images.length) {
+    appendUserImages(bubble, images.map((img) => `data:${img.media_type};base64,${img.data}`));
+  }
   if (bubble.querySelector('i')) renderIcons(bubble);
   scrollBottom();
   refreshPinnedPrompt();
