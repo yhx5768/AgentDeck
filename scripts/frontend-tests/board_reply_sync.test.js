@@ -55,6 +55,7 @@ function boardMuted(text) { const el = document.createElement('div'); el.textCon
 function md(text) { return text; }
 ${grabFn('boardTaskEvents')}
 ${grabFn('boardEventAvatar')}
+${grabFn('boardTimelineRow')}
 ${grabFn('boardRenderTimeline')}
 ${grabFn('boardReplyEvents')}
 ${grabFn('boardReplyKey')}

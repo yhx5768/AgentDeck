@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -180,6 +181,18 @@ func (m *Manager) pendingFor(sessionID string) []*PermissionRequest {
 	return out
 }
 
+// pendingAll snapshots every outstanding prompt across sessions, oldest first.
+func (m *Manager) pendingAll() []*PermissionRequest {
+	m.perm.mu.Lock()
+	defer m.perm.mu.Unlock()
+	out := make([]*PermissionRequest, 0, len(m.perm.pending))
+	for _, pr := range m.perm.pending {
+		out = append(out, pr)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out
+}
+
 // BroadcastTransient sends a transient (non-persisted) event to SSE
 // subscribers. Permission request/resolved events ride this path: they are
 // live prompts, not history.
@@ -229,6 +242,16 @@ func (m *Manager) PermissionTimeoutRemove(id string) bool {
 // PermissionPending lists outstanding prompts for one session.
 func (m *Manager) PermissionPending(sessionID string) []*PermissionRequest {
 	return m.pendingFor(sessionID)
+}
+
+// PermissionPendingAll lists outstanding prompts across every session (oldest
+// first); the cross-session "需要你" queue reads this instead of polling each
+// session's registry one by one.
+func (m *Manager) PermissionPendingAll() []*PermissionRequest {
+	if m.perm == nil {
+		return nil
+	}
+	return m.pendingAll()
 }
 
 // ClearPermissions drops a session's allowances (call on session delete).

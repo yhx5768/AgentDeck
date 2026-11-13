@@ -970,6 +970,8 @@ function raiseAskToast(ask, ctx) {
   if (!ask || !ask.id) return null;
   const key = ASK_TOAST_KEY(ask.id);
   if (state.toasts[key]) return state.toasts[key];
+  // Personal Agent：队列视图正开着时这条提问就在队列顶上，不再压一条横幅盖住队列头
+  if (typeof agentAbsorbBanner === 'function' && agentAbsorbBanner(key)) return null;
   const rec = pushToast({
     id: key,
     kind: 'ask',
@@ -1004,6 +1006,7 @@ function raiseAskToast(ask, ctx) {
 // 两处的「补未决卡」都是异步 fire-and-forget，所以定位靠轮询等它出现。
 async function gotoAsk(ask, ctx) {
   dropToast(ASK_TOAST_KEY(ask.id));
+  if (typeof agentFocusItem === 'function' && agentFocusItem('ask:' + ask.id)) return; // Personal Agent：在队列里作答
   try {
     if (ctx.gid && !(state.currentGroup && state.currentGroup.id === ctx.gid)) {
       await openGroup(ctx.gid);
@@ -1132,6 +1135,7 @@ async function loadSessions() {
   renderArchiveList();
   renderWsActivity();
   loadGroups().catch(() => {}); // 群列表随会话轮询一起刷新（量小）
+  if (typeof agentOnPoll === 'function') agentOnPoll(); // Personal Agent 模式：刷新「需要你」队列
 }
 
 // 轮询兜底：state.current.status 只由 SSE 的 status 事件与显式回读更新，5s 轮询
@@ -1651,6 +1655,8 @@ function mainAgentInnerWidth(el) {
 function renderMainAgents() {
   const el = $('#main-agents');
   if (!el) return;
+  // Personal Agent 模式：头像簇由 agent.js 接管（同一个容器，另一套样式）
+  if (typeof agentModeOn === 'function' && agentModeOn()) { agentRenderCluster(); return; }
   const list = mainAgentSessions();
   el.classList.toggle('hidden', !list.length);
   if (!list.length) {
@@ -2683,6 +2689,7 @@ async function openSession(id) {
   clearSharesHash();
   relocatePermCards();
   $('#chat-view').classList.remove('hidden');
+  if (typeof agentOnSessionOpened === 'function') agentOnSessionOpened(s);
   renderGoalBar();
   // 清 DOM 前先摘 observer，防悬空引用 + 旧会话文本闪现
   hidePinnedPrompt();
@@ -2749,6 +2756,7 @@ function switchChatTab(tab) {
   // 在视口上方，隐藏前后相交比例都是 0），切 tab 时必须主动按几何位置重算：
   // 进入轨迹/看板时 gate 会收起它，切回对话时按当前滚动位置恢复。
   syncPinnedVisibility();
+  if (typeof agentOnTabSwitch === 'function') agentOnTabSwitch(tab);
 }
 
 // 本地 store 变化时后端发 refresh 事件；前端重取快照。EventSource 带 cookie，
@@ -2834,11 +2842,16 @@ function boardTaskCard(task) {
     progress.title = task.progress;
     card.append(progress);
   }
-  card.onclick = () => boardOpenDrawer(task);
+  // Personal Agent 模式：卡片详情在右栏（agent-aside.js），不再弹抽屉。
+  const openTask = () => {
+    if (typeof agentModeOn === 'function' && agentModeOn()) agentOpenCard(task.id);
+    else boardOpenDrawer(task);
+  };
+  card.onclick = openTask;
   card.onkeydown = (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      boardOpenDrawer(task);
+      openTask();
     }
   };
   return card;
@@ -3512,6 +3525,7 @@ function closeSharesAdmin() {
   } else {
     $('#empty-state').classList.remove('hidden');
   }
+  if (typeof agentRestoreView === 'function') agentRestoreView();
   renderIcons();
 }
 
@@ -3858,13 +3872,36 @@ function boardEventAvatar(kind) {
   return avatar;
 }
 
-function boardRenderTimeline(task) {
-  const timeline = $('#board-drawer-timeline');
-  const filters = $('#board-drawer-filters');
+// 时间线的一行：看板抽屉和 Personal Agent 右栏共用同一份渲染，样式 / markdown 行为一致。
+function boardTimelineRow(event) {
+  const isUser = event.kind === '用户消息';
+  const row = document.createElement('div');
+  row.className = 'board-drawer-event' + (isUser ? ' board-event-user' : '');
+  row.dataset.kind = event.kind || '事件';
+  if (event.kind === '主 Agent 回复') row.dataset.replyKey = boardReplyKey(event);
+  const at = document.createElement('span');
+  at.className = 'board-drawer-event-at';
+  at.textContent = event.at || '';
+  const kind = document.createElement('span');
+  kind.className = 'board-drawer-event-kind' + (isUser ? ' kind-user' : '');
+  kind.textContent = event.kind || '事件';
+  const text = document.createElement('div');
+  text.className = 'board-drawer-event-text md';
+  text.innerHTML = md(event.text || '', { artifacts: false });
+  row.append(boardEventAvatar(event.kind), at, kind, text);
+  return row;
+}
+
+// opts 缺省时画抽屉里的时间线；Personal Agent 右栏传自己的容器和筛选状态，其余完全一样。
+function boardRenderTimeline(task, opts) {
+  const o = opts || {};
+  const timeline = o.timeline || $('#board-drawer-timeline');
+  const filters = o.filters || $('#board-drawer-filters');
   if (!timeline || !filters) return;
   const events = boardTaskEvents(task);
-  const count = $('#board-drawer-timeline-count');
+  const count = o.timeline ? null : $('#board-drawer-timeline-count');
   if (count) count.textContent = String(events.length);
+  const current = o.filter != null ? o.filter : boardTimelineFilter;
   if (!events.length) {
     filters.innerHTML = '';
     timeline.innerHTML = '';
@@ -3883,9 +3920,10 @@ function boardRenderTimeline(task) {
   entries.forEach((entry) => {
     const chip = document.createElement('button');
     chip.type = 'button';
-    chip.className = 'board-filter-chip' + (boardTimelineFilter === entry.key ? ' active' : '');
+    chip.className = 'board-filter-chip' + (current === entry.key ? ' active' : '');
     chip.textContent = `${entry.label} ${entry.count}`;
     chip.onclick = () => {
+      if (o.onFilter) { o.onFilter(entry.key); return; }
       boardTimelineFilter = entry.key;
       boardRenderTimeline(task);
     };
@@ -3894,23 +3932,8 @@ function boardRenderTimeline(task) {
 
   timeline.innerHTML = '';
   events.forEach((event) => {
-    if (boardTimelineFilter !== 'all' && event.kind !== boardTimelineFilter) return;
-    const isUser = event.kind === '用户消息';
-    const row = document.createElement('div');
-    row.className = 'board-drawer-event' + (isUser ? ' board-event-user' : '');
-    row.dataset.kind = event.kind || '事件';
-    if (event.kind === '主 Agent 回复') row.dataset.replyKey = boardReplyKey(event);
-    const at = document.createElement('span');
-    at.className = 'board-drawer-event-at';
-    at.textContent = event.at || '';
-    const kind = document.createElement('span');
-    kind.className = 'board-drawer-event-kind' + (isUser ? ' kind-user' : '');
-    kind.textContent = event.kind || '事件';
-    const text = document.createElement('div');
-    text.className = 'board-drawer-event-text md';
-    text.innerHTML = md(event.text || '', { artifacts: false });
-    row.append(boardEventAvatar(event.kind), at, kind, text);
-    timeline.append(row);
+    if (current !== 'all' && event.kind !== current) return;
+    timeline.append(boardTimelineRow(event));
   });
 }
 
@@ -4633,7 +4656,7 @@ function renderBoard() {
     columns.append(column);
   }
   // SSE 刷新后如果抽屉还开着，用新任务数据重绘抽屉，保持实时。
-  if (state.boardSelectedId) {
+  if (state.boardSelectedId && !(typeof agentModeOn === 'function' && agentModeOn())) {
     const selectedTask = tasks.find((t) => t.id === state.boardSelectedId);
     if (selectedTask) boardOpenDrawer(selectedTask);
   }
@@ -4655,6 +4678,7 @@ async function boardShow(force = false) {
     state.mainAgentBoardAt = Date.now();
     renderBoard();
     renderMainAgents();
+    if (typeof paAfterBoard === 'function') paAfterBoard();
   } catch (err) {
     empty.textContent = '读取看板失败：' + err.message;
     empty.classList.remove('hidden');
@@ -5298,10 +5322,12 @@ function connectEvents(id) {
     // 权限审批：transient 事件，不进回放缓冲，直接渲染/锁卡
     if (ev.kind === 'permission_request') {
       renderPermissionCard(ev.data);
+      if (typeof agentRefreshNeeds === 'function') agentRefreshNeeds();
       return;
     }
     if (ev.kind === 'permission_resolved') {
       resolvePermissionCard(ev.data);
+      if (typeof agentRefreshNeeds === 'function') agentRefreshNeeds();
       return;
     }
     // 子代理（Agent 工具）消息：实时流由父进程 stdout 以 parent_tool_use_id
@@ -5316,6 +5342,7 @@ function connectEvents(id) {
       return;
     }
     safeRenderEvent(ev);
+    if (typeof agentFoldSoon === 'function') agentFoldSoon(); // Personal Agent：新到的 worker 回报并入折叠组
     // live 事件同样进入 historyBuf，作为轨迹视图的数据源；
     // stream_event 增量太多且轨迹用不到（完整 assistant 事件兜底），不入。
     if (ev.kind !== 'stream' || !ev.data || ev.data.type !== 'stream_event') {
@@ -5540,6 +5567,7 @@ function flushHistory(endData) {
   // 事件，renderEvent 会摘掉已对账的乐观气泡，这里不能把摘掉的又接回来
   //（否则 prompt 显示两次，切走再切回才恢复一条）。
   for (const node of optimistic) if (node.isConnected) box.appendChild(node);
+  if (typeof agentFoldNow === 'function') agentFoldNow(); // Personal Agent：回放里的 worker 回报折成组
   // 回放事件只渲染了最新一页，但任务面板要覆盖已加载的历史——从缓冲区全量重折。
   taskFoldAll();
   syncTaskPanel();
@@ -5572,6 +5600,7 @@ function renderPrevHistoryPage() {
   const prevHeight = box.scrollHeight;
   const wrap = $('#load-more-wrap');
   box.insertBefore(frag, wrap ? wrap.nextSibling : box.firstChild);
+  if (typeof agentFoldNow === 'function') agentFoldNow(); // 先折叠再量高度，视口锚点才不会被折叠挪走
   box.scrollTop += box.scrollHeight - prevHeight;
   updateLoadMoreBtn();
 }
@@ -5898,6 +5927,15 @@ $('#messages').addEventListener('scroll', () => {
     });
   }
 });
+
+// 入站 peer 气泡的来源信息（发件人 / 时间 / 通道），Personal Agent 的回报折叠按它分组去重。
+function markPeerMsg(bubble, from, ts, via) {
+  const msg = bubble && bubble.parentElement;
+  if (!msg) return;
+  msg.dataset.peerFrom = from || '';
+  msg.dataset.peerTs = ts || '';
+  msg.dataset.peerVia = via;
+}
 
 function addMsg(cls, roleTag, box, ts) {
   box = box || $('#messages');
@@ -7433,6 +7471,7 @@ function renderEvent(ev, box) {
     if (d && d.source === 'a2a') {
       const bubble = addMsg('msg-peer', `⇢ 来自 ${escapeHtml(d.from || '另一个会话')}`, box, ev.ts);
       bubble.innerHTML = md(d.body || d.text || '');
+      markPeerMsg(bubble, d.from, ev.ts, 'a2a');
       return;
     }
     // Replace any pending optimistic bubble with the authoritative one.
@@ -7548,6 +7587,7 @@ function renderEvent(ev, box) {
       const name = escapeHtml(d.origin.name || '另一个会话');
       const bubble = addMsg('msg-peer', `⇢ 来自 ${name}`, box, ev.ts);
       bubble.innerHTML = md(d.origin.body || '');
+      markPeerMsg(bubble, d.origin.name, ev.ts, 'native');
     } else if (d.type === 'user' && d.parent_tool_use_id && d.message && Array.isArray(d.message.content)) {
       // 子代理的 tool_result：配对进对应卡片的工具视图（result 到得早于
       // 卡片创建时也会先把卡片壳建出来）
@@ -9526,6 +9566,7 @@ let nsPendingCwd = '';
 
 async function openNewSessionView(cwd) {
   nsPendingCwd = cwd || '';
+  if (typeof agentHideNeedsView === 'function') agentHideNeedsView();
   $('#chat-view').classList.add('hidden');
   $('#group-view').classList.add('hidden');
   const sharesView = $('#shares-view');
@@ -9998,6 +10039,7 @@ function appendGroupItem(box, g) {
   box.appendChild(el);
 }
 function hideAllViews() {
+  if (typeof agentHideNeedsView === 'function') agentHideNeedsView();
   $('#empty-state').classList.add('hidden');
   $('#chat-view').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
