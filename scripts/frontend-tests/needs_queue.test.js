@@ -1,6 +1,10 @@
 // Personal Agent：模式开关 / 队列数据与分组 / 队列视图 / 头像簇 / 入口导航。
 // 局限：jsdom 不做布局——头像叠放的像素、动效手感验不了；这里钉 DOM 契约和规则。
 const { makeEnv, sampleNeeds, sampleSessions, sampleBoard } = require('./pa_harness');
+const fs = require('fs');
+const path = require('path');
+const WEB = path.resolve(__dirname, '../../web');
+const webRead = (f) => fs.readFileSync(path.join(WEB, f), 'utf8');
 
 let failed = 0;
 function check(name, cond, extra) {
@@ -16,8 +20,24 @@ async function main() {
   ev(`state.sessions = ${J(sampleSessions())}; state.agentBoard = ${J(sampleBoard())};`);
 
   console.log('模式开关');
+  w.__ccDefaultUiMode = 'agent';
   ev('paLoadPrefs()');
-  check('默认是普通对话', ev('agentModeOn()') === false && ev('pa.mode') === 'chat');
+  check('localStorage 为空时使用服务端默认 Personal Agent', ev('agentModeOn()') === true
+    && ev('pa.mode') === 'agent' && w.localStorage.getItem('cc-webui:mode') == null);
+  w.__ccDefaultUiMode = 'chat';
+  ev('paLoadPrefs()');
+  check('服务端默认 chat 时回到普通对话', ev('agentModeOn()') === false && ev('pa.mode') === 'chat');
+  w.localStorage.setItem('cc-webui:mode', 'agent');
+  w.__ccDefaultUiMode = 'chat';
+  ev('paLoadPrefs()');
+  check('localStorage 已有 agent 时优先于服务端默认', ev('agentModeOn()') === true);
+  w.localStorage.setItem('cc-webui:mode', 'chat');
+  w.__ccDefaultUiMode = 'agent';
+  ev('paLoadPrefs()');
+  check('localStorage 已有 chat 时优先于服务端默认', ev('agentModeOn()') === false);
+  w.localStorage.removeItem('cc-webui:mode');
+  w.__ccDefaultUiMode = 'agent';
+  ev('paLoadPrefs()');
   ev("agentSetMode('agent')");
   check('切到 Personal Agent：持久化 + body 样式 + 入口显示',
     w.localStorage.getItem('cc-webui:mode') === 'agent' && doc.body.classList.contains('pa-on') && !doc.querySelector('#pa-nav').classList.contains('hidden'));
@@ -134,6 +154,16 @@ async function main() {
   serve([live(perm), p2]);
   await ev2('agentRefreshNeeds()');
   check('不在队列视图：权限门照常弹横幅，且只弹一次', w2.__toasts.filter((t) => t.id === 'pa-perm:p2').length === 1 && (ev2('paRaisePermBanners()'), w2.__toasts.filter((t) => t.id === 'pa-perm:p2').length === 1));
+
+  console.log('首屏默认模式契约');
+  const indexHtml = webRead('index.html');
+  const styleCss = webRead('style.css');
+  const appSrc = webRead('app.js');
+  const agentSrc = webRead('agent.js');
+  check('无本机偏好时首屏等 /api/config，并先隐藏外壳避免闪普通页',
+    indexHtml.includes('pa-mode-pending') && styleCss.includes('html.pa-mode-pending body')
+    && appSrc.includes('__ccConfigReady') && appSrc.includes('default_ui_mode')
+    && agentSrc.includes('__ccConfigReady') && agentSrc.includes('paStoredMode'));
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);

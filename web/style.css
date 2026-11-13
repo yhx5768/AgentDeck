@@ -5633,3 +5633,9 @@ body.pa-on #messages .meta-line, body.pa-on #messages .result-meta { display: no
   .pa-wav, .pa-wav.new, .pa-badge.hot, .pa-dot.run, .pa-live, .pa-cd.low, .pa-fold, .pa-aside:not(.pa-docked) { animation: none !important; }
 }
 /* —— /Personal Agent 模式 —— */
+
+/* First load with no local UI-mode preference: the server's default_ui_mode
+   arrives with /api/config. Hide the shell until agent.js resolves it so the
+   ordinary chat page never flashes before Personal Agent. The inline head
+   script also removes this class after 2.5s as a JS/network failure fallback. */
+html.pa-mode-pending body { visibility: hidden; }

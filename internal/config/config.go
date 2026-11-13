@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -262,6 +263,15 @@ type Config struct {
 
 // MainAgentConfig is the `main_agent` section of config.yaml.
 type MainAgentConfig struct {
+	// Autocreate creates a mainAgent session on first boot when the store has
+	// no live main agent. nil (unset) means ON — a fresh install should land in
+	// Personal Agent instead of an empty ordinary-chat page. Set it to false to
+	// keep the old manual "create main agent" flow.
+	Autocreate *bool `yaml:"autocreate" json:"autocreate,omitempty"`
+	// DefaultUI is the frontend mode a browser uses when it has no local
+	// preference yet: "agent" (default) or "chat". Once the user toggles the
+	// mode, localStorage wins over this value.
+	DefaultUI string `yaml:"default_ui" json:"default_ui,omitempty"`
 	// Worker is the default profile the main agent uses when it creates a
 	// worker via new_session. Its values are interpolated into the built-in
 	// role prompt so the model knows the house default; the model can still
@@ -274,6 +284,22 @@ type MainAgentConfig struct {
 	// (incidents: a worker turn errored or stalled; escalations: a worker parked
 	// on a human-only gate). See internal/server/incidents.go.
 	Notify NotifyConfig `yaml:"notify" json:"notify"`
+}
+
+// MainAgentAutocreateEnabled reports whether a missing main agent should be
+// created at boot. Unset means enabled.
+func (c *Config) MainAgentAutocreateEnabled() bool {
+	return c == nil || c.MainAgent == nil || c.MainAgent.Autocreate == nil || *c.MainAgent.Autocreate
+}
+
+// DefaultUIMode returns the frontend mode for a browser with no local
+// preference. Only "chat" opts out of Personal Agent; unknown/empty values
+// fall back to "agent".
+func (c *Config) DefaultUIMode() string {
+	if c != nil && c.MainAgent != nil && strings.TrimSpace(c.MainAgent.DefaultUI) == "chat" {
+		return "chat"
+	}
+	return "agent"
 }
 
 // NotifyConfig is the `main_agent.notify` section of config.yaml: the policy for

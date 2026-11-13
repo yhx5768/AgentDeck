@@ -555,6 +555,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"data_dir":              s.cfg().DataDir,
 		"home":                  home,
 		"agent_board_mock_busy": s.cfg().AgentBoardMockBusy,
+		// First-load UI mode. The browser only consults this when it has no
+		// cc-webui:mode preference; a user toggle always wins.
+		"default_ui_mode": s.cfg().DefaultUIMode(),
 	})
 }
 

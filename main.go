@@ -83,6 +83,11 @@ func main() {
 
 	srv := server.New(cm, st, mgr, static, bm)
 
+	// Fresh installs get a mainAgent in the store before the HTTP listener
+	// starts, so the first page can land in Personal Agent. The resident
+	// process is spawned by RestoreResidents below, like any other resident.
+	srv.EnsureMainAgent()
+
 	// opencode providers that were logged into via the CLI are not listed in
 	// config.yaml; the discovery loop merges them into the live config and
 	// broadcasts config_changed so the picker refreshes without a reload.
