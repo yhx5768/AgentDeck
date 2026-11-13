@@ -857,11 +857,38 @@ function paFeedView(task) {
   boardRenderTimeline(task, { filters, timeline, filter: pa.ui.tf, onFilter: (k) => { pa.ui.tf = k; agentRenderAside(true); } });
   return [filters, timeline];
 }
-// 右栏底部的「在对话查看」：切到主 Agent 会话；手机 / 浮层顺手收起右栏（docked 保留右栏），
-// 强制滚到最新消息并给 chat 视图一个短暂的边框反馈（已经在该视图时也能看出点到了）。
+// 右栏底部的「在对话查看」：优先打开当前卡片绑定的 worker 会话；没有绑定 / 会话已不存在 /
+// 打开失败时回退到主 Agent 会话。手机 / 浮层顺手收起右栏，docked 只同步可见性（保留开关
+// 偏好；worker 会话下右栏本来就整体收起）。两条路径都强制滚到最新消息并给 chat 视图一个
+// 短暂的边框反馈（已经在该视图时也能看出点到了）。
 async function paGoChat() {
+  const task = pa.ui.card ? paTaskById(pa.ui.card) : null;
+  const wid = paCardWorkerId(task);
+  if (wid) {
+    try {
+      await openSession(wid); // 会话不存在 / 打不开会 reject → 回退主 Agent
+      paFinishGoChat();
+      return;
+    } catch (e) {
+      if (typeof pushToast === 'function') {
+        pushToast({ id: 'pa-open-worker', title: '打开 worker 会话失败', body: '已回退到主 Agent 会话：' + ((e && e.message) || e) });
+      }
+    }
+  }
   const ok = await agentShowView('chat');
   if (!ok) return;
+  paFinishGoChat();
+}
+// 卡片绑定的 worker 会话 id：看板的 session 就是绑定的会话（归档后也仍可按 id 打开）；
+// 只有没绑 session 时才按 worker 地址名找活跃会话。
+function paCardWorkerId(task) {
+  if (!task) return '';
+  const sid = task.session ? String(task.session).trim() : '';
+  if (sid) return sid;
+  const w = task.worker ? paSessionByAddr(task.worker) : null;
+  return w ? w.id : '';
+}
+function paFinishGoChat() {
   if (!paDocked()) paCloseAside();
   else paSyncAside();
   paJumpChat();
