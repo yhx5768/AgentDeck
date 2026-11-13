@@ -2353,15 +2353,155 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   overflow: hidden;
 }
 .file-chip i { flex: none; width: 12px; height: 12px; }
-.msg-user .bubble .thumb {
-  display: inline-block;
-  max-width: 200px;
-  max-height: 200px;
-  border-radius: var(--r-lg);
-  border: 1px solid var(--user-border);
-  margin: var(--sp-1) var(--sp-2) var(--sp-1) 0;
-  vertical-align: middle;
+/* 用户消息里的图片：正文在上、图片在下来成块。单图放大（宽不超气泡、高封顶
+   340px，竖长图不撑爆气泡）；多图等宽两列网格，最后一行不足时左对齐。图片
+   外面裹一个按钮（可 Tab 聚焦 + Enter/空格打开灯箱），有 loading 骨架与
+   error 占位图标两种状态。 */
+.msg-user .bubble .user-imgs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 360px;
+  max-width: 100%;
+  margin-top: var(--sp-2);
 }
+.msg-user .bubble .user-imgs:first-child { margin-top: 0; }
+.msg-user .bubble .user-imgs.n1 {
+  display: block;
+  width: auto;
+}
+.msg-user .bubble .user-img {
+  position: relative;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--user-border);
+  border-radius: var(--r-lg);
+  background: var(--bg2);
+  color: var(--dim);
+  font: inherit;
+  line-height: 0;
+  cursor: zoom-in;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.msg-user .bubble .user-imgs:not(.n1) .user-img { aspect-ratio: 1 / 1; }
+.msg-user .bubble .user-img:hover { border-color: var(--accent); }
+.msg-user .bubble .user-img:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.msg-user .bubble .user-img .thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  object-fit: cover;
+}
+/* 单图按原始比例展示（只设上下限），不裁成方块 */
+.msg-user .bubble .user-imgs.n1 .user-img {
+  display: inline-block;
+  width: auto;
+  max-width: 100%;
+  vertical-align: bottom;
+}
+.msg-user .bubble .user-imgs.n1 .user-img .thumb {
+  width: auto;
+  height: auto;
+  max-width: min(360px, 100%);
+  max-height: 340px;
+  object-fit: contain;
+}
+/* 图还没加载完时给单图一个稳定的占位尺寸，避免布局跳一下 */
+.msg-user .bubble .user-imgs.n1 .user-img.loading {
+  width: 240px;
+  max-width: 100%;
+  height: 160px;
+}
+.msg-user .bubble .user-imgs.n1 .user-img.loading .thumb { width: 100%; height: 100%; }
+.msg-user .bubble .user-imgs.n1 .user-img.error { width: 200px; height: 140px; }
+/* 加载骨架：浅色斜向流光，深浅主题都用 --dim 混合 */
+.msg-user .bubble .user-img.loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg,
+    transparent 25%,
+    color-mix(in srgb, var(--dim) 16%, transparent) 50%,
+    transparent 75%);
+  background-size: 200% 100%;
+  animation: user-img-shimmer 1.4s linear infinite;
+}
+@keyframes user-img-shimmer {
+  from { background-position: 150% 0; }
+  to { background-position: -150% 0; }
+}
+/* 加载失败：虚线框 + 破图图标（不写文字，别污染顶部悬浮条的 textContent） */
+.msg-user .bubble .user-img.error {
+  cursor: default;
+  border-style: dashed;
+}
+.msg-user .bubble .user-img.error .thumb { display: none; }
+.msg-user .bubble .user-img.error::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  background: var(--dim);
+  -webkit-mask: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='m2 2 20 20'%3e%3c/path%3e%3cpath d='M10.41 10.41a2 2 0 1 1-2.83-2.83'%3e%3c/path%3e%3cline x1='13.5' x2='6' y1='13.5' y2='21'%3e%3c/line%3e%3cline x1='18' x2='21' y1='12' y2='15'%3e%3c/line%3e%3cpath d='M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59'%3e%3c/path%3e%3cpath d='M21 15V5a2 2 0 0 0-2-2H9'%3e%3c/path%3e%3c/svg%3e") center / contain no-repeat;
+  mask: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='m2 2 20 20'%3e%3c/path%3e%3cpath d='M10.41 10.41a2 2 0 1 1-2.83-2.83'%3e%3c/path%3e%3cline x1='13.5' x2='6' y1='13.5' y2='21'%3e%3c/line%3e%3cline x1='18' x2='21' y1='12' y2='15'%3e%3c/line%3e%3cpath d='M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59'%3e%3c/path%3e%3cpath d='M21 15V5a2 2 0 0 0-2-2H9'%3e%3c/path%3e%3c/svg%3e") center / contain no-repeat;
+}
+/* 用户图片灯箱：JS 懒创建的单例，盖在弹窗之上、产物预览之下 */
+.user-img-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 240;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(env(safe-area-inset-top, 0px) + 52px) 20px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  background: rgba(0, 0, 0, .78);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: msg-in var(--t-fast) var(--ease);
+}
+.user-img-lightbox img {
+  max-width: 92vw;
+  max-height: calc(100vh - 120px);
+  max-height: calc(100dvh - 120px);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-lg);
+  object-fit: contain;
+}
+.uib-close {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  right: 16px;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .35);
+  border-radius: var(--r-full);
+  background: rgba(0, 0, 0, .45);
+  color: #fff;
+  cursor: pointer;
+}
+.uib-close:hover { background: rgba(0, 0, 0, .72); }
+.uib-close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.uib-close svg { width: 18px; height: 18px; }
 /* 模型回复里的本地图片（md() 把本地路径改写成 /api/image?path=…）。
    不限宽的话大图会横向撑破气泡。 */
 .local-img {
