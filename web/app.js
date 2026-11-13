@@ -7450,7 +7450,7 @@ function setErrorBanner(text, opts) {
 // handleSessionUpload）。乐观气泡用的是本地 base64，回放/刷新后走这里，所以切
 // 会话回来图片仍在。
 //
-// 排版：正文在上、图片在下成块。单图放大展示（宽不超气泡、高封顶），多图走
+// 排版：图片在上、正文在下成块。单图放大展示（宽不超气泡、高封顶），多图走
 // 等宽两列网格（最后一行不足时左对齐）。每张图裹一个 <button>：天然可 Tab
 // 聚焦、Enter/空格打开；加载中显示骨架、失败显示占位图标；点击开页面级灯箱。
 function userImageSrc(name) {
@@ -7514,10 +7514,10 @@ function renderUserImages(bubble, names) {
   appendUserImages(bubble, names.map((name) => userImageSrc(name)));
 }
 
-// 正文在上、图片在下：两条路径（回放/实时与乐观气泡）都按这个顺序追加。
+// 图片在上、正文在下：两条路径（回放/实时与乐观气泡）都按这个顺序追加。
 function appendUserContent(bubble, text, names) {
-  if (text) bubble.appendChild(document.createTextNode(text));
   renderUserImages(bubble, names);
+  if (text) bubble.appendChild(document.createTextNode(text));
 }
 
 // 页面级图片灯箱：所有用户消息图片共用一份，第一次点击才创建。Esc / 点遮罩 /
@@ -8789,9 +8789,10 @@ function syncTaskPanel() {
 
 function appendOptimisticUser(text, images, files) {
   const bubble = addMsg('msg-user msg-optimistic', '你', null, new Date());
-  if (text) bubble.appendChild(document.createTextNode(text));
+  if (images && images.length) {
+    appendUserImages(bubble, images.map((img) => `data:${img.media_type};base64,${img.data}`));
+  }
   if (files && files.length) {
-    if (text) bubble.appendChild(document.createTextNode(' '));
     for (const f of files) {
       const chip = document.createElement('span');
       chip.className = 'file-chip';
@@ -8802,9 +8803,7 @@ function appendOptimisticUser(text, images, files) {
       bubble.appendChild(chip);
     }
   }
-  if (images && images.length) {
-    appendUserImages(bubble, images.map((img) => `data:${img.media_type};base64,${img.data}`));
-  }
+  if (text) bubble.appendChild(document.createTextNode((files && files.length ? ' ' : '') + text));
   if (bubble.querySelector('i')) renderIcons(bubble);
   scrollBottom();
   refreshPinnedPrompt();

@@ -2353,7 +2353,7 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   overflow: hidden;
 }
 .file-chip i { flex: none; width: 12px; height: 12px; }
-/* 用户消息里的图片：正文在上、图片在下来成块。单图放大（宽不超气泡、高封顶
+/* 用户消息里的图片：图片在上、正文在下来成块。单图放大（宽不超气泡、高封顶
    340px，竖长图不撑爆气泡）；多图等宽两列网格，最后一行不足时左对齐。图片
    外面裹一个按钮（可 Tab 聚焦 + Enter/空格打开灯箱），有 loading 骨架与
    error 占位图标两种状态。 */
@@ -2363,9 +2363,9 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   gap: 6px;
   width: 360px;
   max-width: 100%;
-  margin-top: var(--sp-2);
+  margin: 0 0 var(--sp-2);
 }
-.msg-user .bubble .user-imgs:first-child { margin-top: 0; }
+.msg-user .bubble .user-imgs:last-child { margin-bottom: 0; }
 .msg-user .bubble .user-imgs.n1 {
   display: block;
   width: auto;

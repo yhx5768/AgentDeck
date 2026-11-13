@@ -4,7 +4,7 @@
 // 上传目录里，前端经 /api/sessions/{id}/uploads/{name} 取回。此前事件只存文本、
 // 图片在服务端回推权威 user 事件后就被顶掉了（乐观气泡闪一下），刷新/切会话更是
 // 彻底消失。这里钉住渲染契约：文件名 → 带状态与灯箱的图片按钮、路径按会话 id、
-// 名字要 URL 编码、正文在上图片在下、没有图片/没有当前会话时不画。
+// 名字要 URL 编码、图片在上正文在下、没有图片/没有当前会话时不画。
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -100,12 +100,12 @@ test('多图：等宽网格标记按张数（n3），顺序不变，文件名 UR
     ['查看图片 1/3', '查看图片 2/3', '查看图片 3/3']);
 });
 
-test('正文在上、图片在下', () => {
+test('图片在上、正文在下', () => {
   const b = x.mk();
   x.appendUserContent(b, '看这张截图', ['image.png']);
-  assert.strictEqual(b.firstChild.nodeType, 3, '第一个子节点应是文本');
-  assert.strictEqual(b.firstChild.nodeValue, '看这张截图');
-  assert.strictEqual(b.lastElementChild, gallery(b), '图片容器应在文本之后');
+  assert.strictEqual(b.firstElementChild, gallery(b), '图片容器应在文本之前');
+  assert.strictEqual(b.lastChild.nodeType, 3, '最后一个子节点应是文本');
+  assert.strictEqual(b.lastChild.nodeValue, '看这张截图');
 });
 
 test('加载成功去掉骨架；失败进入 error 占位态', () => {
