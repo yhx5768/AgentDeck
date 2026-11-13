@@ -399,9 +399,15 @@ function paFoldRun(members, kind) {
   members.forEach((m) => { if (paIsFold(m) && m !== target) m.remove(); });
   const first = rows[0];
   target.dataset.key = first ? (silent ? 'silent' : a2a ? 'a2a' : first.dataset.from) + '@' + first.dataset.ts : '';
-  // 「加载更多」往前插了更早的回报，组的 key（第一条回报）会变；已展开的组不能因此合上
-  const want = wasOpen || !!pa.foldOpen[target.dataset.key];
-  if (want) pa.foldOpen[target.dataset.key] = true;
+  const key = target.dataset.key;
+  // worker 回报组默认展开（回报重要）；静默步骤和 A2A 发送组仍默认折叠。
+  // 用户手动折叠过就按 pa.foldOpen 的显式状态来；「加载更多」前插更早的回报会让组 key 变，
+  // existing 的 DOM 展开状态优先，所以不会把用户折叠的组又撑开。
+  const openByDefault = !silent && !a2a;
+  const want = existing
+    ? (wasOpen || !!(key && pa.foldOpen[key]))
+    : (key && (key in pa.foldOpen) ? !!pa.foldOpen[key] : openByDefault);
+  if (key) pa.foldOpen[key] = want;
   if (want !== target.classList.contains('open')) {
     target.classList.toggle('open', want);
     const h = target.querySelector(':scope > .pa-fold-h');
