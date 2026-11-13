@@ -1624,8 +1624,14 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 	hintOn := m.htmlHintEnabled()
 	wantInstructions := (hintOn || strings.TrimSpace(sess.RolePrompt) != "") &&
 		!hasConfigOverride(cli.Args, "instructions")
+	// MCP injection must not depend on the browser switch: codex gets agentdeck
+	// over the same -c overrides, and appendMCPCodex already decides which
+	// servers exist. Gate on "any MCP server" instead of "browser enabled", or
+	// a default install (browser off) silently loses the agentdeck tools.
+	_, wantAgentdeck := m.agentdeckMCPInfo(sess.ID)
 	_, wantBrowser := m.browserMCPInfo(sess.ID)
-	if (sess.EffortOverride != "" || wantInstructions || wantBrowser) && cli.ModelProvider != "" {
+	wantMCP := wantAgentdeck || wantBrowser
+	if (sess.EffortOverride != "" || wantInstructions || wantMCP) && cli.ModelProvider != "" {
 		args = append(args, "-c", "model_provider="+cli.ModelProvider)
 	}
 	if sess.EffortOverride != "" {
@@ -1634,7 +1640,7 @@ func (m *Manager) buildCodexArgs(msg Message, sess *store.Session, cli *config.C
 	if wantInstructions {
 		args = append(args, "-c", codexInstructions(hintOn, sess.RolePrompt))
 	}
-	if wantBrowser {
+	if wantMCP {
 		args, _ = m.appendMCPCodex(args, sess.ID)
 	}
 	for _, f := range msg.Files {
