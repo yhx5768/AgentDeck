@@ -3,18 +3,18 @@ package config
 import "testing"
 
 func TestMainAgentAutocreateDefault(t *testing.T) {
-	if !(&Config{}).MainAgentAutocreateEnabled() {
-		t.Fatal("unset autocreate should default on")
-	}
-	off := false
-	cfg := &Config{MainAgent: &MainAgentConfig{Autocreate: &off}}
-	if cfg.MainAgentAutocreateEnabled() {
-		t.Fatal("autocreate=false should disable")
+	if (&Config{}).MainAgentAutocreateEnabled() {
+		t.Fatal("unset autocreate should default off")
 	}
 	on := true
-	cfg.MainAgent.Autocreate = &on
+	cfg := &Config{MainAgent: &MainAgentConfig{Autocreate: &on}}
 	if !cfg.MainAgentAutocreateEnabled() {
 		t.Fatal("autocreate=true should enable")
+	}
+	off := false
+	cfg.MainAgent.Autocreate = &off
+	if cfg.MainAgentAutocreateEnabled() {
+		t.Fatal("autocreate=false should disable")
 	}
 }
 

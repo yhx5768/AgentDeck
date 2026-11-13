@@ -11,20 +11,21 @@ import (
 	"cc-webui/internal/store"
 )
 
-// EnsureMainAgent creates a default mainAgent session on a fresh store so a
-// new install can land in Personal Agent without the user first creating one by
-// hand. It is called once at boot, before RestoreResidents, so the new resident
-// flag is picked up by the normal restore pass.
+// EnsureMainAgent creates a default mainAgent session on a fresh store when
+// the Settings toggle (or config.yaml's main_agent.autocreate) explicitly asks
+// for it. The default is off: a fresh install lands on the Personal Agent setup
+// screen and the user picks cli/provider/model. It is called once at boot,
+// before RestoreResidents, so the new resident flag is picked up by the normal
+// restore pass.
 //
-// Existing live main agents are never touched. main_agent.autocreate=false
-// disables the whole step; a config with no usable cli/provider/cwd logs why it
-// was skipped and leaves the store unchanged.
+// Existing live main agents are never touched. A config with no usable
+// cli/provider/cwd logs why it was skipped and leaves the store unchanged.
 func (s *Server) EnsureMainAgent() {
 	if s == nil || s.st == nil || s.mgr == nil {
 		return
 	}
 	cfg := s.cfg()
-	if cfg == nil || !cfg.MainAgentAutocreateEnabled() {
+	if cfg == nil || !s.mainAgentAutocreateEnabled() {
 		return
 	}
 	for _, sess := range s.st.List() {

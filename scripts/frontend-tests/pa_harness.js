@@ -51,7 +51,8 @@ function grabLine(needle) {
 const GRABBED = ['mainAgentSessions', 'runningMainAgentWorkers', 'workerHue', 'nameInitial', 'mainAgentInnerWidth', 'shortenPath',
   'statusDot', 'parsePermQuestions', 'toolSummary', 'boardTaskEvents', 'boardTaskContext', 'boardReplyEvents', 'boardReplyKey',
   'boardReplyKeys', 'boardEventText', 'boardAttachmentLinks', 'boardAppendUserEvent', 'escapeHtml',
-  'boardEventAvatar', 'boardMuted', 'boardTimelineRow', 'boardRenderTimeline'];
+  'boardEventAvatar', 'boardMuted', 'boardTimelineRow', 'boardRenderTimeline',
+  'fillSelect', 'providerModels', 'renderModelList', 'fillModelSelect'];
 
 const HTML = `<!doctype html><html><body>
 <div id="app">
@@ -74,9 +75,18 @@ const HTML = `<!doctype html><html><body>
 
 const STUBS = `
 const $ = (s) => document.querySelector(s);
-const state = { sessions: [], current: null, agentBoard: null, clis: [], providers: [], home: '/home/u', mainAgentBoardAt: 0,
+const state = { sessions: [], current: null, agentBoard: null, clis: [], providers: [], home: '/home/u', defaultCwd: '/home/u', mainAgentBoardAt: 0,
   maRenderSig: '', maWorkerIds: [], toasts: {}, nearBottom: true, replaying: false, renderingHistory: false };
 const PERM_OTHER = '__other__';
+const kindOf = (item) => (item && item.kind) || 'claude';
+const cliKind = (name) => kindOf(state.clis.find((c) => c.name === name));
+const provKind = (name) => kindOf(state.providers.find((p) => p.name === name));
+function cliHasModelsCommand() { return false; }
+async function modelsForProvider(providerName) {
+  const p = state.providers.find((x) => x.name === providerName);
+  return (p && Array.isArray(p.models)) ? p.models : [];
+}
+async function ensureMainAgentPrompt() { return 'test main prompt'; }
 async function api(path, o) {
   o = o || {};
   const method = o.method || 'GET';

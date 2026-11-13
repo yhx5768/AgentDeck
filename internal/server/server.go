@@ -170,6 +170,12 @@ type Server struct {
 	maWorkerMu    sync.Mutex
 	maWorkerStore *mainAgentWorkerStore
 
+	// maAutocreateStore holds the Settings page's "create a main agent on
+	// first boot" override (<data_dir>/main-agent/autocreate.json). Unset
+	// inherits config.yaml; the code default is off.
+	maAutocreateMu    sync.Mutex
+	maAutocreateStore *mainAgentAutocreateStore
+
 	// boardHub fans out agent-board changes to SSE subscribers. The board is
 	// always stored at <data_dir>/agent-board.db; no file watcher is needed.
 	boardHub *boardHub
@@ -258,6 +264,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/main-agent-prompt", s.auth(s.handleMainAgentPrompt))
 	s.mux.Handle("GET /api/main-agent/worker", s.auth(s.handleMainAgentWorker))
 	s.mux.Handle("PUT /api/main-agent/worker", s.auth(s.handleSaveMainAgentWorker))
+	s.mux.Handle("GET /api/main-agent/autocreate", s.auth(s.handleMainAgentAutocreate))
+	s.mux.Handle("PUT /api/main-agent/autocreate", s.auth(s.handleSaveMainAgentAutocreate))
 	s.mux.Handle("GET /api/needs-you", s.auth(s.handleNeedsYou))
 	s.mux.Handle("GET /api/agent-board", s.auth(s.handleAgentBoardDB))
 	s.mux.Handle("GET /api/agent-board/events", s.auth(s.handleAgentBoardEvents))

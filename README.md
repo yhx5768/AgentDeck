@@ -179,6 +179,8 @@ cp config.example.yaml config.yaml
 
 > 旧版本二进制名 `cc-webui` 仍可继续使用；升级脚本会自动迁移到 `agentdeck`，替换前把旧文件备份为 `cc-webui.bak-<版本>`。Release 会同时提供 `agentdeck-*` 和兼容用的 `cc-webui-*` asset，旧名至少保留一个版本周期。
 
+首次启动会进入 Personal Agent，并在没有主 Agent 时显示创建引导：选择 CLI、provider、模型（可留空用 CLI 默认）和工作目录即可。想跳过引导、启动时自动创建，可在设置页打开「首次启动自动创建主 Agent」，或在 config.yaml 里设置 `main_agent.autocreate: true`（默认关闭）。
+
 也支持环境变量覆盖：
 
 ```bash

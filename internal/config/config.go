@@ -264,9 +264,9 @@ type Config struct {
 // MainAgentConfig is the `main_agent` section of config.yaml.
 type MainAgentConfig struct {
 	// Autocreate creates a mainAgent session on first boot when the store has
-	// no live main agent. nil (unset) means ON — a fresh install should land in
-	// Personal Agent instead of an empty ordinary-chat page. Set it to false to
-	// keep the old manual "create main agent" flow.
+	// no live main agent. nil (unset) means OFF — a fresh install lands on the
+	// Personal Agent setup screen and lets the user pick cli/provider/model.
+	// Set it to true to restore the automatic first-boot creation.
 	Autocreate *bool `yaml:"autocreate" json:"autocreate,omitempty"`
 	// DefaultUI is the frontend mode a browser uses when it has no local
 	// preference yet: "agent" (default) or "chat". Once the user toggles the
@@ -287,9 +287,9 @@ type MainAgentConfig struct {
 }
 
 // MainAgentAutocreateEnabled reports whether a missing main agent should be
-// created at boot. Unset means enabled.
+// created at boot. Unset means disabled.
 func (c *Config) MainAgentAutocreateEnabled() bool {
-	return c == nil || c.MainAgent == nil || c.MainAgent.Autocreate == nil || *c.MainAgent.Autocreate
+	return c != nil && c.MainAgent != nil && c.MainAgent.Autocreate != nil && *c.MainAgent.Autocreate
 }
 
 // DefaultUIMode returns the frontend mode for a browser with no local

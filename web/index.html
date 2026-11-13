@@ -798,7 +798,7 @@
 <div id="modal-settings" class="modal hidden">
   <div class="modal-card">
     <h3>设置</h3>
-    <div class="settings-note">通知与提示音、界面模式仅保存在当前浏览器；浏览器开关与 worker 默认档保存在服务器，所有终端共享。</div>
+    <div class="settings-note">通知与提示音、界面模式仅保存在当前浏览器；浏览器开关、主 Agent 自动创建与 worker 默认档保存在服务器，所有终端共享。</div>
     <div class="settings-row">
       <div class="settings-text">
         <div class="settings-label">界面模式</div>
@@ -837,6 +837,14 @@
         <div class="settings-sub" id="browser-shared-status">关闭：每个会话独立 Chrome profile，各自登录态。</div>
       </div>
       <label class="switch"><input type="checkbox" id="pref-browser-shared"><span class="slider"></span></label>
+    </div>
+    <div class="settings-row">
+      <div class="settings-text">
+        <div class="settings-label">首次启动自动创建主 Agent</div>
+        <div class="settings-sub" id="ma-autocreate-hint">关闭：首次进入 Personal Agent 时，由你选择 CLI 和模型创建主 Agent。</div>
+        <div class="settings-sub settings-worker-status hidden" id="ma-autocreate-status"></div>
+      </div>
+      <label class="switch"><input type="checkbox" id="pref-ma-autocreate"><span class="slider"></span></label>
     </div>
     <!-- worker 默认档：服务端持久化（<data_dir>/main-agent/worker.json），优先于
          config.yaml 的 main_agent.worker；留空 = 继承 config。 -->

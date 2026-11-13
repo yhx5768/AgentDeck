@@ -941,7 +941,7 @@ function paRenderComposer() {
   const off = !main;
   const ta = paEl('textarea', {
     id: 'pa-cnote', rows: '1', 'aria-label': '给主 Agent 留言', disabled: off ? true : null,
-    placeholder: off ? '还没有主 Agent，先在左栏新建一个' : (task ? '给 ' + paMainName(main) + ' 留言（带上这张卡的上下文）' : '给 ' + paMainName(main) + ' 留言'),
+    placeholder: off ? '还没有主 Agent，先在中间选择 CLI 和模型创建' : (task ? '给 ' + paMainName(main) + ' 留言（带上这张卡的上下文）' : '给 ' + paMainName(main) + ' 留言'),
   });
   ta.value = c.drafts[paCmpKey()] || '';
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(120, ta.scrollHeight) + 'px'; };

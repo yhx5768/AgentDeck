@@ -22,10 +22,24 @@ func mainAgentSessionsOf(st *store.Store) []*store.Session {
 	return out
 }
 
+func TestEnsureMainAgentDefaultOff(t *testing.T) {
+	s, st := createResidentServer(t)
+	cfg := s.cm.Get()
+	cfg.DefaultCwd = t.TempDir()
+
+	s.EnsureMainAgent()
+
+	if mains := mainAgentSessionsOf(st); len(mains) != 0 {
+		t.Fatalf("default autocreate created %d main agent(s), want 0", len(mains))
+	}
+}
+
 func TestEnsureMainAgentCreatesDefault(t *testing.T) {
 	s, st := createResidentServer(t)
 	cfg := s.cm.Get()
 	cfg.DefaultCwd = t.TempDir()
+	on := true
+	cfg.MainAgent = &config.MainAgentConfig{Autocreate: &on}
 
 	s.EnsureMainAgent()
 
@@ -54,11 +68,36 @@ func TestEnsureMainAgentCreatesDefault(t *testing.T) {
 	}
 }
 
+func TestEnsureMainAgentSettingOverride(t *testing.T) {
+	s, st := createResidentServer(t)
+	cfg := s.cm.Get()
+	cfg.DefaultCwd = t.TempDir()
+	if s.mainAgentAutocreateEnabled() {
+		t.Fatal("default setting should be off")
+	}
+	if err := s.mainAgentAutocreate().save(true); err != nil {
+		t.Fatal(err)
+	}
+	if !s.mainAgentAutocreateEnabled() {
+		t.Fatal("runtime override should enable")
+	}
+
+	s.EnsureMainAgent()
+
+	if mains := mainAgentSessionsOf(st); len(mains) != 1 {
+		t.Fatalf("setting override created %d main agent(s), want 1", len(mains))
+	}
+	if v := s.mainAgentAutocreateView(); !v.Enabled || v.Source != "setting" {
+		t.Fatalf("view = %+v", v)
+	}
+}
+
 func TestEnsureMainAgentUsesConfiguredWorker(t *testing.T) {
 	s, st := createResidentServer(t)
 	cfg := s.cm.Get()
 	cfg.DefaultCwd = t.TempDir()
-	cfg.MainAgent = &config.MainAgentConfig{Worker: config.WorkerDefaults{
+	on := true
+	cfg.MainAgent = &config.MainAgentConfig{Autocreate: &on, Worker: config.WorkerDefaults{
 		CLI: "oc", Provider: "oc-p", Model: "kimi-k3", Effort: "high",
 	}}
 
@@ -91,7 +130,10 @@ func TestEnsureMainAgentKeepsExisting(t *testing.T) {
 	if err := st.Upsert(existing, nil); err != nil {
 		t.Fatal(err)
 	}
-	s.cm.Get().DefaultCwd = t.TempDir()
+	cfg := s.cm.Get()
+	cfg.DefaultCwd = t.TempDir()
+	on := true
+	cfg.MainAgent = &config.MainAgentConfig{Autocreate: &on}
 
 	s.EnsureMainAgent()
 
@@ -112,6 +154,37 @@ func TestEnsureMainAgentDisabled(t *testing.T) {
 
 	if mains := mainAgentSessionsOf(st); len(mains) != 0 {
 		t.Fatalf("autocreate=false created %d main agent(s)", len(mains))
+	}
+}
+
+func TestMainAgentAutocreateSettingsAPI(t *testing.T) {
+	s, _ := createResidentServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/main-agent/autocreate", nil)
+	w := httptest.NewRecorder()
+	s.handleMainAgentAutocreate(w, req)
+	var got mainAgentAutocreateView
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled || got.Source != "default" {
+		t.Fatalf("default view = %+v", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/main-agent/autocreate", strings.NewReader(`{"enabled":true}`))
+	w = httptest.NewRecorder()
+	s.handleSaveMainAgentAutocreate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save: code = %d, body=%s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled || got.Source != "setting" {
+		t.Fatalf("saved view = %+v", got)
+	}
+	if !s.mainAgentAutocreateEnabled() {
+		t.Fatal("saved override not effective")
 	}
 }
 

@@ -17,7 +17,7 @@ async function main() {
   console.log('头像簇');
   ev('state.sessions = []; agentRenderCluster()');
   const cta = doc.querySelector('#main-agents .pa-agents-card.empty');
-  check('没有主 Agent：给出新建入口而不是空白', !!cta && /新建主 Agent/.test(cta.textContent) && !doc.querySelector('#main-agents .pa-av'));
+  check('没有主 Agent：给出创建入口而不是空白', !!cta && /创建主 Agent/.test(cta.textContent) && !doc.querySelector('#main-agents .pa-av'));
   ev(`state.sessions = ${J(sampleSessions().map((s) => (s.id === 's-pay' ? Object.assign({}, s, { status: { running: false } }) : s)))}; state.agentBoard = ${J(sampleBoard())}`);
   ev("pa.needs = Object.assign(pa.needs, { items: [], counts: { all: 0, perm: 0, ask: 0, blocked: 0, review: 0 } }); document.querySelector('#main-agents').dataset.paSig = ''; agentRenderCluster()");
   check('有主 Agent、没有 worker：只有主头像，不留占位', !!doc.querySelector('#main-agents .pa-av') && !doc.querySelector('#main-agents .pa-ws') && !doc.querySelector('#main-agents .pa-badge'));
