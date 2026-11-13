@@ -5179,9 +5179,9 @@ body.pa-on { --pa-aside-w: 400px; }
 #app:has(#ws-panel:not(.ws-panel-closed)) #agent-aside.pa-docked { display: none; }
 .pa-aside-main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pa-aside-handle { position: fixed; z-index: 44; right: 0; top: 50%; transform: translateY(-50%); width: 28px; height: 68px; padding: 0; border: 1px solid var(--border); border-right: 0; border-radius: var(--r-xl) 0 0 var(--r-xl); background: var(--bg2); color: var(--dim); box-shadow: var(--shadow-md); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: color var(--t-fast) var(--ease), width var(--t-fast) var(--ease); }
-/* 展开态：同一颗把手挪到面板左缘，图标朝右（收起）；不压面板内容，也不挡抽屉 resizer（在面板里侧） */
+/* 展开态：同一颗把手挪到面板左缘，图标朝右（收起）；不压面板内容，也不挡抽屉 resizer（在面板里侧）。
+   只在并排（docked）时出现；浮层展开用右上角 × / 遮罩关。 */
 .pa-aside-handle.collapse { z-index: 60; right: var(--pa-aside-w, 400px); }
-@media (max-width: 1279px) { .pa-aside-handle.collapse { right: min(440px, 100vw); } }
 .pa-aside-handle:hover { color: var(--fg); width: 34px; }
 .pa-aside-handle:focus-visible { color: var(--fg); width: 34px; outline: 2px solid var(--accent); outline-offset: -2px; }
 .pa-aside-handle b { min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-full); background: var(--red); color: #fff; font-size: 10px; line-height: 16px; text-align: center; }

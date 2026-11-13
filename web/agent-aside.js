@@ -85,9 +85,9 @@ function paRenderHandle() {
   const h = $('#pa-aside-handle');
   if (!h) return;
   const open = paAsideVisible();
-  // 桌面 / 浮层都留一个把手：右栏收起时在右缘（展开），展开时挪到面板左缘（收起）。
-  // 手机整屏 sheet 不用（右上角 × 和左上角返回都能关）。
-  const show = paAsideAllowed() && !paIsMobile();
+  // 右栏收起时把手在右缘（展开）；桌面并排展开时挪到面板左缘（收起）。浮层展开时它
+  // 会压在遮罩下的内容上，就不显示（用右上角 × / 点遮罩关）；手机整屏 sheet 也不用。
+  const show = paAsideAllowed() && !paIsMobile() && (!open || paDocked());
   h.classList.toggle('hidden', !show);
   h.classList.toggle('collapse', show && open);
   document.body.classList.toggle('pa-handle-on', show && !open); // 收起时队列给右缘把手让位

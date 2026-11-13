@@ -201,6 +201,11 @@ async function main() {
   e6.ev("agentOnSessionOpened(state.sessions.find(x => x.id === 's-pay'))");
   check('worker 会话收起右栏时，把手也不显示', h.classList.contains('hidden'));
   e6.ev("agentOnSessionOpened(state.sessions.find(x => x.main_agent))");
+  Object.defineProperty(e6.w, 'innerWidth', { value: 1024, configurable: true });
+  e6.ev("pa.asideOpen = true; pa.asideShown = true; paSyncAside()");
+  check('浮层展开：不显示左缘 tab（不压遮罩下的内容），靠右上角 × / 点遮罩关', h.classList.contains('hidden'));
+  e6.ev("pa.asideShown = false; paSyncAside()");
+  check('浮层收起：把手回到右缘可展开', !h.classList.contains('hidden') && !h.classList.contains('collapse') && h.getAttribute('aria-label') === '展开卡片详情');
   Object.defineProperty(e6.w, 'innerWidth', { value: 390, configurable: true });
   e6.ev('paRenderHandle()');
   check('手机 sheet 不显示折叠 tab（靠右上角 × / 左上角返回）', h.classList.contains('hidden'));
