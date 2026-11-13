@@ -32,11 +32,10 @@ const pa = {
   },
   needsBusy: false, needsAgain: false,
   done: [],
-  ui: { status: 'pending', kind: 'all', group: 'tier', sel: '', pin: '', card: '', tab: 'ov', ff: 'all', fx: false, fo: {} },
+  ui: { status: 'pending', kind: 'all', group: 'tier', sel: '', pin: '', card: '', tab: 'ov', tf: 'all', tfId: '' },
   drafts: {},           // 条目 id -> 作答表单草稿（选项 / 文本 / 拒绝理由），轮询重绘不丢
   busy: {},             // 条目 id -> 正在提交
   err: {},              // 条目 id -> 上次提交的错误
-  feed: { sid: '', tail: [], at: 0, v: 0, loading: false, err: '' },
   cmp: { att: [], busy: false, status: '', kind: '', drafts: {}, wait: null },
   mainErr: '',
   boardErr: '',
@@ -115,6 +114,7 @@ const PA_ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   panelR: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
+  pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
 };
 function paSvg(name, cls) {
   return '<svg class="pa-ic' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">' + (PA_ICONS[name] || '') + '</svg>';
@@ -259,9 +259,15 @@ function paPrimaryMain() {
   const want = paGet(PA_MAIN_KEY, '');
   return list.find((s) => s.id === want) || list[0];
 }
+// A2A 寻址用的地址名（peer_name，没设就取显示名清洗后的值）。只在发消息 / 对账时用，别拿它当展示。
 function paMainAddr(main) {
   main = main || paPrimaryMain();
   return main ? (main.peer_name || main.name || '') : '';
+}
+// 展示用的名字 = 会话的显示名（name，和侧栏、重命名菜单是同一个字段），可以随便改；地址名不跟着动。
+function paMainName(main) {
+  main = main || paPrimaryMain();
+  return main ? (main.name || main.peer_name || '主 Agent') : '';
 }
 function paSessionById(id) { return (state.sessions || []).find((s) => s.id === id) || null; }
 function paSessionByAddr(addr) {
@@ -527,9 +533,10 @@ function paInitial(name) {
   return n ? [...n][0].toUpperCase() : 'A';
 }
 function paClusterMax(el) {
+  // 尺寸 / 叠放和侧栏原版头像条是同一套（主头像 40、worker 26、叠 6），可见数直接用它的公式
+  //（含给「+N」留的位置）；卡片的边框 + 内边距占 26px。
   const inner = typeof mainAgentInnerWidth === 'function' ? mainAgentInnerWidth(el) : 240;
-  const avail = inner - 28 - 52 - 8;
-  return Math.max(2, Math.min(6, Math.floor((avail - 34) / 26) + 1));
+  return typeof mainAgentWorkerVisibleCount === 'function' ? mainAgentWorkerVisibleCount(Math.max(0, inner - 26)) : 6;
 }
 function paWorkerAvatar(w, fresh) {
   const n = paItemsOfSession(w.sessionId).length;
@@ -540,7 +547,7 @@ function paWorkerAvatar(w, fresh) {
     type: 'button', class: 'pa-wav' + (fresh ? ' new' : '') + (on ? ' on' : ''),
     title: tip, 'aria-label': w.name + '，运行中',
     onclick: (e) => { e.stopPropagation(); if (w.taskId) agentOpenCard(w.taskId); else openSession(w.sessionId); },
-  }, paEl('span', { text: paInitial(w.name) }), paEl('i', { class: 'wd' }), n ? paEl('b', { class: 'wn', text: String(n) }) : null);
+  }, paEl('span', { text: paInitial(w.name) }), n ? paEl('b', { class: 'wn', text: String(n) }) : null);
   btn.style.setProperty('--worker-hue', typeof workerHue === 'function' ? workerHue(w.name) : 210);
   return btn;
 }
@@ -563,25 +570,28 @@ function agentRenderCluster() {
       btn, pa.mainErr ? paEl('p', { class: 'pa-err', text: pa.mainErr }) : null));
     return;
   }
+  // 正在改名时别重画：输入框会被销毁（轮询每隔几秒就会触发一次）
+  if (pa.renaming && el.querySelector('.pa-name-in')) return;
   const workers = paRunningWorkers();
   const c = pa.needs.counts.all || 0;
   const hot = paHasLivePerm();
   const run = !!(main.status && main.status.running);
   const max = paClusterMax(el);
-  const sig = [main.id, main.name, main.peer_name, run, c, hot, pa.view, max, pa.ui.card, pa.asideShown,
+  const name = paMainName(main);
+  const sig = [main.id, main.name, main.peer_name, run, c, hot, pa.view, max, pa.ui.card, pa.asideShown, pa.renameErr,
     workers.map((w) => w.sessionId + ':' + paItemsOfSession(w.sessionId).length + ':' + (w.taskId || '')).join(',')].join(';');
   if (el.dataset.paSig === sig && el.childElementCount) return;
   el.dataset.paSig = sig;
   const prev = new Set(pa.workerIds);
   pa.workerIds = workers.map((w) => w.sessionId);
-  const shown = workers.length > max ? workers.slice(0, max - 1) : workers;
+  const shown = workers.slice(0, max);
   const more = workers.length - shown.length;
   const onMain = pa.view === 'chat' || pa.view === 'board';
   const av = paEl('button', {
     type: 'button', class: 'pa-av' + (onMain ? ' on' : ''),
-    title: (main.peer_name || main.name) + '\n主 Agent · 点开会话', 'aria-label': '打开主 Agent 会话',
+    title: name + '\n主 Agent · 点开会话', 'aria-label': '打开主 Agent 会话',
     onclick: () => agentShowView('chat'),
-  }, paEl('span', { text: paInitial(main.name) }));
+  }, paEl('span', { text: paInitial(name) }));
   const badge = c ? paEl('button', {
     type: 'button', class: 'pa-badge' + (hot ? ' hot' : ''), text: c > 9 ? '9+' : String(c),
     title: c + ' 项在等你，点开「需要你」', 'aria-label': c + ' 项在等你',
@@ -591,11 +601,58 @@ function agentRenderCluster() {
   const ws = shown.length ? paEl('div', { class: 'pa-ws' },
     shown.map((w) => paWorkerAvatar(w, !prev.has(w.sessionId))),
     more ? paEl('span', { class: 'pa-more', text: '+' + more, title: workers.slice(shown.length).map((w) => w.name).join('\n') }) : null) : null;
+  const nameBtn = paEl('button', { type: 'button', class: 'pa-name', title: '点击重命名（只改显示名，A2A 地址名不变）', 'aria-label': '重命名主 Agent，当前叫 ' + name },
+    paEl('b', { text: name }), paEl('span', { class: 'pe', html: paSvg('pencil', 's') }));
+  nameBtn.onclick = () => paStartRename(main, nameBtn);
   el.textContent = '';
   el.append(paEl('div', { class: 'pa-agents-card' },
     paEl('div', { class: 'pa-ag-row' + (ws ? ' has-ws' : '') }, paEl('div', { class: 'pa-av-main' }, av, badge, dot), ws),
-    paEl('div', { class: 'pa-ag-cap' }, paEl('b', { text: main.peer_name || main.name || '主 Agent' }),
-      paEl('span', { class: 'rn' + (workers.length ? ' on' : ''), text: workers.length ? '运行中 ' + workers.length : (run ? '处理中' : '空闲') }))));
+    paEl('div', { class: 'pa-ag-cap' }, nameBtn,
+      paEl('span', { class: 'rn' + (workers.length ? ' on' : ''), text: workers.length ? '运行中 ' + workers.length : (run ? '处理中' : '空闲') })),
+    pa.renameErr ? paEl('div', { class: 'pa-ag-err', role: 'alert', text: pa.renameErr }) : null));
+}
+
+// 主 Agent 显示名：点名字就地改，PATCH 的是和侧栏「重命名」同一个 name 字段，刷新后还在。
+// 只动 name——peer_name（A2A 地址名）不碰，所以 worker 往 mainAgent 报告的链路不受影响。
+function paRerenderCluster() {
+  const el = $('#main-agents');
+  if (el) { el.dataset.paSig = ''; agentRenderCluster(); }
+}
+function paStartRename(main, nameBtn) {
+  if (pa.renaming) return;
+  pa.renaming = true;
+  pa.renameErr = '';
+  const input = paEl('input', { class: 'pa-name-in', type: 'text', value: main.name || '', maxlength: '60', spellcheck: 'false', 'aria-label': '主 Agent 显示名' });
+  let settled = false;
+  const finish = async (commit) => {
+    if (settled) return;
+    settled = true;
+    const name = input.value.trim();
+    if (!commit || !name || name === main.name) { pa.renaming = false; paRerenderCluster(); return; }
+    // 没单独设置地址名时，A2A 地址是跟着显示名走的：改名会让 worker 的回报找不到它，得让用户知情
+    if (!main.peer_name && typeof confirm === 'function' && !confirm('这个主 Agent 没有单独设置地址名，A2A 地址跟着显示名走。\n改成「' + name + '」后，worker 往「' + main.name + '」发的回报会找不到它（可以先在 📡 面板里设置地址名）。\n仍要改吗？')) {
+      pa.renaming = false; paRerenderCluster(); return;
+    }
+    input.disabled = true;
+    try {
+      await api('/api/sessions/' + paEnc(main.id), { method: 'PATCH', body: JSON.stringify({ name }) });
+      main.name = name;
+      if (typeof loadSessions === 'function') loadSessions();
+    } catch (e) {
+      pa.renameErr = '重命名失败：' + ((e && e.message) || e);
+      setTimeout(() => { if (pa.renameErr) { pa.renameErr = ''; paRerenderCluster(); } }, 8000);
+    }
+    pa.renaming = false;
+    paRerenderCluster();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  nameBtn.replaceWith(input);
+  input.focus();
+  input.select();
 }
 
 async function paCreateMainAgent(btn) {
@@ -610,7 +667,7 @@ async function paCreateMainAgent(btn) {
     if (!prov) throw new Error('没有和 ' + cli.name + ' 同引擎的 provider');
     let prompt = '';
     try { prompt = await ensureMainAgentPrompt(); } catch (_) { /* 提示词取不到也能建，之后可在 📡 面板补 */ }
-    const body = { name: 'mainAgent', cli: cli.name, provider: prov.name, cwd: state.home || '~', peer_name: 'mainAgent', main_agent: true, resident: kind === 'claude' };
+    const body = { name: '主 Agent', cli: cli.name, provider: prov.name, cwd: state.home || '~', peer_name: 'mainAgent', main_agent: true, resident: kind === 'claude' };
     if (prompt) body.role_prompt = prompt;
     const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
     paSet(PA_MAIN_KEY, s.id);
@@ -677,8 +734,6 @@ function agentOnSessionOpened(s) {
   if (s && s.main_agent) paSet(PA_MAIN_KEY, s.id); // 点开哪个主 Agent，头像簇就跟着它
   pa.view = s && s.main_agent ? (paActiveChatTab() === 'board' ? 'board' : 'chat') : 'session';
   if (pa.view === 'chat') pa.unseen = 0;
-  // worker 会话绑了卡：右栏跟着显示那张卡
-  if (s && !s.main_agent) { const t = paTaskOfSession(s.id); if (t) pa.ui.card = t.id; }
   paRenderNav();
   agentRenderCluster();
   paSyncAside();
@@ -703,6 +758,7 @@ function agentHideNeedsView() {
     pa.view = 'session';
     paRenderNav();
     agentRenderCluster();
+    paSyncAside();
   }
 }
 function agentRestoreView() {

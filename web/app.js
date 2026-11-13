@@ -3872,13 +3872,36 @@ function boardEventAvatar(kind) {
   return avatar;
 }
 
-function boardRenderTimeline(task) {
-  const timeline = $('#board-drawer-timeline');
-  const filters = $('#board-drawer-filters');
+// 时间线的一行：看板抽屉和 Personal Agent 右栏共用同一份渲染，样式 / markdown 行为一致。
+function boardTimelineRow(event) {
+  const isUser = event.kind === '用户消息';
+  const row = document.createElement('div');
+  row.className = 'board-drawer-event' + (isUser ? ' board-event-user' : '');
+  row.dataset.kind = event.kind || '事件';
+  if (event.kind === '主 Agent 回复') row.dataset.replyKey = boardReplyKey(event);
+  const at = document.createElement('span');
+  at.className = 'board-drawer-event-at';
+  at.textContent = event.at || '';
+  const kind = document.createElement('span');
+  kind.className = 'board-drawer-event-kind' + (isUser ? ' kind-user' : '');
+  kind.textContent = event.kind || '事件';
+  const text = document.createElement('div');
+  text.className = 'board-drawer-event-text md';
+  text.innerHTML = md(event.text || '', { artifacts: false });
+  row.append(boardEventAvatar(event.kind), at, kind, text);
+  return row;
+}
+
+// opts 缺省时画抽屉里的时间线；Personal Agent 右栏传自己的容器和筛选状态，其余完全一样。
+function boardRenderTimeline(task, opts) {
+  const o = opts || {};
+  const timeline = o.timeline || $('#board-drawer-timeline');
+  const filters = o.filters || $('#board-drawer-filters');
   if (!timeline || !filters) return;
   const events = boardTaskEvents(task);
-  const count = $('#board-drawer-timeline-count');
+  const count = o.timeline ? null : $('#board-drawer-timeline-count');
   if (count) count.textContent = String(events.length);
+  const current = o.filter != null ? o.filter : boardTimelineFilter;
   if (!events.length) {
     filters.innerHTML = '';
     timeline.innerHTML = '';
@@ -3897,9 +3920,10 @@ function boardRenderTimeline(task) {
   entries.forEach((entry) => {
     const chip = document.createElement('button');
     chip.type = 'button';
-    chip.className = 'board-filter-chip' + (boardTimelineFilter === entry.key ? ' active' : '');
+    chip.className = 'board-filter-chip' + (current === entry.key ? ' active' : '');
     chip.textContent = `${entry.label} ${entry.count}`;
     chip.onclick = () => {
+      if (o.onFilter) { o.onFilter(entry.key); return; }
       boardTimelineFilter = entry.key;
       boardRenderTimeline(task);
     };
@@ -3908,23 +3932,8 @@ function boardRenderTimeline(task) {
 
   timeline.innerHTML = '';
   events.forEach((event) => {
-    if (boardTimelineFilter !== 'all' && event.kind !== boardTimelineFilter) return;
-    const isUser = event.kind === '用户消息';
-    const row = document.createElement('div');
-    row.className = 'board-drawer-event' + (isUser ? ' board-event-user' : '');
-    row.dataset.kind = event.kind || '事件';
-    if (event.kind === '主 Agent 回复') row.dataset.replyKey = boardReplyKey(event);
-    const at = document.createElement('span');
-    at.className = 'board-drawer-event-at';
-    at.textContent = event.at || '';
-    const kind = document.createElement('span');
-    kind.className = 'board-drawer-event-kind' + (isUser ? ' kind-user' : '');
-    kind.textContent = event.kind || '事件';
-    const text = document.createElement('div');
-    text.className = 'board-drawer-event-text md';
-    text.innerHTML = md(event.text || '', { artifacts: false });
-    row.append(boardEventAvatar(event.kind), at, kind, text);
-    timeline.append(row);
+    if (current !== 'all' && event.kind !== current) return;
+    timeline.append(boardTimelineRow(event));
   });
 }
 

@@ -49,7 +49,8 @@ function grabLine(needle) {
 
 const GRABBED = ['mainAgentSessions', 'runningMainAgentWorkers', 'workerHue', 'nameInitial', 'mainAgentInnerWidth', 'shortenPath',
   'statusDot', 'parsePermQuestions', 'toolSummary', 'boardTaskEvents', 'boardTaskContext', 'boardReplyEvents', 'boardReplyKey',
-  'boardReplyKeys', 'boardEventText', 'boardAttachmentLinks', 'boardAppendUserEvent', 'escapeHtml'];
+  'boardReplyKeys', 'boardEventText', 'boardAttachmentLinks', 'boardAppendUserEvent', 'escapeHtml',
+  'boardEventAvatar', 'boardMuted', 'boardTimelineRow', 'boardRenderTimeline'];
 
 const HTML = `<!doctype html><html><body>
 <div id="app">
@@ -115,6 +116,7 @@ function readAsDataURL() { return Promise.resolve('data:image/png;base64,AAAA');
 function stripDataURLPrefix(s) { return s.slice(s.indexOf(',') + 1); }
 async function uploadAttachment(f) { return { name: f.name, size: f.size, path: '/up/' + f.name }; }
 function renderAttachmentThumbs(box, list) { box.innerHTML = ''; list.forEach((a) => { const d = document.createElement('div'); d.className = 'attached-thumb'; d.textContent = a.name; box.appendChild(d); }); }
+function md(s) { return escapeHtml(String(s)); }
 function boardArtifactGroups(list) { return [{ title: '第 1 轮', items: list.map((a, i) => ({ artifact: a, index: i })) }]; }
 function boardArtifactRoundCard(g) { const d = document.createElement('section'); d.className = 'board-artifact-round'; d.textContent = g.items.map((i) => i.artifact.title).join(','); return d; }
 `;

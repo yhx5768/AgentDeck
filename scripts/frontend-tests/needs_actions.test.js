@@ -142,7 +142,8 @@ async function main() {
   check('回写之前不算已回复', (ev('paCheckReply()'), ev('!!pa.cmp.wait')));
   ev(`state.agentBoard.tasks.find(t => t.id === 'refund').timeline.push({ at: '2026-11-13 10:05:00', kind: '主 Agent 回复', text: '收到，退款链路先暂停', data: { turn_id: 't9' } })`);
   ev('paCheckReply()');
-  check('看板里出现新的主 Agent 回复 → 标已回复并切到「动态」', !ev('pa.cmp.wait') && /已回复/.test(doc.querySelector('.pa-cstatus').textContent) && ev('pa.ui.tab') === 'feed');
+  check('看板里出现新的主 Agent 回复 → 标已回复、切到「动态」并把这条回复闪一下（和抽屉一致）', !ev('pa.cmp.wait') && /已回复/.test(doc.querySelector('.pa-cstatus').textContent) && ev('pa.ui.tab') === 'feed'
+    && !!doc.querySelector('#agent-aside .board-drawer-event.board-event-fresh[data-kind="主 Agent 回复"]'));
 
   env = fresh();
   ({ w, doc, ev } = env);

@@ -1,7 +1,7 @@
 /* AgentDeck · Personal Agent 右栏（#agent-aside）
  *
  * 选中一张卡片（或一条队列条目）后显示：概览（产物 / 等你处理 / 最近动态 / 档案）、
- * 动态（卡片时间线 + worker 会话尾部）、作答表单与回执，底部常驻一个给主 Agent 的留言框。
+ * 动态（卡片时间线，复用看板抽屉的渲染）、作答表单与回执，底部常驻一个给主 Agent 的留言框。
  * 卡片数据 = /api/agent-board 快照里的真实任务；产物渲染直接复用看板抽屉的
  * boardArtifactGroups / boardArtifactRoundCard（预览、下载、分享都是同一套）。
  * 宽屏（≥1280）与主区并排；更窄时是右侧浮层；手机是整屏 sheet。可完全关闭，
@@ -12,8 +12,11 @@
 // ---------- 可见性 ----------
 function paDocked() { return window.innerWidth >= PA_DOCK_MIN; }
 function paIsMobile() { return window.innerWidth <= 640; }
+// 右栏是看板卡的详情，只跟主 Agent（需要你队列 / 主会话 / 看板）：打开 worker 会话等「别的视图」时整个收起，
+// 不跟着 worker 会话走；回到主 Agent 会话再按用户之前开 / 关的偏好显示。
+function paAsideAllowed() { return agentModeOn() && pa.view !== 'session'; }
 function paAsideVisible() {
-  if (!agentModeOn()) return false;
+  if (!paAsideAllowed()) return false;
   return paDocked() ? pa.asideOpen : pa.asideShown;
 }
 
@@ -77,7 +80,7 @@ function paCloseAside() {
 function paRenderHandle() {
   const h = $('#pa-aside-handle');
   if (!h) return;
-  const show = agentModeOn() && !paAsideVisible() && !paIsMobile();
+  const show = paAsideAllowed() && !paAsideVisible() && !paIsMobile();
   h.classList.toggle('hidden', !show);
   document.body.classList.toggle('pa-handle-on', show); // 队列给把手让出右边缘，别把行尾的时间 / 说明盖住
   if (!show) return;
@@ -111,6 +114,7 @@ function agentRenderTabbar() {
 // 头像 / 看板卡 / 对话里的链接打开一张卡：焦点条目取这张卡上最急的待办。
 function agentOpenCard(taskId, itemId) {
   if (!agentModeOn() || !taskId) return;
+  if (pa.view === 'session') paShowQueue(); // 从 worker 会话里点别的 worker 头像：回到看板这一侧再开卡
   const open = paItemsOfTask(taskId);
   const pick = itemId ? paItemById(itemId) : open[0];
   pa.ui.card = taskId;
@@ -154,7 +158,7 @@ function paAsideSig(m) {
   const t = m.task;
   const w = paWorkerOf(t);
   return [
-    pa.ui.sel, pa.ui.card, pa.ui.tab, pa.ui.ff, pa.ui.fx, JSON.stringify(pa.ui.fo), pa.feed ? pa.feed.v : 0,
+    pa.ui.sel, pa.ui.card, pa.ui.tab, pa.ui.tf,
     m.item ? m.item.id + '|' + m.item.state + '|' + m.item.title : '',
     m.done ? m.done.id + '|' + m.done.steps.map((s) => s.ok).join('') : '',
     t ? [t.id, t.status, t.updated_at, (t.timeline || []).length, (t.artifacts || []).length, t.progress].join(',') : (m.taskId ? 'missing:' + !!state.agentBoard : ''),
@@ -192,7 +196,6 @@ function agentRenderAside(force) {
       if (n) { n.focus({ preventScroll: true }); if (caret && n.setSelectionRange) n.setSelectionRange(caret[0], caret[1]); }
     }
   }
-  if (m.task) paLoadFeed(m.task);
   paRenderComposer();
 }
 
@@ -242,7 +245,7 @@ function paAsideEmpty() {
 }
 
 function paCardTabs(m) {
-  const n = paFeedEntries(m.task).length;
+  const n = boardTaskEvents(m.task).length;
   const tab = (v, label, count) => paEl('button', {
     type: 'button', class: pa.ui.tab === v ? 'on' : '', onclick: () => { pa.ui.tab = v; agentRenderAside(true); },
   }, label, count != null ? paEl('em', { text: String(count) }) : null);
@@ -292,14 +295,14 @@ function paArtifactsSection(t) {
 }
 
 function paRecentSection(t) {
-  const es = paFeedEntries(t).filter((e) => e.cat !== 'tool').slice(0, 3);
+  const es = boardTaskEvents(t).slice(-3);
   if (!es.length) return null;
   const more = paEl('button', { type: 'button', class: 'more', text: '查看全部 →', onclick: () => { pa.ui.tab = 'feed'; agentRenderAside(true); } });
   const sec = paSec('最近动态', null, more);
-  const feed = paEl('div', { class: 'pa-feed-s' });
-  es.forEach((e) => feed.append(paEl('div', { class: 'fe' }, paEl('time', { text: paHM(e.at) }),
-    paEl('div', {}, paEl('b', { text: e.who }), ' ', paClip(paFirstLine(e.text), 60)))));
-  sec.append(feed);
+  // 和「动态」同一种行，只是正文截成一行摘要
+  const list = paEl('div', { class: 'board-drawer-timeline pa-recent' });
+  es.forEach((e) => list.append(boardTimelineRow(Object.assign({}, e, { text: paClip(String(e.text || '').replace(/\s+/g, ' ').trim(), 120) }))));
+  sec.append(list);
   return sec;
 }
 
@@ -724,138 +727,22 @@ function paReceipt(d) {
       d.taskId ? paEl('button', { type: 'button', class: 'ghost-btn', text: '在看板查看', onclick: () => { agentShowView('board'); setTimeout(() => agentOpenCard(d.taskId), 0); } }) : null));
 }
 // ---------- 动态 ----------
-// 卡片时间线（看板快照）+ 绑定 worker 会话的尾部（/history）合成一条按时间倒序的流。
-// 事件按 事件 / 消息 / A2A / 工具 分类，可筛选、可逐条展开。
-const PA_CATS = [['all', '全部'], ['event', '事件'], ['msg', '消息'], ['a2a', 'A2A'], ['tool', '工具']];
+// 卡片时间线（看板快照里的 task.timeline）。渲染和筛选直接复用看板抽屉「任务流」那一份
+// （boardRenderTimeline / boardTimelineRow：按事件类型分的筛选 chip、头像 / 时间 / 类型 / markdown
+// 正文，样式用 board-drawer-* 同一组类），不另造一套。
 function paTagOf(s) { const m = /^【([^】]+)】/.exec(String(s || '').trim()); return m ? m[1] : ''; }
 function paUntag(s) { return String(s || '').trim().replace(/^【[^】]+】\s*/, ''); }
 
-function paTailEntries(tail, wName) {
-  const out = [];
-  let grp = null;
-  (tail || []).forEach((ev, n) => {
-    const at = paParseTime(ev.ts);
-    const d = ev.data || {};
-    if (ev.kind === 'user') {
-      grp = null;
-      if (d.source === 'a2a') {
-        const body = d.body || d.text || '';
-        out.push({ key: 't' + n, at, cat: 'a2a', who: (d.from || '另一个会话') + ' → ' + wName, tag: paTagOf(body), text: paUntag(body) });
-      } else if ((d.text || '').trim()) {
-        out.push({ key: 't' + n, at, cat: 'msg', who: '你', text: d.text });
-      }
-      return;
-    }
-    if (ev.kind !== 'stream' || d.parent_tool_use_id) return;
-    if (d.type === 'assistant' && d.message && Array.isArray(d.message.content)) {
-      d.message.content.forEach((b, bi) => {
-        if (b.type === 'text' && b.text && b.text.trim()) {
-          grp = null;
-          out.push({ key: 't' + n + '.' + bi, at, cat: 'msg', who: wName, text: b.text.trim() });
-        } else if (b.type === 'tool_use' && b.name) {
-          if (!grp) { grp = { key: 'tc' + n, at, cat: 'tool', calls: [] }; out.push(grp); }
-          grp.calls.push({ name: b.name, arg: typeof toolSummary === 'function' ? toolSummary(b.input) : '' });
-          grp.at = at;
-        }
-      });
-    } else if (d.type === 'user' && d.origin && d.origin.kind === 'peer') {
-      grp = null;
-      const body = d.origin.body || '';
-      out.push({ key: 't' + n, at, cat: 'a2a', who: (d.origin.name || '另一个会话') + ' → ' + wName, tag: paTagOf(body), text: paUntag(body) });
-    }
-  });
-  return out;
-}
-
-function paFeedEntries(task) {
-  if (!task) return [];
-  const out = [];
-  const w = paWorkerOf(task);
-  const tail = w && pa.feed && pa.feed.sid === w.id ? paTailEntries(pa.feed.tail, w.name) : [];
-  const tailA2A = tail.filter((e) => e.cat === 'a2a');
-  (task.timeline || []).forEach((e, n) => {
-    const at = paParseTime(e.at);
-    const kind = e.kind || '事件';
-    const text = String(e.text || '');
-    if (kind === '用户消息') out.push({ key: 'e' + n, at, cat: 'msg', who: '你 → 主 Agent', text });
-    else if (kind === '主 Agent 回复') out.push({ key: 'e' + n, at, cat: 'msg', who: '主 Agent → 你', text });
-    else if (kind === '路由事件') {
-      // worker 会话尾部已有同一条 A2A 的原文时，别再列一遍路由摘要
-      const rest = text.split('：').slice(1).join('：').trim();
-      if (rest && tailA2A.some((t) => Math.abs(t.at - at) < 120000 && (t.text.includes(rest.slice(0, 24)) || rest.includes(t.text.slice(0, 24))))) return;
-      out.push({ key: 'e' + n, at, cat: 'a2a', who: 'A2A', text });
-    } else out.push({ key: 'e' + n, at, cat: 'event', who: kind, tag: '', text });
-  });
-  out.push(...tail);
-  return out.sort((a, b) => b.at - a.at);
-}
-
-async function paLoadFeed(task) {
-  if (pa.ui.tab !== 'feed' || !task) return;
-  const w = paWorkerOf(task);
-  const f = pa.feed;
-  if (!w) { if (f.sid) { f.sid = ''; f.tail = []; f.v++; } return; }
-  if (f.loading || (f.sid === w.id && Date.now() - f.at < 15000)) return;
-  f.loading = true;
-  f.err = '';
-  const sameSid = f.sid === w.id;
-  f.sid = w.id;
-  if (!sameSid) f.tail = [];
-  try {
-    const d = await api('/api/sessions/' + paEnc(w.id) + '/history?before=1000000000&limit=120');
-    f.tail = Array.isArray(d.events) ? d.events : [];
-  } catch (e) {
-    f.err = (e && e.message) || String(e);
-  }
-  f.at = Date.now();
-  f.loading = false;
-  f.v++;
-  if (paAsideVisible()) agentRenderAside();
-}
-
-function paFeedRow(e) {
-  const open = pa.ui.fx || pa.ui.fo[e.key];
-  let icon, sum, body;
-  if (e.cat === 'tool') {
-    icon = paEl('span', { html: paSvg('term', 's') });
-    sum = [paEl('b', { text: e.calls.length + ' 次工具调用' }), paEl('span', { class: 'fx', text: [...new Set(e.calls.map((c) => c.name))].join(' · ') })];
-    body = e.calls.map((c) => paEl('div', { class: 'pa-call' }, paEl('span', { class: 'cn', text: c.name }), paEl('span', { class: 'ca', text: c.arg })));
-  } else {
-    icon = e.cat === 'event' ? paEl('i', { class: 'pa-fdot' }) : paEl('span', { html: paSvg(e.cat === 'a2a' ? 'arrowR' : 'msg', 's') });
-    sum = [paEl('b', { text: e.who }), e.tag ? paEl('span', { class: 'pa-pill ' + (e.tag === '受阻' ? 'a' : e.tag === '需确认' || e.tag === '需人工' ? 'b' : ''), text: e.tag }) : null,
-      paEl('span', { class: 'fx', text: paFirstLine(e.text) })];
-    body = [paEl('div', { class: 'tx', text: paClip(e.text, 4000) })];
-  }
-  const head = paEl('button', {
-    type: 'button', class: 'pa-fe-h', 'aria-expanded': open ? 'true' : 'false',
-    onclick: () => {
-      if (pa.ui.fx) { paFeedEntries(paTaskById(pa.ui.card)).forEach((x) => { pa.ui.fo[x.key] = true; }); pa.ui.fx = false; }
-      pa.ui.fo[e.key] = !pa.ui.fo[e.key];
-      agentRenderAside(true);
-    },
-  }, paEl('time', { text: paHM(e.at) }), paEl('span', { class: 'fi' }, icon), paEl('span', { class: 'fs' }, sum), paEl('span', { class: 'chev', html: paSvg('chevR', 's') }));
-  return paEl('div', { class: 'pa-fe c-' + e.cat + (open ? ' open' : ''), 'data-key': e.key }, head, paEl('div', { class: 'pa-fe-b' }, body));
-}
-
 function paFeedView(task) {
-  const all = paFeedEntries(task);
-  const cnt = { all: all.length };
-  PA_CATS.slice(1).forEach(([k]) => { cnt[k] = all.filter((e) => e.cat === k).length; });
-  const list = all.filter((e) => pa.ui.ff === 'all' || e.cat === pa.ui.ff);
-  const chips = PA_CATS.map(([k, label]) => paEl('button', {
-    type: 'button', class: 'pa-ff' + (pa.ui.ff === k ? ' on' : ''), onclick: () => { pa.ui.ff = k; agentRenderAside(true); },
-  }, label, paEl('em', { text: String(cnt[k]) })));
-  const notes = [];
-  const w = paWorkerOf(task);
-  if (!w) notes.push(paEl('p', { class: 'pa-hint', text: '这张卡没有绑定 worker 会话（或会话已删除），这里只显示卡片时间线。' }));
-  else if (pa.feed.loading && !pa.feed.tail.length) notes.push(paEl('p', { class: 'pa-hint', text: '正在读取 ' + w.name + ' 的会话尾部…' }));
-  else if (pa.feed.err) notes.push(paEl('p', { class: 'pa-ferr', text: '读取 ' + w.name + ' 的会话失败：' + pa.feed.err + '（下面只有卡片时间线）' }));
-  return [
-    paEl('div', { class: 'pa-ffbar' }, paEl('div', { class: 'ffs' }, chips),
-      paEl('button', { type: 'button', class: 'ghost-btn pa-sm', text: pa.ui.fx ? '全部折叠' : '全部展开', onclick: () => { pa.ui.fx = !pa.ui.fx; pa.ui.fo = {}; agentRenderAside(true); } })),
-    notes,
-    paEl('div', { class: 'pa-fl' }, list.length ? list.map(paFeedRow) : paEl('p', { class: 'pa-none', text: '这个分类下没有记录。' })),
-  ];
+  // 换了一张卡，筛选回到「全部」（和抽屉一致）；筛选的类型这张卡上已经没有时也回到「全部」
+  if (pa.ui.tfId !== task.id || (pa.ui.tf !== 'all' && !boardTaskEvents(task).some((e) => e.kind === pa.ui.tf))) {
+    pa.ui.tfId = task.id;
+    pa.ui.tf = 'all';
+  }
+  const filters = paEl('div', { class: 'board-drawer-filters' });
+  const timeline = paEl('div', { class: 'board-drawer-timeline' });
+  boardRenderTimeline(task, { filters, timeline, filter: pa.ui.tf, onFilter: (k) => { pa.ui.tf = k; agentRenderAside(true); } });
+  return [filters, timeline];
 }
 // ---------- 常驻留言框 ----------
 // 给主 Agent 留言：带上选中卡片的上下文和结构化 board_task_id，服务端据此把主 Agent
@@ -884,7 +771,7 @@ function paRenderComposer() {
   const off = !main;
   const ta = paEl('textarea', {
     id: 'pa-cnote', rows: '1', 'aria-label': '给主 Agent 留言', disabled: off ? true : null,
-    placeholder: off ? '还没有主 Agent，先在左栏新建一个' : (task ? '给 ' + paMainAddr(main) + ' 留言（带上这张卡的上下文）' : '给 ' + paMainAddr(main) + ' 留言'),
+    placeholder: off ? '还没有主 Agent，先在左栏新建一个' : (task ? '给 ' + paMainName(main) + ' 留言（带上这张卡的上下文）' : '给 ' + paMainName(main) + ' 留言'),
   });
   ta.value = c.drafts[paCmpKey()] || '';
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(120, ta.scrollHeight) + 'px'; };
@@ -970,7 +857,7 @@ async function paSendNote() {
     if (cur && box.dataset.card === key) cur.value = '';
     if (typeof bumpSessionActivity === 'function') bumpSessionActivity(main.id);
     if (task) { c.wait = { taskId: task.id, baseline }; c.busy = false; paCmpStatus('已发送 · 回复中…', 'queued'); }
-    else { c.busy = false; paCmpStatus('已发送给 ' + paMainAddr(main), 'ok'); }
+    else { c.busy = false; paCmpStatus('已发送给 ' + paMainName(main), 'ok'); }
   } catch (e) {
     c.wait = null;
     c.busy = false;
@@ -989,9 +876,11 @@ function paCheckReply() {
   pa.cmp.wait = null;
   pa.cmp.status = '已回复 · 最新回复见「动态」';
   pa.cmp.kind = 'ok';
-  if (pa.ui.card === task.id) { pa.ui.tab = 'feed'; pa.ui.ff = 'all'; agentRenderAside(true); }
+  if (pa.ui.card === task.id) { pa.ui.tab = 'feed'; pa.ui.tf = 'all'; pa.ui.tfId = task.id; agentRenderAside(true); }
   paRenderComposer();
-  const row = document.querySelector('#agent-aside .pa-fe.c-msg');
-  if (row) { row.classList.add('new'); if (row.scrollIntoView) row.scrollIntoView({ block: 'nearest' }); }
+  // 和抽屉的 boardReplyReveal 一样：定位到这条新回复并闪一下
+  const rows = [...document.querySelectorAll('#agent-aside .board-drawer-event[data-kind="主 Agent 回复"]')];
+  const row = rows.find((r) => r.dataset.replyKey === fresh) || rows[rows.length - 1];
+  if (row) { row.classList.add('board-event-fresh'); if (row.scrollIntoView) row.scrollIntoView({ block: 'nearest' }); }
 }
 

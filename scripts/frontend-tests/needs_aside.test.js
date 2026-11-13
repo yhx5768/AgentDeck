@@ -67,6 +67,116 @@ async function main() {
   check('有待办时「等你处理」排在产物前面', ev("[...document.querySelectorAll('.pa-ab .pa-sec > h3')].map(h => h.textContent.replace(/\\d+$/, '')).join('|')").indexOf('等你处理') < ev("[...document.querySelectorAll('.pa-ab .pa-sec > h3')].map(h => h.textContent.replace(/\\d+$/, '')).join('|')").indexOf('产物'));
   ev("agentSelectItem('review:nobind')");
   check('条目指向的卡不在看板快照里：明确说找不到，而不是空白', /找不到这张卡/.test(doc.querySelector('.pa-ab').textContent));
+
+  console.log('主 Agent 显示名（内联编辑）');
+  const mk = (sessionsFix, apiExtra) => {
+    const e = makeEnv({ api: Object.assign({ '/api/needs-you': () => sampleNeeds(Date.now()), '/api/agent-board': () => sampleBoard() }, apiExtra || {}) });
+    e.ev("pa.mode = 'agent'; document.body.classList.add('pa-on')");
+    const ss = sampleSessions().map((x) => (x.main_agent ? Object.assign({}, x, sessionsFix || { name: '小七' }) : x));
+    e.ev(`state.sessions = ${J(ss)}; state.agentBoard = ${J(sampleBoard())}; pa.needs.items = ${J(sampleNeeds(now).items)}; pa.needs.counts = ${J(sampleNeeds(now).counts)}; pa.needs.loaded = true; agentRenderCluster()`);
+    return e;
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const key = (el, k) => el.dispatchEvent(new (el.ownerDocument.defaultView.KeyboardEvent)('keydown', { key: k, bubbles: true }));
+  let e3 = mk();
+  const nm = () => e3.doc.querySelector('.pa-ag-cap .pa-name b').textContent;
+  check('caption 显示会话的显示名（不是地址名 mainAgent），头像取显示名首字', nm() === '小七' && e3.doc.querySelector('.pa-av').textContent === '小' && /小七/.test(e3.doc.querySelector('.pa-av').title));
+  check('留言框提示也用显示名；寻址仍是地址名', (e3.ev('agentRenderAside(true)'), /小七/.test(e3.doc.querySelector('#pa-cnote').placeholder)) && e3.ev('paMainAddr()') === 'mainAgent');
+  e3.doc.querySelector('.pa-name').click();
+  let inp = e3.doc.querySelector('.pa-name-in');
+  check('点名字 → 变成输入框，预填当前名字', !!inp && inp.value === '小七');
+  e3.ev('agentRenderCluster()');
+  check('编辑中轮询重画不会把输入框销毁', e3.doc.querySelector('.pa-name-in') === inp);
+  inp.value = '小八';
+  key(inp, 'Enter');
+  await tick();
+  const patch = e3.w.__calls.filter((c) => c.method === 'PATCH' && c.path === '/api/sessions/s-main');
+  check('Enter 提交：只 PATCH name（不碰 peer_name），落库后 caption 和头像首字更新', patch.length === 1 && J(patch[0].body) === J({ name: '小八' }) && nm() === '小八' && e3.doc.querySelector('.pa-av').textContent === '小');
+  e3.doc.querySelector('.pa-name').click();
+  inp = e3.doc.querySelector('.pa-name-in');
+  inp.value = '不会保存';
+  key(inp, 'Escape');
+  await tick();
+  check('Esc 取消：不发请求，名字不变', e3.w.__calls.filter((c) => c.method === 'PATCH').length === 1 && nm() === '小八' && !e3.doc.querySelector('.pa-name-in'));
+  e3.doc.querySelector('.pa-name').click();
+  inp = e3.doc.querySelector('.pa-name-in');
+  inp.value = '   ';
+  inp.dispatchEvent(new e3.w.Event('blur'));
+  await tick();
+  check('空名字 / 没改名：失焦不发请求', e3.w.__calls.filter((c) => c.method === 'PATCH').length === 1 && nm() === '小八');
+  e3.doc.querySelector('.pa-name').click();
+  inp = e3.doc.querySelector('.pa-name-in');
+  inp.value = '失焦也保存';
+  inp.dispatchEvent(new e3.w.Event('blur'));
+  await tick();
+  check('改了名字再失焦 = 提交', e3.w.__calls.filter((c) => c.method === 'PATCH').length === 2 && nm() === '失焦也保存');
+
+  e3 = mk(null, { 'PATCH /api/sessions/s-main': () => { throw new Error('502 bad gateway'); } });
+  e3.doc.querySelector('.pa-name').click();
+  inp = e3.doc.querySelector('.pa-name-in');
+  inp.value = '会失败';
+  key(inp, 'Enter');
+  await tick();
+  check('保存失败：原名字保留，给出错误', nm() === '小七' && /重命名失败：502 bad gateway/.test(e3.doc.querySelector('.pa-ag-err').textContent));
+
+  e3 = mk({ name: '小七', peer_name: '' });
+  let asked = 0;
+  e3.w.confirm = () => { asked++; return false; };
+  e3.doc.querySelector('.pa-name').click();
+  inp = e3.doc.querySelector('.pa-name-in');
+  inp.value = '换个名';
+  key(inp, 'Enter');
+  await tick();
+  check('没单独设置地址名时，改名会连带改 A2A 地址：先让用户确认，取消就不发请求', asked === 1 && e3.w.__calls.filter((c) => c.method === 'PATCH').length === 0 && nm() === '小七');
+  e3.w.confirm = () => true;
+  e3.doc.querySelector('.pa-name').click();
+  inp = e3.doc.querySelector('.pa-name-in');
+  inp.value = '换个名';
+  key(inp, 'Enter');
+  await tick();
+  check('确认后照改', e3.w.__calls.filter((c) => c.method === 'PATCH').length === 1 && nm() === '换个名');
+
+  console.log('看板只绑主 Agent');
+  const e4 = mk({ name: 'Soar.AI' });
+  e4.ev("document.querySelector('#agent-aside').classList.remove('hidden'); pa.asideOpen = true; pa.view = 'queue'; pa.ui.card = 'refund'; pa.ui.sel = ''; agentRenderAside(true)");
+  const asideHidden = () => e4.doc.querySelector('#agent-aside').classList.contains('hidden');
+  const handleHidden = () => e4.doc.querySelector('#pa-aside-handle').classList.contains('hidden');
+  check('主 Agent 这一侧：右栏显示', !asideHidden());
+  e4.ev("agentOnSessionOpened(state.sessions.find(x => x.id === 's-pay'))");
+  check('打开 worker 会话：右栏整个收起、不留重开把手，也不跟着这个 worker 的卡走', asideHidden() && handleHidden() && e4.ev('pa.view') === 'session' && e4.ev('pa.ui.card') === 'refund');
+  e4.doc.querySelector('#agent-aside .pa-ah').__stale = true;
+  e4.ev('agentRenderAside(true)');
+  check('worker 会话里 agentRenderAside 空转（隐藏时不偷偷重画）', e4.doc.querySelector('#agent-aside .pa-ah').__stale === true);
+  e4.ev("agentOnSessionOpened(state.sessions.find(x => x.main_agent))");
+  check('回到主 Agent 会话：右栏回来（按用户之前的开关偏好）', !asideHidden() && e4.ev('pa.view') === 'chat');
+  e4.ev("agentOnSessionOpened(state.sessions.find(x => x.id === 's-login'))");
+  e4.ev("agentOpenCard('shard')");
+  check('在 worker 会话里点别的 worker 头像 / 卡片：回到队列这一侧再开卡', e4.ev('pa.view') === 'queue' && !asideHidden() && e4.ev('pa.ui.card') === 'shard');
+
+  console.log('动态 = 看板抽屉的任务流');
+  const e5 = mk({ name: 'Soar.AI' });
+  e5.ev(`state.agentBoard.tasks.find(t => t.id === 'refund').timeline = ${J([
+    { at: '2026-11-13 09:00:00', kind: '建卡', text: '任务创建' },
+    { at: '2026-11-13 09:10:00', kind: '评论', text: '回调幂等键已加' },
+    { at: '2026-11-13 09:20:00', kind: '用户消息', text: '先别动退款' },
+    { at: '2026-11-13 09:21:00', kind: '主 Agent 回复', text: '收到，退款链路先暂停', data: { turn_id: 't1' } },
+    { at: '2026-11-13 09:30:00', kind: '评论', text: '单测 18/18 通过' },
+  ])}`);
+  e5.ev("document.querySelector('#agent-aside').classList.remove('hidden'); pa.asideOpen = true; pa.view = 'queue'; pa.ui.card = 'refund'; pa.ui.sel = ''; pa.ui.tab = 'feed'; agentRenderAside(true)");
+  const chips = () => [...e5.doc.querySelectorAll('#agent-aside .board-drawer-filters .board-filter-chip')].map((c) => c.textContent);
+  check('筛选 chip 就是抽屉那套：全部 + 按事件类型（主 Agent 回复 / 用户消息 在前，其余按出现顺序）', J(chips()) === J(['全部 5', '主 Agent 回复 1', '用户消息 1', '建卡 1', '评论 2']), J(chips()));
+  const row0 = e5.doc.querySelector('#agent-aside .board-drawer-timeline .board-drawer-event');
+  check('行是抽屉的 board-drawer-event：头像 / 时间 / 类型 / 正文', e5.doc.querySelectorAll('#agent-aside .board-drawer-timeline .board-drawer-event').length === 5
+    && !!row0.querySelector('.board-drawer-event-avatar') && row0.querySelector('.board-drawer-event-at').textContent === '2026-11-13 09:00:00'
+    && row0.querySelector('.board-drawer-event-kind').textContent === '建卡' && /任务创建/.test(row0.querySelector('.board-drawer-event-text').textContent));
+  check('顺序与抽屉一致（卡片时间线原序），tab 上的数 = 事件数', e5.doc.querySelectorAll('.board-drawer-event')[0].dataset.kind === '建卡' && /5/.test(e5.doc.querySelectorAll('.pa-ctabs button')[1].textContent));
+  [...e5.doc.querySelectorAll('.board-filter-chip')].find((c) => c.textContent === '评论 2').click();
+  check('点 chip 筛选：只剩这一类，chip 高亮', e5.doc.querySelectorAll('#agent-aside .board-drawer-event').length === 2 && e5.doc.querySelector('.board-filter-chip.active').textContent === '评论 2' && e5.ev('pa.ui.tf') === '评论');
+  e5.ev("agentOpenCard('shard'); pa.ui.tab = 'feed'; agentRenderAside(true)");
+  check('换一张卡，筛选回到「全部」（和抽屉一致）', e5.ev('pa.ui.tf') === 'all' && !!e5.doc.querySelector('.board-filter-chip.active') && /^全部/.test(e5.doc.querySelector('.board-filter-chip.active').textContent));
+  e5.ev("pa.ui.card = 'refund'; pa.ui.tab = 'ov'; agentRenderAside(true)");
+  check('概览里的「最近动态」是同一种行，只取最近 3 条', e5.doc.querySelectorAll('#agent-aside .pa-recent .board-drawer-event').length === 3);
+
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);
 }
