@@ -8,13 +8,14 @@
  *
  * 数据全部来自真实接口：GET /api/needs-you（待决 prompt + 待人工/待验收的卡）、
  * /api/sessions、/api/agent-board(+events)、/api/a2a/send、权限决议接口。
- * 默认「普通对话」，什么都不改；模式只存本机 localStorage。
+ * 默认界面形态由服务端 /api/config 的 default_ui_mode 决定（缺省 Personal Agent）；
+ * 用户手动切过后以本机 localStorage 为准。
  *
  * 命名约定：本模块所有顶层标识以 pa / agent / PA_ 开头，避免和 app.js 的全局撞名。
  */
 'use strict';
 
-const PA_MODE_KEY = 'cc-webui:mode';       // 'chat'（默认）| 'agent'
+const PA_MODE_KEY = 'cc-webui:mode';       // 'chat' | 'agent'；未设置时用服务端默认
 const PA_ASIDE_KEY = 'cc-webui:pa-aside';  // 'open'（默认）| 'closed'：右栏是否被用户关掉
 const PA_MAIN_KEY = 'cc-webui:pa-main';    // 多个主 Agent 时记住选的那个
 const PA_DONE_KEY = 'cc-webui:pa-done';    // 本机最近处理（含回执）
@@ -174,8 +175,17 @@ function paFirstLine(s) {
 // ---------- 偏好 / 模式 ----------
 function agentModeOn() { return pa.mode === 'agent'; }
 
+// localStorage 里的显式选择；没选过（或值损坏）返回空串，交给服务端默认值。
+function paStoredMode() {
+  const v = paGet(PA_MODE_KEY, '');
+  return v === 'agent' || v === 'chat' ? v : '';
+}
+function paServerDefaultMode() {
+  return window.__ccDefaultUiMode === 'chat' ? 'chat' : 'agent';
+}
+
 function paLoadPrefs() {
-  pa.mode = paGet(PA_MODE_KEY, 'chat') === 'agent' ? 'agent' : 'chat';
+  pa.mode = paStoredMode() || paServerDefaultMode();
   pa.asideOpen = paGet(PA_ASIDE_KEY, 'open') !== 'closed';
   const ui = paJSON(PA_UI_KEY, {});
   if (ui.group === 'task' || ui.group === 'tier') pa.ui.group = ui.group;
@@ -803,7 +813,14 @@ function paBindSettings() {
   const open = $('#btn-settings');
   if (open) open.addEventListener('click', paSyncModeSeg);
 }
-function paInit() {
+async function paInit() {
+  // First paint must already know agent vs chat. When there is no local
+  // preference, wait for /api/config so the server default wins without
+  // flashing the ordinary page; the inline boot class keeps the app hidden
+  // until this resolves (with a timeout fallback in index.html).
+  if (!paStoredMode() && window.__ccConfigReady) {
+    try { await window.__ccConfigReady; } catch (_) { /* fall back to agent */ }
+  }
   paLoadPrefs();
   paBindSettings();
   window.addEventListener('resize', () => {
@@ -822,6 +839,7 @@ function paInit() {
     paEnsureBoard(true);
   });
   paApplyMode(false);
+  document.documentElement.classList.remove('pa-mode-pending');
 }
 // 其余 agent-*.js 在本文件之后加载，paInit 要等它们都就位（DOMContentLoaded 在所有
 // 同步脚本执行完之后触发）；测试里 readyState 已是 complete，直接跑。

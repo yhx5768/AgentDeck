@@ -11026,13 +11026,26 @@ function openNewGroupDialog(cwd) {
   renderIcons($('#modal-new-group'));
 }
 
+// Start /api/config before the async boot so agent.js can resolve the
+// first-load UI mode without flashing the ordinary page. The same promise is
+// consumed by boot() below; failures fall back to the built-in agent default.
+window.__ccConfigReady = api('/api/config')
+  .then((cfg) => {
+    window.__ccDefaultUiMode = cfg && cfg.default_ui_mode === 'chat' ? 'chat' : 'agent';
+    return cfg;
+  })
+  .catch(() => {
+    window.__ccDefaultUiMode = 'agent';
+    return {};
+  });
+
 (async function boot() {
   await api('/api/me'); // redirects to login when unauthorized
   applyTheme(document.documentElement.dataset.theme || 'light', false);
   state.clis = await api('/api/clis');
   state.providers = await api('/api/providers');
   state.profilesSig = JSON.stringify([state.clis, state.providers]);
-  const cfg = await api('/api/config');
+  const cfg = await window.__ccConfigReady;
   state.home = cfg.home || '';
   state.boardMockBusyAvailable = !!cfg.agent_board_mock_busy;
   state.boardMockBusy = state.boardMockBusyAvailable;

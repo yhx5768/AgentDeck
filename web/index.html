@@ -21,6 +21,14 @@
 (function () {
   var t = localStorage.getItem('cc-webui-theme') || 'light';
   document.documentElement.dataset.theme = t;
+  // 没有本地界面模式偏好时，等 /api/config 的 default_ui_mode 决定首屏，
+  // 期间先藏住外壳，避免先闪一下普通对话页。超时兜底防止接口异常时白屏。
+  var mode = null;
+  try { mode = localStorage.getItem('cc-webui:mode'); } catch (_) {}
+  if (mode !== 'agent' && mode !== 'chat') {
+    document.documentElement.classList.add('pa-mode-pending');
+    setTimeout(function () { document.documentElement.classList.remove('pa-mode-pending'); }, 2500);
+  }
 })();
 </script>
 </head>

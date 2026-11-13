@@ -76,14 +76,20 @@ default_cwd: "~"
 # 设 false 时移除注入（mcode 的条目会被清理）。
 # agentdeck_mcp: false
 
-# main_agent：预载的「主 Agent 角色提示」与它拼进去的 worker 默认档。
+# main_agent：首次启动自动创建主 Agent、首屏界面模式、预载的角色提示与 worker 默认档。
 # GET /api/main-agent-prompt 下发的就是拼好的提示；前端「作为主 Agent」开关把它写进
 # 会话的 role_prompt（改这里后要在 📡 面板把开关关掉再打开、或用角色提示弹窗的
 # 「填入主 Agent 默认」，才会装进已有会话）。
 # 设置页的「worker 默认档」保存在服务器（<data_dir>/main-agent/worker.json），按字段
 # 覆盖这里；设置页留空 = 继承 config。取值优先级：运行期设置 → main_agent.worker →
 # 内置默认（未设置则提示里不写这一句）。
-# main_agent:
+main_agent:
+  # 首次启动且 store 里没有未归档主 Agent 时，自动创建 mainAgent（默认 true）。
+  # 设为 false 则保留旧的「手动新建主 Agent」流程。
+  autocreate: true
+  # 浏览器没有本地界面偏好时的默认模式：agent（Personal Agent）或 chat。
+  # 用户手动切过界面模式后以 localStorage 为准。
+  default_ui: "agent"
 #   worker:              # 主 Agent 建 worker（new_session）时的默认档，会拼进提示
 #     cli: "claude"
 #     provider: "sensenova"
