@@ -5393,10 +5393,10 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
 .pa-rep-b .msg { margin: 0; max-width: none; animation: none; }
 .pa-rep-b .msg-peer .bubble { max-width: none; }
 .pa-fold.fresh { animation: pa-flash 1.8s ease-out; }
-/* 看板操作组：比回报组更轻（透明底），紧贴在它下面 */
-.pa-fold.ops { background: transparent; }
-.pa-fold + .pa-fold.ops { margin-top: calc(-1 * var(--sp-3)); }
-.pa-rep.op .pa-rep-h .w { color: var(--dim); }
+/* 静默步骤组：比回报组更轻（透明底），紧贴在它下面 */
+.pa-fold.silent { background: transparent; }
+.pa-fold + .pa-fold.silent { margin-top: calc(-1 * var(--sp-3)); }
+.pa-rep.step .pa-rep-h .w { color: var(--dim); }
 .pa-rep-b .msg-assistant .bubble { max-width: none; }
 
 /* ---------- 窄屏 / 手机 ---------- */
