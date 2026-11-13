@@ -105,7 +105,8 @@ async function main() {
     + toolHtml('Bash', 'git status --short', 'git status')
     + toolHtml('Read', '/tmp/refund.md', '{}'), '10:00:02');
   asst(thinkHtml('先看看 worker 现在跑到哪一步了，再决定要不要打扰它。'), '10:00:03');
-  const withText = asst(toolHtml('Bash', 'git log -1 --oneline', 'git log') + '<p>查完了，正在汇总。</p>', '10:00:04');
+  const withText = asst(thinkHtml('顺手确认一下没有未提交的改动。')
+    + toolHtml('Bash', 'git log -1 --oneline', 'git log') + '<p>查完了，正在汇总。</p>', '10:00:04');
   b2.text('查完了，正在汇总。');
   asst(toolHtml('Bash', 'agentdeck board comment --task "$AGENTDECK_TASK_ID" --text "已核对退款进度"', 'agentdeck board comment …'), '10:05:00');
   asst(toolHtml('mcp__agentdeck__board_comment', '{"id":"refund"}', '{"id":"refund","text":"已核对退款进度"}'), '10:05:01');
@@ -113,7 +114,7 @@ async function main() {
   ev2('agentFoldNow()');
   const sf = () => [...d2.querySelectorAll('#messages > .pa-fold.silent')];
   const rf = () => [...d2.querySelectorAll('#messages > .pa-fold:not(.silent)')];
-  check('混合工具 + thinking 的连续步骤成一整组；纯看板另一组；回报组各归各', sf().length === 2 && rf().length === 2, J([...b2.box.children].map((n) => n.className)));
+  check('混合工具 + thinking 的连续步骤成一整组；带正文的回复另起一组；纯看板一组；回报组各归各', sf().length === 3 && rf().length === 2, J([...b2.box.children].map((n) => n.className)));
   const a = sf()[0];
   const headA = a.querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
   check('头部：N 个工具调用 · M 步操作，默认折叠', /^6 个工具调用 · 3 步操作已折叠/.test(headA) && !a.classList.contains('open'), headA);
@@ -123,10 +124,16 @@ async function main() {
     && /get_session/.test(a.querySelectorAll('.pa-rep')[1].textContent) && /git status/.test(a.querySelectorAll('.pa-rep')[1].textContent)
     && /思考/.test(a.querySelectorAll('.pa-rep')[2].textContent) && /先看看 worker/.test(a.querySelectorAll('.pa-rep')[2].textContent));
   check('thinking 收在组里，不留在对话流', a.querySelectorAll('.thinking-block').length === 1 && !b2.box.querySelector(':scope > .msg-assistant > .bubble > .thinking-block'));
-  check('带正文的步骤 / 正文回复都不折', withText.parentElement === b2.box && b2.box.querySelectorAll(':scope > .msg-assistant').length >= 2);
-  const bHead = sf()[1].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
+  check('带正文的回复：正文留在对话流，工具卡从消息里搬走', withText.parentElement === b2.box
+    && /查完了，正在汇总/.test(withText.textContent) && !withText.querySelector(':scope > .bubble > .tool-block'));
+  const partFold = sf()[1];
+  check('工具部分单独一组，就挂在这条回复下面', withText.nextElementSibling === partFold && partFold.classList.contains('silent') && partFold.querySelectorAll('.pa-rep.step').length === 1);
+  const pHead = partFold.querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
+  check('这组头部只数它的工具调用（thinking 不算调用）', /^1 个工具调用 · 1 步操作/.test(pHead) && J([...partFold.querySelectorAll('.ws .pa-pill')].map((p) => p.textContent)) === J(['Bash']), pHead);
+  check('组里保留 thinking + 工具卡，正文不在组里', partFold.querySelectorAll('.pa-rep-b .tool-block').length === 2 && partFold.querySelectorAll('.thinking-block').length === 1 && !/查完了，正在汇总/.test(partFold.textContent));
+  const bHead = sf()[2].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
   check('纯看板组：动作小计（评论 ×2），不给工具类型 chip', /^2 个工具调用 · 2 步操作/.test(bHead)
-    && J([...sf()[1].querySelectorAll('.ws .pa-pill')].map((p) => p.textContent)) === J(['评论 ×2']), bHead + ' | ' + J([...sf()[1].querySelectorAll('.ws .pa-pill')].map((p) => p.textContent)));
+    && J([...sf()[2].querySelectorAll('.ws .pa-pill')].map((p) => p.textContent)) === J(['评论 ×2']), bHead + ' | ' + J([...sf()[2].querySelectorAll('.ws .pa-pill')].map((p) => p.textContent)));
   console.log('静默组：展开 / 幂等 / load more');
   a.querySelector('.pa-fold-h').click();
   check('点头部展开静默组', a.classList.contains('open') && a.querySelector('.pa-fold-h').getAttribute('aria-expanded') === 'true');
@@ -139,8 +146,11 @@ async function main() {
   a.before(early); // 「加载更多」：更早的步骤前插到组旁边
   ev2('agentFoldNow()');
   const aAfter = sf()[0];
-  check('前插的更早步骤并进同一组，计数增加，展开状态不重置', sf().length === 2 && aAfter.querySelectorAll('.pa-rep.step').length === 4
+  check('前插的更早步骤并进同一组，计数增加，展开状态不重置', sf().length === 3 && aAfter.querySelectorAll('.pa-rep.step').length === 4
     && /^7 个工具调用 · 4 步操作/.test(aAfter.querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ')) && aAfter.classList.contains('open'));
+  ev2('agentUnfoldAll()');
+  check('还原：带正文回复的工具卡回到那条回复下面，正文不动', d2.querySelectorAll('.pa-fold').length === 0
+    && !!withText.querySelector(':scope > .bubble > .tool-block') && /查完了，正在汇总/.test(withText.textContent));
 
   console.log('thinking-only');
   const env3 = makeEnv({ api: { '/api/needs-you': () => sampleNeeds(Date.now()), '/api/agent-board': () => sampleBoard() } });

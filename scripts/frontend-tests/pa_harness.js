@@ -9,6 +9,7 @@ const { JSDOM } = require('jsdom');
 const WEB = path.resolve(__dirname, '../../web');
 const read = (f) => fs.readFileSync(path.join(WEB, f), 'utf8');
 const appSrc = read('app.js');
+const mdStub = fs.readFileSync(path.join(__dirname, 'md_stub.js'), 'utf8');
 
 // 按大括号配对原样摘出 app.js 里的一个顶层函数——执行的是真代码，不是抄的副本。
 function grabFn(name) {
@@ -116,7 +117,6 @@ function readAsDataURL() { return Promise.resolve('data:image/png;base64,AAAA');
 function stripDataURLPrefix(s) { return s.slice(s.indexOf(',') + 1); }
 async function uploadAttachment(f) { return { name: f.name, size: f.size, path: '/up/' + f.name }; }
 function renderAttachmentThumbs(box, list) { box.innerHTML = ''; list.forEach((a) => { const d = document.createElement('div'); d.className = 'attached-thumb'; d.textContent = a.name; box.appendChild(d); }); }
-function md(s) { return escapeHtml(String(s)); }
 function boardArtifactGroups(list) { return [{ title: '第 1 轮', items: list.map((a, i) => ({ artifact: a, index: i })) }]; }
 function boardArtifactRoundCard(g) { const d = document.createElement('section'); d.className = 'board-artifact-round'; d.textContent = g.items.map((i) => i.artifact.title).join(','); return d; }
 `;
@@ -135,10 +135,11 @@ function makeEnv(opts = {}) {
   w.__calls = [];
   w.__toasts = [];
   w.__dropped = [];
+  w.__mdCalls = [];
   w.__api = opts.api || {};
   Object.defineProperty(w, 'innerWidth', { value: opts.width || 1440, configurable: true, writable: true });
   if (opts.mode) w.localStorage.setItem('cc-webui:mode', opts.mode);
-  run(w, STUBS + GRABBED.map(grabFn).join('\n'), 'stubs.js');
+  run(w, STUBS + '\n' + mdStub + '\n' + GRABBED.map(grabFn).join('\n'), 'stubs.js');
   for (const f of ['agent.js', 'agent-queue.js', 'agent-aside.js', 'agent-fold.js']) run(w, read(f), f);
   return { dom, w, doc: w.document, ev: (code) => w.eval(code) };
 }

@@ -5295,7 +5295,21 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
 .pa-cmd { margin: 0; padding: 10px 12px; max-height: 240px; overflow: auto; font: var(--fs-sm) / 1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .pa-say-w { margin-top: 16px; }
 .pa-say-w h4 { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: var(--fs-sm); font-weight: 650; color: var(--dim); }
-.pa-say { margin: 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--border); line-height: 1.65; white-space: pre-wrap; word-break: break-word; color: color-mix(in srgb, var(--fg) 88%, var(--bg)); }
+.pa-say { margin: 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--border); line-height: 1.65; white-space: normal; overflow-wrap: anywhere; word-break: break-word; color: color-mix(in srgb, var(--fg) 88%, var(--bg)); }
+.pa-say.md p { margin: var(--sp-2) 0; }
+.pa-say.md p:first-child { margin-top: 0; }
+.pa-say.md p:last-child { margin-bottom: 0; }
+.pa-say.md ul, .pa-say.md ol { margin: var(--sp-2) 0 var(--sp-2) var(--sp-5); padding: 0; }
+.pa-say.md ul li, .pa-say.md ol li { margin: 2px 0; }
+.pa-say.md :not(pre) > code { background: var(--bg3); border-radius: var(--r-sm); padding: 1px 5px; font-family: var(--font-mono); font-size: 0.9em; }
+.pa-say.md a { color: var(--accent); text-decoration: underline; }
+.pa-say.md pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--sp-3); overflow-x: auto; margin: var(--sp-3) 0; font-family: var(--font-mono); font-size: var(--fs-sm); }
+/* 长回报默认折起：保留引用条和开头几行，底部淡出；点「展开全文」看完整内容 */
+.pa-say.clip { max-height: 8.8em; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent); mask-image: linear-gradient(to bottom, #000 72%, transparent); }
+.pa-say.clip.open { max-height: none; overflow: visible; -webkit-mask-image: none; mask-image: none; }
+.pa-say-more { margin-top: 6px; padding: 0; border: 0; background: none; color: var(--accent); font-size: var(--fs-xs); font-weight: 600; cursor: pointer; }
+.pa-say-more:hover { text-decoration: underline; }
+.pa-say-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pa-fchips { display: flex; flex-wrap: wrap; gap: 6px; }
 .pa-callout { display: flex; gap: 10px; margin-top: 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-xl); background: var(--bg2); font-size: var(--fs-sm); line-height: 1.55; }
 .pa-callout .pa-ic { margin-top: 2px; color: var(--dim); }
@@ -5397,6 +5411,11 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
 .pa-fold.silent { background: transparent; }
 .pa-fold + .pa-fold.silent { margin-top: calc(-1 * var(--sp-3)); }
 .pa-rep.step .pa-rep-h .w { color: var(--dim); }
+/* 带正文的回复只把工具卡搬进组里（正文留在原处），组里的工具卡按列表排 */
+.pa-tool-part { display: grid; gap: var(--sp-2); }
+.pa-rep-b .pa-tool-part .tool-block { margin: 0; }
+/* Personal Agent 会话只留人看的内容：状态 / 元信息默认隐藏 */
+body.pa-on #messages .meta-line, body.pa-on #messages .result-meta { display: none; }
 .pa-rep-b .msg-assistant .bubble { max-width: none; }
 
 /* ---------- 窄屏 / 手机 ---------- */
@@ -5414,6 +5433,8 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
   .pa-back { display: inline-flex; }
   .pa-ah { padding-top: env(safe-area-inset-top, 0px); height: calc(52px + env(safe-area-inset-top, 0px)); }
   .pa-af { padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
+  .pa-say { line-height: 1.55; }
+  .pa-say.clip { max-height: 7.8em; }
   .pa-af .perm-btn { height: 42px; flex: 1 1 auto; }
   .pa-acmp { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
   /* 原版手机端的输入框是贴视口底部的 fixed 浮岛，底部 tab 栏出现时要抬到它上面 */
