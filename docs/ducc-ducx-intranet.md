@@ -8,11 +8,13 @@
 ```bash
 cp du_int.config.example.yaml config.yaml
 # 编辑 config.yaml：改 gateway_token，并把 ducc / ducx 的 path 改成实际路径
-go build -o cc-webui .
-./cc-webui
+go build -o agentdeck .
+./agentdeck
 ```
 
 浏览器打开 `http://<机器IP>:8321`，输入 `gateway_token` 登录；新建会话时 CLI 选 `ducc` 或 `ducx` 即可。
+
+> 旧安装的二进制名 `cc-webui` 仍可继续使用；重新运行安装/升级脚本会迁移到 `agentdeck`，替换前把旧文件备份为 `cc-webui.bak-<版本>`。Go module、`CC_WEBUI_*` 环境变量、`ccgw_token` Cookie 和 `~/.config/cc-webui` 都不变。
 
 ## 1. 前置条件
 
@@ -25,7 +27,7 @@ go build -o cc-webui .
   ducx models      # 应输出模型清单
   ```
 
-- 自己构建需要 Go 1.22+，并且能获取 Go 模块依赖；否则直接使用现成的 `cc-webui` 二进制。
+- 自己构建需要 Go 1.22+，并且能获取 Go 模块依赖；否则直接使用现成的 `agentdeck` 二进制（旧版本可能是 `cc-webui`）。
 
 ## 2. 配置：复制示例，只改这些
 
@@ -55,14 +57,14 @@ cp du_int.config.example.yaml config.yaml
 ## 3. 构建与启动
 
 ```bash
-go build -o cc-webui .
-./cc-webui
+go build -o agentdeck .
+./agentdeck
 
 # 指定配置文件 / 覆盖端口
-./cc-webui -config /path/to/config.yaml -listen 0.0.0.0:8321
+./agentdeck -config /path/to/config.yaml -listen 0.0.0.0:8321
 
 # 环境变量覆盖
-GATEWAY_TOKEN='<token>' CC_WEBUI_LISTEN=0.0.0.0:8321 CC_WEBUI_DATA_DIR=/path/to/data ./cc-webui
+GATEWAY_TOKEN='<token>' CC_WEBUI_LISTEN=0.0.0.0:8321 CC_WEBUI_DATA_DIR=/path/to/data ./agentdeck
 ```
 
 用 screen / tmux / systemd 等方式保持进程常驻。启动失败时看终端日志：配置解析、端口占用、CLI 路径都会直接报出来。

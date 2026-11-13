@@ -54,7 +54,7 @@ jobs:
           mkdir -p dist
           build() {
             local goos="$1" goarch="$2"
-            local out="dist/cc-webui-${goos}-${goarch}"
+            local out="dist/agentdeck-${goos}-${goarch}"
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
               go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$out" .
             echo "built $out"
@@ -68,7 +68,13 @@ jobs:
       - name: Stage release assets
         run: |
           cp config.example.yaml dist/
-          (cd dist && sha256sum cc-webui-* config.example.yaml > checksums.txt)
+          # Keep the legacy cc-webui-* names for one release cycle so older
+          # installers and pinned download URLs keep working. The next major
+          # cleanup can drop these copies.
+          for f in dist/agentdeck-*; do
+            cp "$f" "dist/cc-webui-${f#dist/agentdeck-}"
+          done
+          (cd dist && sha256sum agentdeck-* cc-webui-* config.example.yaml > checksums.txt)
           ls -la dist
 
       - name: Resolve release notes
@@ -106,17 +112,17 @@ jobs:
             if [ "$HAVE_NOTES" = "true" ]; then
               gh release edit "$TAG" --notes-file "$NOTES_FILE"
             fi
-            gh release upload "$TAG" dist/cc-webui-* dist/config.example.yaml dist/checksums.txt --clobber
+            gh release upload "$TAG" dist/agentdeck-* dist/cc-webui-* dist/config.example.yaml dist/checksums.txt --clobber
           elif [ "$HAVE_NOTES" = "true" ]; then
             gh release create "$TAG" \
-              dist/cc-webui-* dist/config.example.yaml dist/checksums.txt \
+              dist/agentdeck-* dist/cc-webui-* dist/config.example.yaml dist/checksums.txt \
               --title "$TAG" \
               --notes-file "$NOTES_FILE" \
               --verify-tag
           else
             # No annotated tag message: keep the previous behavior.
             gh release create "$TAG" \
-              dist/cc-webui-* dist/config.example.yaml dist/checksums.txt \
+              dist/agentdeck-* dist/cc-webui-* dist/config.example.yaml dist/checksums.txt \
               --title "$TAG" \
               --generate-notes \
               --verify-tag

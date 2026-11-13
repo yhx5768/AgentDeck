@@ -6,7 +6,7 @@
 
 AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流式对话、工具调用可视化、回滚、群聊编排和移动化体验整合到一个轻量级服务里——你只需把它跑在远程机器上，手机或电脑打开浏览器即可开始工作。
 
-> 项目内部标识仍是 `cc-webui`（Go module、二进制、`CC_WEBUI_*` 环境变量、`ccgw_token` Cookie、`~/.config/cc-webui`），只有展示名换成了 AgentDeck。
+> 项目内部标识仍是 `cc-webui`（Go module、`CC_WEBUI_*` 环境变量、`ccgw_token` Cookie、`~/.config/cc-webui`）；对外可执行文件和 Release asset 已改名为 `agentdeck`，旧的 `cc-webui` 二进制名仍可继续使用。
 
 ![Personal Agent 工作台](docs/screenshots/readme-pa-overview.png)
 
@@ -155,8 +155,16 @@ flowchart TB
 ## 快速开始
 
 ```bash
+# 安装 / 升级（Linux / macOS）：旧版本会迁移到 agentdeck，原文件保留为
+# cc-webui.bak-<版本>
+curl -fsSL http://script.soarx.cc/install-agentdeck.sh | bash
+```
+
+从源码构建：
+
+```bash
 # 构建：产出单个二进制，前端已内嵌
-go build -o cc-webui .
+go build -o agentdeck .
 
 # 配置
 cp config.example.yaml config.yaml
@@ -165,14 +173,16 @@ cp config.example.yaml config.yaml
 #   cp du_int.config.example.yaml config.yaml
 
 # 运行
-./cc-webui
+./agentdeck
 # 浏览器打开 http://<host>:8321，输入 gateway_token 登录
 ```
+
+> 旧版本二进制名 `cc-webui` 仍可继续使用；升级脚本会自动迁移到 `agentdeck`，替换前把旧文件备份为 `cc-webui.bak-<版本>`。Release 会同时提供 `agentdeck-*` 和兼容用的 `cc-webui-*` asset，旧名至少保留一个版本周期。
 
 也支持环境变量覆盖：
 
 ```bash
-GATEWAY_TOKEN=xxx CC_WEBUI_LISTEN=0.0.0.0:8321 ./cc-webui
+GATEWAY_TOKEN=xxx CC_WEBUI_LISTEN=0.0.0.0:8321 ./agentdeck
 ```
 
 命令行参数：`-config <path>`、`-listen <addr>`。
@@ -357,11 +367,11 @@ Claude Code 的 `~/.claude/settings.json` 里的 `env` 段会覆盖进程继承�
 
 ```bash
 # 交叉编译（例如在 macOS 上编译给 Linux）
-GOOS=linux GOARCH=amd64 go build -o cc-webui .
+GOOS=linux GOARCH=amd64 go build -o agentdeck .
 
 # 拷贝二进制 + 一份 config.yaml 到目标机器即可，无运行时依赖
-scp cc-webui config.yaml user@remote:~/
-ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
+scp agentdeck config.yaml user@remote:~/
+ssh user@remote 'GATEWAY_TOKEN=xxx ./agentdeck'
 ```
 
 目标机器需要至少一个可用的受支持 CLI（claude / opencode / mcode / qoder / codex），并在 `config.yaml` 中正确配置。

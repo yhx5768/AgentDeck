@@ -51,7 +51,7 @@ func main() {
 	}
 
 	if *showVersion {
-		fmt.Printf("cc-webui %s\n", version)
+		fmt.Printf("agentdeck %s\n", version)
 		return
 	}
 
@@ -105,7 +105,7 @@ func main() {
 		srv.KickProviderDiscovery()
 	})
 
-	fmt.Printf("cc-webui\n")
+	fmt.Printf("agentdeck\n")
 	fmt.Printf("  listen:      %s\n", cfg.Listen)
 	fmt.Printf("  data dir:    %s\n", cfg.DataDir)
 	fmt.Printf("  clis:        %d configured\n", len(cfg.CLIs))

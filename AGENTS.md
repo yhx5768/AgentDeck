@@ -7,7 +7,7 @@
 
 ## 项目是什么
 
-cc-webui（对外展示名 **AgentDeck**，内部标识仍为 `cc-webui`）：单文件 Go 二进制 + `go:embed` 内嵌 vanilla JS 前端，把五个编码 CLI 变成 Web 控制台。会话管理、SSE 流式对话、工具调用可视化、rewind 回滚、轨迹视图。**无前端构建步骤**——改了 `web/` 直接 `go build`。
+cc-webui（对外展示名 **AgentDeck**，内部标识仍为 `cc-webui`；可执行文件和 Release asset 名为 `agentdeck`）：单文件 Go 二进制 + `go:embed` 内嵌 vanilla JS 前端，把五个编码 CLI 变成 Web 控制台。会话管理、SSE 流式对话、工具调用可视化、rewind 回滚、轨迹视图。**无前端构建步骤**——改了 `web/` 直接 `go build`。
 
 - 模块名 `cc-webui`，Go 1.22.2，唯一外部依赖 `gopkg.in/yaml.v3`。
 - 入口 `main.go`：`config.Load` → `store.Open` → `runner.NewManager` → `fs.Sub(embed, "web")` → `server.New` → `srv.Run`。
@@ -15,15 +15,17 @@ cc-webui（对外展示名 **AgentDeck**，内部标识仍为 `cc-webui`）：�
 ## 构建 / 运行 / 测试
 
 ```bash
-go build -o cc-webui .                 # 构建（前端已内嵌）
-GOOS=linux GOARCH=amd64 go build -o cc-webui .   # 交叉编译
+go build -o agentdeck .                 # 构建（前端已内嵌）
+GOOS=linux GOARCH=amd64 go build -o agentdeck .   # 交叉编译
 go test ./...                          # 单测：claudehist/opencodehist/server/runner/config
 go vet ./...                           # 干净
 
-./cc-webui                             # 用 ./config.yaml
-./cc-webui -config <path> -listen 0.0.0.0:8321
-GATEWAY_TOKEN=xxx CC_WEBUI_LISTEN=... CC_WEBUI_DATA_DIR=... ./cc-webui   # env 覆盖
+./agentdeck                             # 用 ./config.yaml
+./agentdeck -config <path> -listen 0.0.0.0:8321
+GATEWAY_TOKEN=xxx CC_WEBUI_LISTEN=... CC_WEBUI_DATA_DIR=... ./agentdeck   # env 覆盖
 ```
+
+> 旧安装的可执行文件名 `cc-webui` 仍可继续使用；安装/升级脚本会迁移到 `agentdeck`，替换前把旧文件备份为 `cc-webui.bak-<版本>`；Release 同时上传旧名 `cc-webui-*` asset，至少保留一个版本周期。Go module、`CC_WEBUI_*` 环境变量、`ccgw_token` Cookie 和 `~/.config/cc-webui` 都不变。
 
 配置：`cp config.example.yaml config.yaml`（百度内部只用 ducc/ducx 的精简版：`cp du_int.config.example.yaml config.yaml`）。三层正交结构 `clis[] × providers[] × models[]`，生效 env 合并序 `cli.env → provider.env → model.env`（后者覆盖前者）。`config.yaml` 与 `data/` 均被 gitignore。
 
@@ -388,14 +390,14 @@ Claude 自己的 transcript 仍在 `~/.claude/projects/<slug>/<sid>.jsonl`，cc-
     - 写失败只 `log.Printf` 不 fatal——丢掉提示词是输出质量下降，为 `$HOME` 下两个文件让整轮失败不划算。
     - 实测（隔离 HOME，cwd 在仓库外，`sensenova-openai/deepseek-v4-flash`）：cc-webui 会话里模型答「是」（知道有「输出成 markdown 代码块而不是写 .html 文件」这条约定），同一 HOME 下不带 `OPENCODE_CONFIG_DIR` 的裸 opencode 答「否」。三连测过 无→有→无，排除了「缓存把指令泄漏给 TUI」。用户的 `~/.config/opencode/` 两个文件 md5 全程未变。
   - 另有一个 `mcp__*__render_html` 工具形态（`buildToolView` 分支）前端认，但**至今没有任何模型真的调用过它**，别默认它可用。MCP 是工具层，解决「模型要不要调这个工具」，解决不了「模型知不知道有这个能力」——实测 minimax 两次、mcode 一次都只在 `ToolSearch` 里发现了工具然后转头写文件。
-- **并行开发用 worktree**：多需求/bug 并行时每条开一个 worktree，别在 master 上堆未提交改动互相打架。`git worktree add ../cc-webui-<topic> -b <topic-branch>`；每个 worktree 的 `data/`、构建产物 `cc-webui` 都 gitignore、各自隔离、互不污染。`config.yaml` 也 gitignore——新 worktree 要么 `cp config.example.yaml config.yaml` 重新填 token，要么软链主 worktree 的 config——**只为共享 token + clis/providers/models 静态配置**（这些本来就想各 worktree 一致）；软链后 `listen` 也随之共享成 8321，**端口别改 config（会动 master），靠启动时 `CC_WEBUI_LISTEN` env 覆盖**（见下条）。`data_dir: "./data"` 经 `filepath.Abs` 按**进程 CWD**解析（非 config 文件位置），各 worktree 自带独立 `<worktree>/data`，不会写穿 master。完事回主 worktree 合 master，再 `git worktree remove ../cc-webui-<topic>`。
+- **并行开发用 worktree**：多需求/bug 并行时每条开一个 worktree，别在 master 上堆未提交改动互相打架。`git worktree add ../cc-webui-<topic> -b <topic-branch>`；每个 worktree 的 `data/`、构建产物 `agentdeck` 都 gitignore、各自隔离、互不污染。`config.yaml` 也 gitignore——新 worktree 要么 `cp config.example.yaml config.yaml` 重新填 token，要么软链主 worktree 的 config——**只为共享 token + clis/providers/models 静态配置**（这些本来就想各 worktree 一致）；软链后 `listen` 也随之共享成 8321，**端口别改 config（会动 master），靠启动时 `CC_WEBUI_LISTEN` env 覆盖**（见下条）。`data_dir: "./data"` 经 `filepath.Abs` 按**进程 CWD**解析（非 config 文件位置），各 worktree 自带独立 `<worktree>/data`，不会写穿 master。完事回主 worktree 合 master，再 `git worktree remove ../cc-webui-<topic>`。
 
-- **实测别杀活进程**：跑 harness / 手测时**不要 kill 正在运行的 cc-webui**（用户在 screen 里 dogfood 的活实例，默认 `0.0.0.0:8321`）。改完 `go build` 出新二进制，用**别的端口 + 独立 data_dir** 起测试进程：`CC_WEBUI_DATA_DIR=./data-test CC_WEBUI_LISTEN=127.0.0.1:8322 ./cc-webui`——8321 留给活实例，127.0.0.1 不外暴测试实例。`go test ./...` 只跑单测、不起服务、不冲突。
+- **实测别杀活进程**：跑 harness / 手测时**不要 kill 正在运行的 cc-webui**（用户在 screen 里 dogfood 的活实例，默认 `0.0.0.0:8321`）。改完 `go build` 出新二进制，用**别的端口 + 独立 data_dir** 起测试进程：`CC_WEBUI_DATA_DIR=./data-test CC_WEBUI_LISTEN=127.0.0.1:8322 ./agentdeck`——8321 留给活实例，127.0.0.1 不外暴测试实例。`go test ./...` 只跑单测、不起服务、不冲突。
 - **注释语言**：Go 后端以英文 doc 注释为主；`server/files.go` 与用户可见错误/文案是中文（如 `"文件回滚失败："`、`"文件已回滚"`）；前端 JS 注释与全部 UI 字符串为中文。文档（README/rewind-rd/TODO）全中文。**改代码时匹配周围注释的语言。**
 - **命名**：标准 Go——PascalCase 导出 / camelCase 包内；文件名小写单词（`store.go`、`files.go`）；包名同目录名。前端用 `$()` 作 `querySelector` 简写、`state`/`traj` 全局对象。
 - **错误处理**：`fmt.Errorf("%w")` 包装；后台非致命错误 `log.Printf`；仅 `main.go` 启动失败用 `log.Fatalf`；HTTP handler 用 `writeErr(w, code, msg)` 返回 `{"error":...}`。
 - **文件权限**：数据文件 0600、敏感目录 0700、events/data 根 0755。
-- **前端测试**：`scripts/frontend-tests/`（jsdom，唯一依赖是那边的 package.json）。跑法 `./scripts/frontend-tests/run.sh`。覆盖 HTML 沙箱渲染 + 全屏（节点搬运、Esc/关闭委托、卸载顺序、滚动容器的 CSS 契约与 DOM 嵌套必须对得上）、图标白名单（**含 `workspace.js`**，模板表达式里的图标字面量按 lucide 打包里的真实图标名过滤）、错误横幅折叠（长错误默认收起、摘要取关键行、展开区限高的 CSS 契约）、本地图片路径改写（哪些 src 该改、哪些该原样保留）、工作区面板的 DOM 契约（树行 data-path、点目录会展开、筛选、只看改动、diff 行分类）、新建会话弹窗的 effort(variants) 下拉显隐（**有没有 variants 就显不显**、config 的裸模型名与 `provider/model` 全路径两种键都能命中、接口要带 `fresh=1`、拉取失败只隐藏不写死缓存、claude 分支不被带跑）、新建对话常驻开关的 claude-only 显隐（两个入口都只在 claude 显示，切走清掉勾选/地址名）。**jsdom 不做布局**——max-height 裁不裁、overflow 生不生效、手感如何，一律验不了，仍需人工过一眼；能钉的只有 DOM 契约和「样式写在了正确的元素上」。**布局类的改动想亲眼看效果，就起个测试实例用 headless 浏览器截图**：`CC_WEBUI_DATA_DIR=./data-test CC_WEBUI_LISTEN=127.0.0.1:8322 ./cc-webui`（别动 8321 的活实例），配 `/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge --headless --screenshot=... --window-size=1440,900 file://...` 渲染一个复刻真实 DOM 结构的 harness 页——这是唯一能证明「没盖住主对话」的办法。鉴权支持 `?token=` query，所以 harness 里的 `<img src="…/api/image?token=…">` 能直接取到图。
+- **前端测试**：`scripts/frontend-tests/`（jsdom，唯一依赖是那边的 package.json）。跑法 `./scripts/frontend-tests/run.sh`。覆盖 HTML 沙箱渲染 + 全屏（节点搬运、Esc/关闭委托、卸载顺序、滚动容器的 CSS 契约与 DOM 嵌套必须对得上）、图标白名单（**含 `workspace.js`**，模板表达式里的图标字面量按 lucide 打包里的真实图标名过滤）、错误横幅折叠（长错误默认收起、摘要取关键行、展开区限高的 CSS 契约）、本地图片路径改写（哪些 src 该改、哪些该原样保留）、工作区面板的 DOM 契约（树行 data-path、点目录会展开、筛选、只看改动、diff 行分类）、新建会话弹窗的 effort(variants) 下拉显隐（**有没有 variants 就显不显**、config 的裸模型名与 `provider/model` 全路径两种键都能命中、接口要带 `fresh=1`、拉取失败只隐藏不写死缓存、claude 分支不被带跑）、新建对话常驻开关的 claude-only 显隐（两个入口都只在 claude 显示，切走清掉勾选/地址名）。**jsdom 不做布局**——max-height 裁不裁、overflow 生不生效、手感如何，一律验不了，仍需人工过一眼；能钉的只有 DOM 契约和「样式写在了正确的元素上」。**布局类的改动想亲眼看效果，就起个测试实例用 headless 浏览器截图**：`CC_WEBUI_DATA_DIR=./data-test CC_WEBUI_LISTEN=127.0.0.1:8322 ./agentdeck`（别动 8321 的活实例），配 `/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge --headless --screenshot=... --window-size=1440,900 file://...` 渲染一个复刻真实 DOM 结构的 harness 页——这是唯一能证明「没盖住主对话」的办法。鉴权支持 `?token=` query，所以 harness 里的 `<img src="…/api/image?token=…">` 能直接取到图。
 - **测试**：有单测的包 `claudehist`（含 stats）、`opencodehist`（含 stats）、`server`、`runner`、`config`；`statsagg`、`store` 无测试。改 rewind 相关的 `LastUserUUID`/`TruncateBeforeUUID`/`HasUserPrompt` 务必跑 `go test ./internal/claudehist/`；改统计口径（section 9）务必跑 `go test ./internal/claudehist/ ./internal/opencodehist/`——两侧计数规则要一致。pre-commit 守卫（`scripts/hooks/pre-commit`，**一次性激活** `git config core.hooksPath "$(pwd)/scripts/hooks"`——**注意当前 clone 还没激活过**，所以本文件里记的自动跑目前并不会发生）：staged 含 `web/` 时跑 `scripts/frontend-tests/run.sh`，含 `.go` 自动跑 `go vet ./...`，含 `internal/claudehist/` 时加跑其测试——commit 被挡多半是这俩没过。
 
 ## AgentDeck skill（`skills/agentdeck`）
