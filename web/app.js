@@ -5240,7 +5240,7 @@ function fillModelSelect(sel, providerName, value, cliName, defaultLabel) {
     return;
   }
   const p = state.providers.find((x) => x.name === providerName);
-  renderModelList(sel, providerModels(providerName), value);
+  renderModelList(sel, providerModels(providerName), value, defaultLabel);
 }
 
 // config 热加载：后台 watch 到 config.yaml 变动后广播 config_changed（或前端
@@ -9033,6 +9033,7 @@ $('#btn-settings').onclick = () => {
   $('#notify-perm-hint').textContent = notifyPermText();
   openModal('#modal-settings');
   loadMaWorkerSettings();
+  loadMaAutocreateSetting();
 };
 
 $('#pref-banner').addEventListener('change', async (e) => {
@@ -9054,6 +9055,63 @@ $('#pref-sound').addEventListener('change', (e) => {
 });
 
 $('#btn-test-sound').onclick = () => playNotifySound(false);
+
+// ---------- 设置：首次启动自动创建主 Agent ----------
+// 服务端持久化在 <data_dir>/main-agent/autocreate.json；缺省继承 config.yaml
+// 的 main_agent.autocreate（代码默认关闭）。打开后启动时按 main_agent.worker
+// 自动建主 Agent。
+let maAutocreateView = null;
+
+function maAutocreateHintText() {
+  const hint = $('#ma-autocreate-hint');
+  if (!hint) return;
+  const on = !!(maAutocreateView && maAutocreateView.enabled);
+  hint.textContent = on
+    ? '开启：首次启动且没有主 Agent 时，按 worker 默认档（cli / provider / model）自动创建。已有主 Agent 不受影响。'
+    : '关闭：首次进入 Personal Agent 时，由你选择 CLI 和模型创建主 Agent。';
+}
+
+function maAutocreateStatus(text, isError) {
+  const el = $('#ma-autocreate-status');
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+  el.classList.toggle('error', !!isError);
+}
+
+async function loadMaAutocreateSetting() {
+  const toggle = $('#pref-ma-autocreate');
+  if (!toggle) return;
+  try {
+    maAutocreateView = await api('/api/main-agent/autocreate');
+    toggle.checked = !!maAutocreateView.enabled;
+    maAutocreateHintText();
+    maAutocreateStatus('');
+  } catch (err) {
+    maAutocreateStatus('读取失败：' + err.message, true);
+  }
+}
+
+async function saveMaAutocreateSetting(e) {
+  const toggle = e.currentTarget;
+  const want = !!toggle.checked;
+  toggle.disabled = true;
+  maAutocreateStatus('保存中…', false);
+  try {
+    maAutocreateView = await api('/api/main-agent/autocreate', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: want }),
+    });
+    toggle.checked = !!maAutocreateView.enabled;
+    maAutocreateHintText();
+    maAutocreateStatus('已保存。', false);
+  } catch (err) {
+    toggle.checked = !want;
+    maAutocreateStatus('保存失败：' + err.message, true);
+  } finally {
+    toggle.disabled = false;
+  }
+}
 
 // ---------- 设置：worker 默认档（服务端持久化） ----------
 // 主 Agent 默认提示里「默认 cli / provider / model / effort / 常驻」那一句由
@@ -9334,6 +9392,8 @@ async function saveMaWorkerSettings() {
 (function initMaWorkerSettings() {
   const cliSel = $('#ma-worker-cli');
   if (!cliSel) return;
+  const autoToggle = $('#pref-ma-autocreate');
+  if (autoToggle) autoToggle.addEventListener('change', saveMaAutocreateSetting);
   const provSel = $('#ma-worker-provider');
   const modelSel = $('#ma-worker-model');
   const effortSel = $('#ma-worker-effort');
@@ -11032,6 +11092,10 @@ function openNewGroupDialog(cwd) {
 window.__ccConfigReady = api('/api/config')
   .then((cfg) => {
     window.__ccDefaultUiMode = cfg && cfg.default_ui_mode === 'chat' ? 'chat' : 'agent';
+    // agent.js may finish paInit before boot() resumes; expose the cwd defaults
+    // here so the empty-state form does not render with an empty workdir.
+    state.home = (cfg && cfg.home) || state.home;
+    state.defaultCwd = (cfg && cfg.default_cwd) || state.defaultCwd;
     return cfg;
   })
   .catch(() => {
@@ -11047,6 +11111,7 @@ window.__ccConfigReady = api('/api/config')
   state.profilesSig = JSON.stringify([state.clis, state.providers]);
   const cfg = await window.__ccConfigReady;
   state.home = cfg.home || '';
+  state.defaultCwd = cfg.default_cwd || '';
   state.boardMockBusyAvailable = !!cfg.agent_board_mock_busy;
   state.boardMockBusy = state.boardMockBusyAvailable;
   renderBoardMockBusyToggle();

@@ -5639,3 +5639,28 @@ body.pa-on #messages .meta-line, body.pa-on #messages .result-meta { display: no
    ordinary chat page never flashes before Personal Agent. The inline head
    script also removes this class after 2.5s as a JS/network failure fallback. */
 html.pa-mode-pending body { visibility: hidden; }
+
+/* ---------- 主 Agent 创建引导（无 mainAgent 时的中栏空态） ---------- */
+.pa-setup-page { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-8) var(--sp-6); display: flex; justify-content: center; align-items: flex-start; }
+.pa-setup { width: min(760px, 100%); display: grid; gap: var(--sp-5); padding: var(--sp-6); border: 1px solid var(--border); border-radius: var(--r-2xl); background: var(--bg2); }
+.pa-setup-h { display: flex; align-items: flex-start; gap: var(--sp-4); }
+.pa-setup-ic { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--accent-dim); color: var(--accent); }
+.pa-setup-h h2 { font-size: 20px; font-weight: 650; line-height: 1.25; }
+.pa-setup-h p { margin-top: 4px; color: var(--dim); font-size: var(--fs-sm); line-height: var(--lh-normal); }
+.pa-setup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+.pa-setup-field { display: grid; gap: 6px; min-width: 0; justify-self: stretch; }
+.pa-setup-field > span { color: var(--dim); font-size: var(--fs-xs); font-weight: 600; }
+.pa-setup-field select,
+.pa-setup-field input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg); color: var(--fg); font: inherit; font-size: var(--fs-sm); min-width: 0; max-width: none; justify-self: stretch; }
+.pa-setup-field.wide { grid-column: 1 / -1; }
+.pa-setup-field select:focus-visible,
+.pa-setup-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pa-setup-hint { color: var(--dim); font-size: var(--fs-xs); line-height: var(--lh-normal); }
+.pa-setup-foot { display: flex; justify-content: flex-end; }
+.pa-setup-foot .primary-btn { min-width: 140px; }
+@media (max-width: 640px) {
+  .pa-setup-page { padding: var(--sp-4) var(--sp-3); }
+  .pa-setup { padding: var(--sp-4); gap: var(--sp-4); }
+  .pa-setup-grid { grid-template-columns: 1fr; }
+  .pa-setup-field.wide { grid-column: auto; }
+}

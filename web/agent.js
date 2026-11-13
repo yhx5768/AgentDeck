@@ -41,7 +41,7 @@ const pa = {
   busy: {},             // 条目 id -> 正在提交
   err: {},              // 条目 id -> 上次提交的错误
   cmp: { att: [], busy: false, status: '', kind: '', drafts: {}, wait: null },
-  mainErr: '',
+  setup: { cli: '', provider: '', model: '', cwd: '', name: '主 Agent', busy: false, err: '' },
   boardErr: '',
   asideOpen: true,
   asideShown: false,    // 窄屏浮层 / 手机整屏：当前是否被打开
@@ -574,16 +574,16 @@ function agentRenderCluster() {
   el.classList.add('pa-agents');
   el.classList.remove('hidden');
   if (!main) {
-    const sig = 'none:' + (pa.mainErr || '');
+    const sig = 'none';
     if (el.dataset.paSig === sig) return;
     el.dataset.paSig = sig;
     el.textContent = '';
-    const btn = paEl('button', { type: 'button', class: 'primary-btn', text: '新建主 Agent' });
-    btn.onclick = () => paCreateMainAgent(btn);
+    const btn = paEl('button', { type: 'button', class: 'primary-btn', text: '去创建主 Agent' });
+    btn.onclick = () => paFocusMainSetup();
     el.append(paEl('div', { class: 'pa-agents-card empty' },
       paEl('b', { text: '还没有主 Agent' }),
-      paEl('p', { text: 'Personal Agent 需要一个主 Agent 会话来派工和汇总。可以一键新建，也可以在任意会话的 📡 面板里打开「作为主 Agent」。' }),
-      btn, pa.mainErr ? paEl('p', { class: 'pa-err', text: pa.mainErr }) : null));
+      paEl('p', { text: '在中间选择 CLI 和模型创建主 Agent，之后的任务都通过它派发。' }),
+      btn));
     return;
   }
   // 正在改名时别重画：输入框会被销毁（轮询每隔几秒就会触发一次）
@@ -672,31 +672,139 @@ function paStartRename(main, nameBtn) {
   input.select();
 }
 
-async function paCreateMainAgent(btn) {
+// ---------- 主 Agent 创建引导（无 mainAgent 时） ----------
+// 默认不自动建主 Agent：中栏显示表单，让用户自己选 CLI / provider / 模型 /
+// 工作目录。模型列表复用会话创建的 picker（/api/cli-models 等），不另造探测。
+function paSetupProviders() {
+  const cli = (state.clis || []).find((c) => c.name === pa.setup.cli);
+  const kind = cli ? kindOf(cli) : '';
+  return (state.providers || []).filter((p) => !kind || kindOf(p) === kind);
+}
+function paSetupDefaults() {
+  const s = pa.setup;
+  if (!(state.clis || []).some((c) => c.name === s.cli)) s.cli = ((state.clis || [])[0] || {}).name || '';
+  const provs = paSetupProviders();
+  if (!provs.some((p) => p.name === s.provider)) s.provider = (provs[0] || {}).name || '';
+  if (!s.cwd) s.cwd = state.defaultCwd || state.home || '';
+  if (!s.name) s.name = '主 Agent';
+}
+function paSetupProblem() {
+  if (!(state.clis || []).length) return 'config.yaml 里没有可用的 CLI，请先在 clis 里配置一个 CLI 再回来创建。';
+  if (!(state.providers || []).length) return 'config.yaml 里没有可用的 provider，请先在 providers 里配置一个模型后端。';
+  if (!paSetupProviders().length) {
+    const kind = kindOf((state.clis || []).find((c) => c.name === pa.setup.cli));
+    return '当前 CLI 是 ' + kind + ' 引擎，但 config.yaml 里没有同引擎的 provider，请补一个再回来创建。';
+  }
+  return '';
+}
+function paFocusMainSetup() {
+  agentShowView('queue');
+  setTimeout(() => {
+    const el = $('#pa-setup-cli');
+    if (el) el.focus();
+  }, 0);
+}
+function paSetupView() {
+  paSetupDefaults();
+  const s = pa.setup;
+  const problem = paSetupProblem();
+  const err = s.err || problem;
+  const cliSel = paEl('select', { id: 'pa-setup-cli', class: 'pill-select', 'aria-label': '主 Agent CLI' });
+  fillSelect(cliSel, state.clis || [], s.cli, (c) => c.name + ' · ' + kindOf(c));
+  cliSel.value = s.cli;
+  const provSel = paEl('select', { id: 'pa-setup-provider', class: 'pill-select', 'aria-label': '主 Agent provider' });
+  fillSelect(provSel, paSetupProviders(), s.provider);
+  provSel.value = s.provider;
+  const modelSel = paEl('select', { id: 'pa-setup-model', class: 'pill-select', 'aria-label': '主 Agent 模型' });
+  if (s.provider) fillModelSelect(modelSel, s.provider, s.model, s.cli, 'CLI 默认');
+  else modelSel.append(paEl('option', { value: '', text: '(先选 provider)' }));
+  const cwdIn = paEl('input', { id: 'pa-setup-cwd', type: 'text', value: s.cwd, spellcheck: 'false', placeholder: state.defaultCwd || state.home || '~', 'aria-label': '主 Agent 工作目录' });
+  const nameIn = paEl('input', { id: 'pa-setup-name', type: 'text', value: s.name, maxlength: '60', spellcheck: 'false', 'aria-label': '主 Agent 显示名' });
+  const btn = paEl('button', { type: 'button', class: 'primary-btn', disabled: !!problem || s.busy, text: s.busy ? '创建中…' : '创建主 Agent' });
+  btn.onclick = () => paSubmitMainAgent(btn);
+
+  cliSel.addEventListener('change', () => {
+    s.cli = cliSel.value;
+    s.model = '';
+    s.err = '';
+    paSetupDefaults();
+    agentRenderQueue(true);
+  });
+  provSel.addEventListener('change', () => {
+    s.provider = provSel.value;
+    s.model = '';
+    s.err = '';
+    agentRenderQueue(true);
+  });
+  modelSel.addEventListener('change', () => { s.model = modelSel.value; });
+  cwdIn.addEventListener('input', () => { s.cwd = cwdIn.value; });
+  nameIn.addEventListener('input', () => { s.name = nameIn.value; });
+
+  const field = (label, control, wide) => paEl('label', { class: 'pa-setup-field' + (wide ? ' wide' : '') }, paEl('span', { text: label }), control);
+  return paEl('div', { class: 'pa-setup-page' },
+    paEl('div', { class: 'pa-setup' },
+      paEl('header', { class: 'pa-setup-h' },
+        paEl('div', { class: 'pa-setup-ic', html: paSvg('bot', 'l') }),
+        paEl('div', {}, paEl('h2', { text: '创建主 Agent' }),
+          paEl('p', { text: '还没有主 Agent。选一个 CLI 和模型创建，之后的任务都通过它派发。' }))),
+      paEl('div', { class: 'pa-setup-grid' },
+        field('CLI', cliSel),
+        field('Provider', provSel),
+        field('模型', modelSel),
+        field('工作目录', cwdIn, true),
+        field('显示名', nameIn, true)),
+      paEl('p', { class: 'pa-setup-hint', text: '地址名固定为 mainAgent；模型留空 = 使用 CLI 默认。创建后可在右栏继续配置。' }),
+      err ? paEl('p', { class: 'pa-err', role: 'alert', text: err }) : null,
+      paEl('div', { class: 'pa-setup-foot' }, btn)));
+}
+
+async function paSubmitMainAgent(btn) {
+  const s = pa.setup;
+  if (s.busy) return;
+  paSetupDefaults();
+  const cli = (state.clis || []).find((c) => c.name === s.cli);
+  const prov = paSetupProviders().find((p) => p.name === s.provider);
+  const problem = paSetupProblem();
+  if (!cli || !prov || problem) {
+    s.err = problem || '请选择 CLI 和 provider';
+    agentRenderQueue(true);
+    return;
+  }
+  s.busy = true;
+  s.err = '';
   btn.disabled = true;
   btn.textContent = '创建中…';
-  pa.mainErr = '';
   try {
-    const cli = (state.clis || []).find((c) => (c.kind || 'claude') === 'claude') || (state.clis || [])[0];
-    if (!cli) throw new Error('config.yaml 里没有可用的 CLI');
-    const kind = cli.kind || 'claude';
-    const prov = (state.providers || []).find((p) => (p.kind || 'claude') === kind);
-    if (!prov) throw new Error('没有和 ' + cli.name + ' 同引擎的 provider');
     let prompt = '';
-    try { prompt = await ensureMainAgentPrompt(); } catch (_) { /* 提示词取不到也能建，之后可在 📡 面板补 */ }
-    const body = { name: '主 Agent', cli: cli.name, provider: prov.name, cwd: state.home || '~', peer_name: 'mainAgent', main_agent: true, resident: kind === 'claude' };
+    try {
+      if (typeof ensureMainAgentPrompt === 'function') prompt = await ensureMainAgentPrompt();
+    } catch (_) { /* 提示词取不到也能建，之后可在 📡 面板补 */ }
+    const body = {
+      name: (s.name || '').trim() || '主 Agent',
+      cli: cli.name,
+      provider: prov.name,
+      cwd: (s.cwd || '').trim() || state.defaultCwd || state.home || '~',
+      peer_name: 'mainAgent',
+      main_agent: true,
+      resident: kindOf(cli) === 'claude',
+    };
+    if (s.model) body.model = s.model;
     if (prompt) body.role_prompt = prompt;
-    const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
-    paSet(PA_MAIN_KEY, s.id);
+    const sess = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
+    paSet(PA_MAIN_KEY, sess.id);
+    s.busy = false;
     await loadSessions();
     agentShowView('chat');
   } catch (e) {
-    pa.mainErr = '创建失败：' + ((e && e.message) || e);
+    s.busy = false;
+    s.err = '创建失败：' + ((e && e.message) || e);
     const el = $('#main-agents');
     if (el) el.dataset.paSig = '';
     agentRenderCluster();
+    agentRenderQueue(true);
   }
 }
+
 // ---------- 中栏切换 ----------
 // queue 是 #needs-view；chat / board 是主 Agent 会话 #chat-view 的两个 tab（真实 SSE）。
 function agentShowView(view) {

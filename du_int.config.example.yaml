@@ -17,10 +17,10 @@ data_dir: "./data"
 # 新建会话时的默认工作目录
 default_cwd: "~"
 
-# 首次启动自动创建 mainAgent，并默认进入 Personal Agent；设为 false 关闭。
-# default_ui 只影响还没有本地界面偏好的浏览器，用户手动切过后以本地偏好为准。
+# 首次启动是否自动创建 mainAgent（默认 false：首次进入 Personal Agent 会引导
+# 你选择 CLI / provider / 模型创建）。设为 true 则启动时用 main_agent.worker 自动建。
 main_agent:
-  autocreate: true
+  autocreate: false
   default_ui: "agent"
 
 # 对外可访问的 base URL，用于生成看板产物的分享链接（HTML 页面等）。

@@ -14,6 +14,8 @@ go build -o agentdeck .
 
 浏览器打开 `http://<机器IP>:8321`，输入 `gateway_token` 登录；新建会话时 CLI 选 `ducc` 或 `ducx` 即可。
 
+首次启动会进入 Personal Agent，并在没有主 Agent 时显示创建引导：选择 CLI（ducc/ducx）、provider、模型（可留空用 CLI 默认）和工作目录即可。想启动时自动创建，可在设置页打开「首次启动自动创建主 Agent」，或在 config 里设置 `main_agent.autocreate: true`（默认关闭）。
+
 > 旧安装的二进制名 `cc-webui` 仍可继续使用；重新运行安装/升级脚本会迁移到 `agentdeck`，替换前把旧文件备份为 `cc-webui.bak-<版本>`。Go module、`CC_WEBUI_*` 环境变量、`ccgw_token` Cookie 和 `~/.config/cc-webui` 都不变。
 
 ## 1. 前置条件

@@ -221,6 +221,19 @@ function paMoveSel(d) {
 function agentRenderQueue(force) {
   const root = $('#needs-view');
   if (!root || !agentModeOn()) return;
+  if (!paPrimaryMain()) {
+    // 没有主 Agent：中栏改成创建引导，不进队列选择/倒计时逻辑。
+    const sig = 'setup:' + JSON.stringify([
+      (state.clis || []).map((c) => c.name + ':' + kindOf(c)),
+      (state.providers || []).map((p) => p.name + ':' + kindOf(p)),
+      pa.setup.cli, pa.setup.provider, pa.setup.err, pa.setup.busy,
+    ]);
+    if (!force && root.dataset.sig === sig) return;
+    root.dataset.sig = sig;
+    root.textContent = '';
+    root.append(paSetupView());
+    return;
+  }
   paEnsureSel();
   if (root.classList.contains('hidden')) return;
   const groups = paQueueGroups();
