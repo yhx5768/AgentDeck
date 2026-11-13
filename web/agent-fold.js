@@ -12,6 +12,8 @@
  * 一组「N 个工具调用 · M 步操作」，默认折叠、点开看每一步（每步一行摘要，点开才是原始工具卡）。
  * 头部按工具类型小计（看板 / 读取会话 / Bash / 其他）；整段都是看板操作时改给动作小计（评论 ×N、
  * 更新 ×N）。thinking 一起收进组里，不单独刷屏；带正文的回复、用户输入、worker 回报组不折。
+ * 出站 A2A 发件卡（含单条）单独折成「N 条 A2A 发送」，默认折叠，组头保留收件人 / 任务 id /
+ * 预览 / 失败标记；只有 send-only 步骤成组，带正文的混合步骤仍把正文和发件卡留在原处。
  * 只在 DOM 层做，不改任何事件、不影响主 Agent 的上下文；关掉 Personal Agent 模式会原样还原。
  * 对 replay / 实时 / 「加载更多」都幂等：扫整个 #messages，已折叠的组会被识别并合并。
  */
@@ -202,8 +204,8 @@ function paMakeStepRow(step) {
 }
 
 // ---------- 出站 A2A 发送组 ----------
-// 发件卡是给人看的：单条保持原样可见；连续多条的 send-only 步骤才折成「N 条 A2A 发送」，
-// 头部保留收件人 / 任务 id / 预览，点开看每条原始发件卡（收件人跳转、markdown、投递结果都在卡里）。
+// 发件卡（含单条）都折进「N 条 A2A 发送」组，组头保留收件人 / 任务 id / 预览 / 失败标记，
+// 点开看每条原始发件卡（收件人跳转、markdown、投递结果都在卡里）。
 function paSendCards(msg) {
   return [...msg.querySelectorAll(':scope > .bubble > .tool-peer-send')];
 }
@@ -439,7 +441,7 @@ function paFoldScan(box) {
     });
     return found.length;
   };
-  // 0) 出站 A2A 发送组：只折「连续 send-only 步骤、且总发送数 ≥2」；单条发件卡保持可见。
+  // 0) 出站 A2A 发送组：每一段连续 send-only 步骤都折（含单条），默认折叠。
   const ignorable = (n) => n.nodeType === 1 && (n.classList.contains('meta-line') || n.classList.contains('result-meta') || n.classList.contains('hidden'));
   const sendFound = [];
   let sendRun = null;
@@ -452,12 +454,9 @@ function paFoldScan(box) {
     }
     if (!ignorable(n)) sendRun = null;
   }
-  const runSends = (r) => r.reduce((sum, m) => sum + (paIsA2aFold(m)
-    ? [...m.querySelectorAll(':scope > .pa-fold-b > .pa-rep')].reduce((x, row) => x + (+row.dataset.n || 0), 0)
-    : paSendCards(m).length), 0);
   sendFound.forEach((r) => {
     if (r.length === 1 && paIsA2aFold(r[0])) paUpdateA2a(r[0]);
-    else if (runSends(r) >= 2) paFoldRun(r, 'a2a');
+    else paFoldRun(r, 'a2a');
   });
   repRuns = process('rep',
     (n) => paIsPeer(n) || (paIsFold(n) && !paIsSilentFold(n) && !paIsA2aFold(n)),
