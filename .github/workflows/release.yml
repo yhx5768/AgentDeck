@@ -3,6 +3,9 @@
 # then creates a GitHub Release with the binaries, config.example.yaml, and a
 # checksums file attached.
 #
+# Release notes come from the annotated tag message when present; lightweight
+# tags or empty messages fall back to GitHub's generated notes.
+#
 # Targets are Linux + macOS (amd64/arm64) only: the runner manages subprocess
 # groups with syscall.Setpgid / syscall.Kill, which are Unix-only — a Windows
 # host build would need platform-specific process code that doesn't exist yet.
@@ -68,15 +71,50 @@ jobs:
           (cd dist && sha256sum cc-webui-* config.example.yaml > checksums.txt)
           ls -la dist
 
+      - name: Resolve release notes
+        id: notes
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # Annotated tag messages are the source of truth for release notes.
+          # Lightweight tags (or empty messages) fall back to --generate-notes.
+          git fetch --force --tags origin --quiet || true
+          body="$(git tag -l --format='%(contents)' "$TAG")"
+          # Drop a leading line that just repeats the tag name, then trim leading
+          # blank lines so the Markdown body starts at the first heading/bullet.
+          body="$(printf '%s\n' "$body" | awk -v tag="$TAG" 'NR == 1 && $0 == tag { next } { print }')"
+          body="$(printf '%s\n' "$body" | sed '/./,$!d')"
+          if printf '%s' "$body" | grep -q '[^[:space:]]'; then
+            notes="$RUNNER_TEMP/release-notes.md"
+            printf '%s\n' "$body" > "$notes"
+            echo "have_notes=true" >> "$GITHUB_OUTPUT"
+            echo "notes_file=$notes" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create or update release & upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
+          HAVE_NOTES: ${{ steps.notes.outputs.have_notes }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            # Re-running on an existing tag (e.g. a fixed build): clobber assets.
+            # Re-running on an existing tag (e.g. a fixed build): refresh the body
+            # when the tag carries notes, then clobber assets.
+            if [ "$HAVE_NOTES" = "true" ]; then
+              gh release edit "$TAG" --notes-file "$NOTES_FILE"
+            fi
             gh release upload "$TAG" dist/cc-webui-* dist/config.example.yaml dist/checksums.txt --clobber
+          elif [ "$HAVE_NOTES" = "true" ]; then
+            gh release create "$TAG" \
+              dist/cc-webui-* dist/config.example.yaml dist/checksums.txt \
+              --title "$TAG" \
+              --notes-file "$NOTES_FILE" \
+              --verify-tag
           else
+            # No annotated tag message: keep the previous behavior.
             gh release create "$TAG" \
               dist/cc-webui-* dist/config.example.yaml dist/checksums.txt \
               --title "$TAG" \
