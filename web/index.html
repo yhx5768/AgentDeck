@@ -790,7 +790,7 @@
 <div id="modal-settings" class="modal hidden">
   <div class="modal-card">
     <h3>设置</h3>
-    <div class="settings-note">通知与提示音、界面模式仅保存在当前浏览器；浏览器开关保存在服务器，所有终端共享。</div>
+    <div class="settings-note">通知与提示音、界面模式仅保存在当前浏览器；浏览器开关与 worker 默认档保存在服务器，所有终端共享。</div>
     <div class="settings-row">
       <div class="settings-text">
         <div class="settings-label">界面模式</div>
@@ -829,6 +829,29 @@
         <div class="settings-sub" id="browser-shared-status">关闭：每个会话独立 Chrome profile，各自登录态。</div>
       </div>
       <label class="switch"><input type="checkbox" id="pref-browser-shared"><span class="slider"></span></label>
+    </div>
+    <!-- worker 默认档：服务端持久化（<data_dir>/main-agent/worker.json），优先于
+         config.yaml 的 main_agent.worker；留空 = 继承 config。 -->
+    <div class="settings-row settings-worker-head">
+      <div class="settings-text">
+        <div class="settings-label">worker 默认档（主 Agent 派工）</div>
+        <div class="settings-sub">主 Agent 的默认提示会写上新建 worker 的 cli / provider / model / effort / 常驻。留空 = 继承 config.yaml 的 <code>main_agent.worker</code>；保存在服务器，所有终端共享。</div>
+      </div>
+    </div>
+    <div class="settings-worker-grid">
+      <label>CLI<select id="ma-worker-cli" class="pill-select"></select></label>
+      <label>Provider<select id="ma-worker-provider" class="pill-select"></select></label>
+      <label>模型<select id="ma-worker-model" class="pill-select"></select></label>
+      <label>推理档位<select id="ma-worker-effort" class="pill-select"></select></label>
+      <label>常驻<select id="ma-worker-resident" class="pill-select"></select></label>
+    </div>
+    <div class="settings-row settings-worker-preview-row">
+      <div class="settings-text">
+        <div class="settings-sub settings-worker-preview" id="ma-worker-preview"></div>
+        <div class="settings-sub settings-worker-note" id="ma-worker-note"></div>
+        <div class="settings-sub settings-worker-status hidden" id="ma-worker-status"></div>
+      </div>
+      <button id="ma-worker-save" class="ghost-btn" type="button">保存</button>
     </div>
     <div class="settings-row">
       <div class="settings-text">

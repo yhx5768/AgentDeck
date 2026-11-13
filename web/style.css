@@ -2903,6 +2903,25 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
 .settings-text { flex: 1; min-width: 0; }
 .settings-label { font-size: var(--fs-md); color: var(--fg); }
 .settings-sub { font-size: var(--fs-xs); color: var(--dim); margin-top: 2px; }
+/* 设置 → worker 默认档：两列字段 + 实时提示预览。440px 的弹窗里五个下拉
+   排一行会挤成不可读，所以做成网格；预览行单独占一整行。
+   设置项变多后超过 85vh，弹窗自身要能滚（原来只有 max-height，内容会被裁掉）。 */
+#modal-settings .modal-card { overflow-y: auto; overscroll-behavior: contain; }
+#modal-settings .settings-worker-head { border-bottom: none; padding-bottom: 0; }
+#modal-settings .settings-worker-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2) var(--sp-3);
+}
+#modal-settings .settings-worker-grid label { font-size: var(--fs-xs); }
+#modal-settings .settings-worker-grid select {
+  width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box;
+}
+#modal-settings .settings-worker-preview-row { border-bottom: none; align-items: flex-start; }
+#modal-settings .settings-worker-preview { color: var(--fg); }
+#modal-settings .settings-worker-note { margin-top: var(--sp-1); }
+#modal-settings .settings-worker-note.warn { color: var(--orange); }
+#modal-settings .settings-worker-status { margin-top: var(--sp-1); color: var(--green); }
+#modal-settings .settings-worker-status.error { color: var(--red); }
 .link-btn {
   background: none; border: none; padding: 0;
   color: var(--accent); font-size: var(--fs-xs);

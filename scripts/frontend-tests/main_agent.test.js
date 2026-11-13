@@ -57,6 +57,17 @@ const HTML = `<!doctype html><html><body>
     <button id="role-prompt-clear"></button>
     <button id="role-prompt-save"></button>
   </div>
+  <div id="modal-settings" class="modal hidden">
+    <select id="ma-worker-cli"></select>
+    <select id="ma-worker-provider"></select>
+    <select id="ma-worker-model"></select>
+    <select id="ma-worker-effort"></select>
+    <select id="ma-worker-resident"></select>
+    <div id="ma-worker-preview"></div>
+    <div id="ma-worker-note"></div>
+    <div id="ma-worker-status" class="hidden"></div>
+    <button id="ma-worker-save"></button>
+  </div>
 </body></html>`;
 
 const DEFAULT = '## AgentDeck 主 Agent 每轮规则\n\n1. 归属：先判断任务。\n2. 派工：先查 worker。';
@@ -64,10 +75,28 @@ const DEFAULT = '## AgentDeck 主 Agent 每轮规则\n\n1. 归属：先判断任
 const fn = (n) => grabFn(n);
 const setup = `
 ${dollarLine}
+${fn('fillSelect')}
 const state = window.__state;
 const api = window.__api;
 const alert = window.__alert;
 const confirm = window.__confirm;
+const kindOf = (item) => (item && item.kind) || 'claude';
+const cliKind = (name) => { const c = (state.clis || []).find((x) => x.name === name); return kindOf(c); };
+const provKind = (name) => { const p = (state.providers || []).find((x) => x.name === name); return kindOf(p); };
+const providerModels = (name) => {
+  const p = (state.providers || []).find((x) => x.name === name);
+  return (p && Array.isArray(p.models)) ? p.models : [];
+};
+function cliHasModelsCommand() { return false; }
+async function modelsForProvider(p, c) { return window.__modelsForProvider(p, c); }
+async function ocVariantsFor() { return null; }
+async function mcodeCatalogFor() { return null; }
+async function qoderCatalogFor() { return null; }
+async function codexCatalogFor() { return null; }
+function variantKeysFor() { return []; }
+function mcodeEffortsFor() { return []; }
+function qoderEfforts() { return []; }
+function codexEffortsFor() { return []; }
 function openModal(sel) { document.querySelector(sel).classList.remove('hidden'); }
 function closeModal(el) { el.closest('.modal').classList.add('hidden'); }
 function applySession(sess) { window.__applySession(sess); }
@@ -98,6 +127,21 @@ ${fn('openRolePromptDialog')}
 ${fn('saveRolePrompt')}
 ${fn('fillRolePromptDefault')}
 ${fn('clearRolePromptDialog')}
+let maWorkerView = null;
+${fn('workerDefaultLineOf')}
+${fn('maWorkerInheritLabel')}
+${fn('fillMaWorkerSelect')}
+${fn('maWorkerSelectedCli')}
+${fn('maWorkerSelectedProvider')}
+${fn('refreshMaWorkerModel')}
+${fn('renderMaWorkerEffortOptions')}
+${fn('refreshMaWorkerEffort')}
+${fn('maWorkerEffectiveFromForm')}
+${fn('renderMaWorkerPreview')}
+${fn('maWorkerStatus')}
+${fn('renderMaWorkerForm')}
+${fn('loadMaWorkerSettings')}
+${fn('saveMaWorkerSettings')}
 window.__x = {
   mainAgentToggleBody, mainAgentNeedsOverwriteConfirm, updateMainAgentUI,
   renderMainAgents, mainAgentSessions, runningMainAgentWorkers,
@@ -105,6 +149,10 @@ window.__x = {
   rolePromptBytes, rolePromptMaxBytes,
   ensureMainAgentPrompt, updateRolePromptCounter, updateRolePromptButton,
   openRolePromptDialog, saveRolePrompt, fillRolePromptDefault, clearRolePromptDialog,
+  workerDefaultLineOf, maWorkerInheritLabel, renderMaWorkerForm, loadMaWorkerSettings,
+  saveMaWorkerSettings, renderMaWorkerPreview, maWorkerEffectiveFromForm,
+  setMaWorkerView: (v) => { maWorkerView = v; },
+  getMaWorkerView: () => maWorkerView,
 };
 `;
 
@@ -115,15 +163,63 @@ const state = {
   sessions: [], current: null, mainAgentPrompt: null, mainAgentMaxBytes: 32768,
   agentBoard: { tasks: [] }, mainAgentBoardAt: Date.now(), maWorkerIds: [],
   maWorkerMeta: {}, maRenderSig: '', previewWorkers: false,
+  clis: [
+    { name: 'claude', kind: 'claude' },
+    { name: 'oc', kind: 'opencode' },
+  ],
+  providers: [
+    { name: 'gw', kind: 'claude', models: [{ name: 'm1' }, { name: 'm2' }] },
+    { name: 'oc-p', kind: 'opencode', models: [] },
+  ],
 };
-const calls = { api: [], patches: [], applied: [], opened: [], alerts: [], confirms: [] };
+const calls = {
+  api: [], patches: [], applied: [], opened: [], alerts: [], confirms: [], workerSaves: [],
+};
 let failNext = false;
 let confirmReturn = true;
+let workerSaveFail = '';
+const CONFIG_WORKER = {
+  cli: 'claude', provider: 'gw', model: 'm1', effort: 'low', resident: false,
+};
+function workerViewOf(overrides, opts) {
+  const eff = {
+    cli: overrides.cli || CONFIG_WORKER.cli,
+    provider: overrides.provider || CONFIG_WORKER.provider,
+    model: overrides.model || CONFIG_WORKER.model,
+    effort: overrides.effort || CONFIG_WORKER.effort,
+    resident: typeof overrides.resident === 'boolean' ? overrides.resident : CONFIG_WORKER.resident,
+  };
+  const parts = [eff.cli, eff.provider, eff.model, eff.effort].filter(Boolean);
+  parts.push(eff.resident ? '常驻' : '非常驻');
+  return {
+    worker: eff,
+    config_worker: Object.assign({}, CONFIG_WORKER),
+    overrides: overrides,
+    sources: {},
+    worker_line: parts.join(' / '),
+    prompt_customized: !!(opts && opts.custom),
+  };
+}
+let workerView = workerViewOf({});
 w.__state = state;
 w.__calls = calls;
+w.__modelsForProvider = async (providerName) => {
+  const p = state.providers.find((x) => x.name === providerName);
+  return (p && p.models) || [];
+};
 w.__api = async (p, opts) => {
   calls.api.push({ p, opts });
   if (p === '/api/main-agent-prompt') return { prompt: DEFAULT, max_bytes: 32768 };
+  if (p === '/api/main-agent/worker') {
+    if (opts && opts.method === 'PUT') {
+      const body = JSON.parse(opts.body);
+      calls.workerSaves.push(body);
+      if (workerSaveFail) throw new Error(workerSaveFail);
+      workerView = workerViewOf(body, { custom: workerView.prompt_customized });
+      return workerView;
+    }
+    return workerView;
+  }
   if (opts && opts.method === 'PATCH') {
     if (failNext) { failNext = false; throw new Error('boom'); }
     const body = JSON.parse(opts.body);
@@ -421,6 +517,134 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
   check('超限保存被本地拦截', calls.patches.length === 0);
   check('超限保存显示错误',
     $('#role-prompt-error').textContent.includes('超出上限'), $('#role-prompt-error').textContent);
+
+  console.log('设置页 worker 默认档');
+
+  check('默认档行拼接顺序',
+    X.workerDefaultLineOf({ cli: 'claude', provider: 'gw', model: 'm1', effort: 'high', resident: true })
+      === 'claude / gw / m1 / high / 常驻');
+  check('默认档行省略空字段',
+    X.workerDefaultLineOf({ cli: 'claude', provider: '', model: '', effort: '', resident: null })
+      === 'claude');
+  check('非常驻也写进提示',
+    X.workerDefaultLineOf({ resident: false }) === '非常驻');
+
+  // 载入视图：config 值作为「继承」标签，overrides 为空 → 预览回退 config。
+  X.setMaWorkerView(workerViewOf({}));
+  await X.renderMaWorkerForm();
+  check('CLI 首项继承 config',
+    $('#ma-worker-cli').options[0].value === '' &&
+    $('#ma-worker-cli').options[0].textContent === '继承 config（claude）',
+    $('#ma-worker-cli').options[0].textContent);
+  check('Provider 首项继承 config',
+    $('#ma-worker-provider').options[0].textContent === '继承 config（gw）',
+    $('#ma-worker-provider').options[0].textContent);
+  check('模型首项继承 config',
+    $('#ma-worker-model').options[0].textContent === '继承 config（m1）',
+    $('#ma-worker-model').options[0].textContent);
+  check('档位首项继承 config',
+    $('#ma-worker-effort').options[0].textContent === '继承 config（low）',
+    $('#ma-worker-effort').options[0].textContent);
+  check('常驻首项继承 config',
+    $('#ma-worker-resident').options[0].textContent === '继承 config（非常驻）',
+    $('#ma-worker-resident').options[0].textContent);
+  check('claude 档位全集',
+    [...$('#ma-worker-effort').options].map((o) => o.value).join(',') === ',low,medium,high,xhigh,max',
+    [...$('#ma-worker-effort').options].map((o) => o.value).join(','));
+  check('预览回退 config',
+    $('#ma-worker-preview').textContent.includes('默认 claude / gw / m1 / low / 非常驻'),
+    $('#ma-worker-preview').textContent);
+
+  // 改字段后实时预览，不需要保存。
+  $('#ma-worker-effort').value = 'high';
+  $('#ma-worker-resident').value = 'true';
+  X.renderMaWorkerPreview();
+  check('选择后实时预览',
+    $('#ma-worker-preview').textContent.includes('默认 claude / gw / m1 / high / 常驻'),
+    $('#ma-worker-preview').textContent);
+
+  // 保存：只覆盖用户显式选择的字段；「继承 config」的字段发空值。
+  state.mainAgentPrompt = 'cached';
+  calls.workerSaves.length = 0;
+  await X.saveMaWorkerSettings();
+  check('继承 config 的字段不写覆盖',
+    calls.workerSaves.length === 1 &&
+    JSON.stringify(calls.workerSaves[0]) === JSON.stringify({
+      cli: '', provider: '', model: '', effort: 'high', resident: true,
+    }),
+    JSON.stringify(calls.workerSaves));
+  check('保存后预览仍按 config 补全',
+    $('#ma-worker-preview').textContent.includes('默认 claude / gw / m1 / high / 常驻'),
+    $('#ma-worker-preview').textContent);
+  check('保存后清默认提示缓存', state.mainAgentPrompt === null);
+  check('保存成功提示',
+    !$('#ma-worker-status').classList.contains('hidden') &&
+    $('#ma-worker-status').textContent.includes('已保存'),
+    $('#ma-worker-status').textContent);
+  check('保存后表单回填保存值',
+    $('#ma-worker-effort').value === 'high' && $('#ma-worker-resident').value === 'true',
+    $('#ma-worker-effort').value + ' / ' + $('#ma-worker-resident').value);
+
+  // 显式选 cli/provider/model 后再保存 → 三项都写成覆盖。
+  $('#ma-worker-cli').value = 'claude';
+  $('#ma-worker-provider').value = 'gw';
+  $('#ma-worker-model').value = 'm1';
+  calls.workerSaves.length = 0;
+  await X.saveMaWorkerSettings();
+  check('显式选择写覆盖',
+    JSON.stringify(calls.workerSaves[0]) === JSON.stringify({
+      cli: 'claude', provider: 'gw', model: 'm1', effort: 'high', resident: true,
+    }),
+    JSON.stringify(calls.workerSaves));
+
+  // 全部留空 = 清除运行期覆盖（resident 显式 null）。
+  $('#ma-worker-cli').value = '';
+  $('#ma-worker-provider').value = '';
+  $('#ma-worker-model').value = '';
+  $('#ma-worker-effort').value = '';
+  $('#ma-worker-resident').value = '';
+  calls.workerSaves.length = 0;
+  await X.saveMaWorkerSettings();
+  check('留空保存 = 清除覆盖',
+    JSON.stringify(calls.workerSaves[0]) === JSON.stringify({
+      cli: '', provider: '', model: '', effort: '', resident: null,
+    }),
+    JSON.stringify(calls.workerSaves));
+
+  // 服务端校验失败：错误展示在状态行，表单保留，不假装保存成功。
+  X.setMaWorkerView(workerViewOf({ model: 'nope' }));
+  await X.renderMaWorkerForm();
+  check('无效值显式列出而不是静默丢掉',
+    [...$('#ma-worker-model').options].some((o) => o.value === 'nope' &&
+      o.textContent.includes('不在当前可选列表')),
+    [...$('#ma-worker-model').options].map((o) => o.textContent).join(' | '));
+  workerSaveFail = '未知模型：nope（provider gw）';
+  calls.workerSaves.length = 0;
+  await X.saveMaWorkerSettings();
+  check('保存失败显示服务端错误',
+    $('#ma-worker-status').textContent.includes('未知模型：nope') &&
+    $('#ma-worker-status').classList.contains('error'),
+    $('#ma-worker-status').textContent);
+  check('保存失败保留选择', $('#ma-worker-model').value === 'nope');
+  workerSaveFail = '';
+
+  // config.yaml 的 main_agent.prompt 整段替换模板时，UI 要明说默认档不生效。
+  X.setMaWorkerView(workerViewOf({}, { custom: true }));
+  await X.renderMaWorkerForm();
+  check('自定义 prompt 时警告默认档不生效',
+    $('#ma-worker-note').textContent.includes('不会出现在主 Agent 提示') &&
+    $('#ma-worker-note').classList.contains('warn'),
+    $('#ma-worker-note').textContent);
+
+  // 打开设置页：GET 服务端视图并回填（不是 localStorage）。
+  workerView = workerViewOf({ effort: 'max', resident: false });
+  state.mainAgentPrompt = 'cached';
+  await X.loadMaWorkerSettings();
+  check('打开设置时读取服务端视图', $('#ma-worker-effort').value === 'max');
+  check('GET 的设置值进入预览',
+    $('#ma-worker-preview').textContent.includes('默认 claude / gw / m1 / max / 非常驻'),
+    $('#ma-worker-preview').textContent);
+  check('读取设置不改提示缓存', state.mainAgentPrompt === 'cached');
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);

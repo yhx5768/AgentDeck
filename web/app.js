@@ -9032,6 +9032,7 @@ $('#btn-settings').onclick = () => {
   $('#pref-sound').checked = prefs.sound;
   $('#notify-perm-hint').textContent = notifyPermText();
   openModal('#modal-settings');
+  loadMaWorkerSettings();
 };
 
 $('#pref-banner').addEventListener('change', async (e) => {
@@ -9053,6 +9054,317 @@ $('#pref-sound').addEventListener('change', (e) => {
 });
 
 $('#btn-test-sound').onclick = () => playNotifySound(false);
+
+// ---------- 设置：worker 默认档（服务端持久化） ----------
+// 主 Agent 默认提示里「默认 cli / provider / model / effort / 常驻」那一句由
+// 服务端拼：运行期设置（本弹窗保存到 <data_dir>/main-agent/worker.json）→
+// config.yaml 的 main_agent.worker → 内置模板（未设置则整句省略）。GET 返回
+// 合并结果、每项来源和 config 原值；前端只渲染，不自己决定优先级。
+// 留空（常驻为「继承」）= 清除该字段的运行期覆盖。
+let maWorkerView = null;
+
+// 与服务端 workerDefaultLine 逐项对齐：非空字段按固定顺序用 " / " 连接，
+// resident 是三态（null = 提示里不写）。
+function workerDefaultLineOf(w) {
+  if (!w) return '';
+  const parts = [];
+  for (const k of ['cli', 'provider', 'model', 'effort']) {
+    const v = (w[k] || '').trim();
+    if (v) parts.push(v);
+  }
+  if (typeof w.resident === 'boolean') parts.push(w.resident ? '常驻' : '非常驻');
+  return parts.join(' / ');
+}
+
+// 「继承 config」占位文案：把 config.yaml 的当前值带出来，用户不用去翻文件。
+function maWorkerInheritLabel(field, cfg) {
+  const v = cfg ? cfg[field] : undefined;
+  if (field === 'resident') {
+    return typeof v === 'boolean'
+      ? `继承 config（${v ? '常驻' : '非常驻'}）`
+      : '继承 config（config 未设置）';
+  }
+  return v ? `继承 config（${v}）` : '继承 config（config 未设置）';
+}
+
+// 带「继承 config」首项的 cli/provider 下拉。运行期存着但已不在当前可选列表
+// 里的值不静默丢掉：显式列出来，保存时服务端也会拒绝。
+function fillMaWorkerSelect(sel, items, value, inheritLabel) {
+  fillSelect(sel, items, '', null);
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = inheritLabel;
+  sel.insertBefore(def, sel.firstChild);
+  const names = new Set((items || []).map((it) => it.name));
+  if (value && !names.has(value)) {
+    const stale = document.createElement('option');
+    stale.value = value;
+    stale.textContent = `${value}（不在当前可选列表）`;
+    sel.appendChild(stale);
+  }
+  sel.value = value || '';
+}
+
+function maWorkerSelectedCli() {
+  const el = $('#ma-worker-cli');
+  if (el && el.value) return el.value;
+  return ((maWorkerView && maWorkerView.config_worker) || {}).cli || '';
+}
+
+function maWorkerSelectedProvider() {
+  const el = $('#ma-worker-provider');
+  if (el && el.value) return el.value;
+  return ((maWorkerView && maWorkerView.config_worker) || {}).provider || '';
+}
+
+// 模型下拉与会话创建一致：opencode / mcode / qoder / codex 以及配了
+// models_command 的 claude 走 CLI 侧动态目录，其余走 config 静态列表。
+async function refreshMaWorkerModel(value) {
+  const sel = $('#ma-worker-model');
+  if (!sel) return;
+  const cfg = (maWorkerView && maWorkerView.config_worker) || {};
+  const cliName = maWorkerSelectedCli();
+  const providerName = maWorkerSelectedProvider();
+  const cur = value !== undefined ? value : sel.value;
+  const label = maWorkerInheritLabel('model', cfg);
+  const render = (models) => {
+    sel.innerHTML = '';
+    const def = document.createElement('option');
+    def.value = '';
+    def.textContent = label;
+    sel.appendChild(def);
+    const names = new Set();
+    for (const m of models || []) {
+      names.add(m.name);
+      const opt = document.createElement('option');
+      opt.value = m.name;
+      opt.textContent = m.name;
+      sel.appendChild(opt);
+    }
+    if (cur && !names.has(cur)) {
+      const stale = document.createElement('option');
+      stale.value = cur;
+      stale.textContent = `${cur}（不在当前可选列表）`;
+      sel.appendChild(stale);
+    }
+    sel.value = cur || '';
+  };
+  if (!providerName) { render([]); return; }
+  const kind = provKind(providerName);
+  const dynamic = !!cliName && (kind === 'opencode' || kind === 'mcode' || kind === 'qoder'
+    || kind === 'codex' || (kind === 'claude' && cliHasModelsCommand(cliName)));
+  if (!dynamic) { render(providerModels(providerName)); return; }
+  // 竞态防护：连点切换 provider/cli 时，先发后到的请求不能覆盖当前下拉。
+  const token = providerName + '|' + cliName;
+  sel.dataset.provider = token;
+  const models = await modelsForProvider(providerName, cliName);
+  if (sel.dataset.provider !== token) return;
+  render(models);
+}
+
+// 档位下拉随引擎/模型变化：claude 固定集合，其余来自 CLI 目录（与会话创建
+// 的 refreshSessionEffort / refreshNewEffort 同源）。空值 = 继承 config。
+function renderMaWorkerEffortOptions(sel, keys, value, inheritLabel) {
+  sel.innerHTML = '';
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = inheritLabel;
+  sel.appendChild(def);
+  const names = new Set();
+  for (const k of keys || []) {
+    names.add(k);
+    const opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = k;
+    sel.appendChild(opt);
+  }
+  if (value && !names.has(value)) {
+    const stale = document.createElement('option');
+    stale.value = value;
+    stale.textContent = `${value}（不在当前可选列表）`;
+    sel.appendChild(stale);
+  }
+  sel.value = value || '';
+}
+
+async function refreshMaWorkerEffort(value) {
+  const sel = $('#ma-worker-effort');
+  if (!sel) return;
+  const cfg = (maWorkerView && maWorkerView.config_worker) || {};
+  const cliName = maWorkerSelectedCli();
+  const providerName = maWorkerSelectedProvider();
+  const modelName = $('#ma-worker-model').value || cfg.model || '';
+  const kind = cliName ? cliKind(cliName) : (providerName ? provKind(providerName) : 'claude');
+  const cur = value !== undefined ? value : sel.value;
+  let keys = [];
+  if (kind === 'opencode' && cliName && providerName) {
+    keys = variantKeysFor(await ocVariantsFor(cliName, providerName), providerName, modelName);
+  } else if (kind === 'mcode' && cliName && providerName) {
+    keys = mcodeEffortsFor(await mcodeCatalogFor(cliName, providerName), providerName, modelName);
+  } else if (kind === 'qoder' && cliName && providerName) {
+    keys = qoderEfforts(await qoderCatalogFor(cliName, providerName));
+  } else if (kind === 'codex' && cliName && providerName) {
+    keys = codexEffortsFor(await codexCatalogFor(cliName, providerName), modelName);
+  } else if (kind === 'claude') {
+    keys = ['low', 'medium', 'high', 'xhigh', 'max'];
+  }
+  renderMaWorkerEffortOptions(sel, keys, cur, maWorkerInheritLabel('effort', cfg));
+}
+
+// 表单当前值 + 继承 config 后的有效档，用于实时预览。
+function maWorkerEffectiveFromForm() {
+  const cfg = (maWorkerView && maWorkerView.config_worker) || {};
+  const pick = (id, field) => {
+    const el = $('#' + id);
+    const v = el ? el.value : '';
+    if (field === 'resident') {
+      if (v === 'true') return true;
+      if (v === 'false') return false;
+      return typeof cfg.resident === 'boolean' ? cfg.resident : null;
+    }
+    return v || cfg[field] || '';
+  };
+  return {
+    cli: pick('ma-worker-cli', 'cli'),
+    provider: pick('ma-worker-provider', 'provider'),
+    model: pick('ma-worker-model', 'model'),
+    effort: pick('ma-worker-effort', 'effort'),
+    resident: pick('ma-worker-resident', 'resident'),
+  };
+}
+
+function renderMaWorkerPreview() {
+  const eff = maWorkerEffectiveFromForm();
+  const line = workerDefaultLineOf(eff);
+  const preview = $('#ma-worker-preview');
+  if (preview) {
+    preview.textContent = line
+      ? `主 Agent 提示预览：默认 ${line}`
+      : '主 Agent 提示预览：未设置默认档，提示会写「cli/provider/model 按任务选或问用户」。';
+  }
+  const note = $('#ma-worker-note');
+  if (note) {
+    const customized = !!(maWorkerView && maWorkerView.prompt_customized);
+    note.textContent = customized
+      ? '注意：config.yaml 的 main_agent.prompt 已整段替换内置模板，worker 默认档不会出现在主 Agent 提示里。'
+      : '保存后，新建 / 重新安装的主 Agent 提示使用这份默认档；已有主 Agent 需在 📡 面板重装提示。';
+    note.classList.toggle('warn', customized);
+  }
+}
+
+function maWorkerStatus(text, isError) {
+  const el = $('#ma-worker-status');
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+  el.classList.toggle('error', !!isError);
+}
+
+// 按服务端返回的视图重建整张表单：overrides 决定选中值，config_worker 提供
+// 「继承 config（值）」标签与预览回退。
+async function renderMaWorkerForm() {
+  const view = maWorkerView || {};
+  const cfg = view.config_worker || {};
+  const ov = view.overrides || {};
+  const cliSel = $('#ma-worker-cli');
+  const provSel = $('#ma-worker-provider');
+  if (!cliSel || !provSel) return;
+  fillMaWorkerSelect(cliSel, state.clis || [], ov.cli, maWorkerInheritLabel('cli', cfg));
+  const cliName = maWorkerSelectedCli();
+  let providers = state.providers || [];
+  if (cliName) providers = providers.filter((p) => kindOf(p) === cliKind(cliName));
+  fillMaWorkerSelect(provSel, providers, ov.provider, maWorkerInheritLabel('provider', cfg));
+  const residentSel = $('#ma-worker-resident');
+  if (residentSel) {
+    residentSel.innerHTML = '';
+    for (const [v, text] of [
+      ['', maWorkerInheritLabel('resident', cfg)],
+      ['true', '常驻'],
+      ['false', '非常驻'],
+    ]) {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = text;
+      residentSel.appendChild(opt);
+    }
+    residentSel.value = ov.resident === true ? 'true' : ov.resident === false ? 'false' : '';
+  }
+  await refreshMaWorkerModel(ov.model || '');
+  await refreshMaWorkerEffort(ov.effort || '');
+  renderMaWorkerPreview();
+}
+
+async function loadMaWorkerSettings() {
+  try {
+    maWorkerView = await api('/api/main-agent/worker');
+    await renderMaWorkerForm();
+    maWorkerStatus('');
+  } catch (err) {
+    maWorkerStatus('读取失败：' + err.message, true);
+  }
+}
+
+async function saveMaWorkerSettings() {
+  const saveBtn = $('#ma-worker-save');
+  const resident = $('#ma-worker-resident').value;
+  const payload = {
+    cli: $('#ma-worker-cli').value,
+    provider: $('#ma-worker-provider').value,
+    model: $('#ma-worker-model').value,
+    effort: $('#ma-worker-effort').value,
+    resident: resident === '' ? null : resident === 'true',
+  };
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    maWorkerView = await api('/api/main-agent/worker', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+    // 默认提示的缓存可能还是旧拼装结果，清掉让下次安装拿到新档。
+    state.mainAgentPrompt = null;
+    await renderMaWorkerForm();
+    maWorkerStatus('已保存。新建 / 重新安装的主 Agent 提示将使用这份默认档。');
+  } catch (err) {
+    maWorkerStatus('保存失败：' + err.message, true);
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+(function initMaWorkerSettings() {
+  const cliSel = $('#ma-worker-cli');
+  if (!cliSel) return;
+  const provSel = $('#ma-worker-provider');
+  const modelSel = $('#ma-worker-model');
+  const effortSel = $('#ma-worker-effort');
+  const residentSel = $('#ma-worker-resident');
+  if (!provSel || !modelSel || !effortSel || !residentSel) return;
+
+  // 换 cli：provider 只留同引擎的（与会话创建一致）；原值不再可选就清空。
+  cliSel.addEventListener('change', async () => {
+    const cfg = (maWorkerView && maWorkerView.config_worker) || {};
+    let providers = state.providers || [];
+    if (cliSel.value) providers = providers.filter((p) => kindOf(p) === cliKind(cliSel.value));
+    const prev = provSel.value;
+    const keep = providers.some((p) => p.name === prev) ? prev : '';
+    fillMaWorkerSelect(provSel, providers, keep, maWorkerInheritLabel('provider', cfg));
+    await refreshMaWorkerModel('');
+    await refreshMaWorkerEffort('');
+    renderMaWorkerPreview();
+  });
+  provSel.addEventListener('change', async () => {
+    await refreshMaWorkerModel('');
+    await refreshMaWorkerEffort('');
+    renderMaWorkerPreview();
+  });
+  modelSel.addEventListener('change', async () => {
+    await refreshMaWorkerEffort('');
+    renderMaWorkerPreview();
+  });
+  effortSel.addEventListener('change', renderMaWorkerPreview);
+  residentSel.addEventListener('change', renderMaWorkerPreview);
+  $('#ma-worker-save').addEventListener('click', saveMaWorkerSettings);
+})();
 
 // ---------- 待办备忘（服务端持久化，重启不丢） ----------
 // 全局便签：整列表 PUT /api/notes 落盘 data/notes.json。前端为权威源，
