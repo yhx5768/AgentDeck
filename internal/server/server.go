@@ -3136,7 +3136,7 @@ func (s *Server) serveStatic() http.Handler {
 // Run starts the HTTP server.
 // Run serves until Shutdown is called (or the listener fails).
 func (s *Server) Run() error {
-	log.Printf("cc-webui listening on %s", s.cfg().Listen)
+	log.Printf("agentdeck listening on %s", s.cfg().Listen)
 	srv := &http.Server{Addr: s.cfg().Listen, Handler: s.mux}
 	s.setHTTPServer(srv)
 	err := srv.ListenAndServe()

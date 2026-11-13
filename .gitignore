@@ -1,4 +1,8 @@
 cc-webui
+# New release binary name (and installer temp/backup names)
+agentdeck
+agentdeck.new
+agentdeck.bak-*
 config.yaml
 data/
 # 手工联调时临时指定的 data 目录（如 -datadir data-test）
