@@ -32,7 +32,10 @@ const pa = {
   },
   needsBusy: false, needsAgain: false,
   done: [],
-  ui: { status: 'pending', kind: 'all', group: 'tier', sel: '', pin: '', card: '', tab: 'ov', tf: 'all', tfId: '' },
+  ui: { status: 'pending', kind: 'all', group: 'tier', sel: '', pin: '', card: '', tab: 'ov', tf: 'all', tfId: '',
+    explicit: false,      // 右栏焦点是用户点出来的（队列行 / 看板卡 / 头像），而不是「最新待人工」的默认焦点
+    explicitBlocked: false, // 这个显式焦点选的就是「待人工」卡
+    defaultCard: '' },    // 上一次生效的默认焦点卡（变了才把队列选中带过去）
   drafts: {},           // 条目 id -> 作答表单草稿（选项 / 文本 / 拒绝理由），轮询重绘不丢
   busy: {},             // 条目 id -> 正在提交
   err: {},              // 条目 id -> 上次提交的错误
@@ -542,7 +545,7 @@ function paWorkerAvatar(w, fresh) {
   const n = paItemsOfSession(w.sessionId).length;
   const task = w.taskId ? paTaskById(w.taskId) : null;
   const tip = [w.name + ' · 运行中', task ? task.title : '', n ? '在等你 ' + n + ' 项' : '', w.taskId ? '点开它的卡片' : '点开它的会话'].filter(Boolean).join('\n');
-  const on = !!(w.taskId && pa.ui.card === w.taskId && paAsideVisible());
+  const on = !!(w.taskId && (typeof paFocusCardId === 'function' ? paFocusCardId() : pa.ui.card) === w.taskId && paAsideVisible());
   const btn = paEl('button', {
     type: 'button', class: 'pa-wav' + (fresh ? ' new' : '') + (on ? ' on' : ''),
     title: tip, 'aria-label': w.name + '，运行中',
@@ -578,7 +581,8 @@ function agentRenderCluster() {
   const run = !!(main.status && main.status.running);
   const max = paClusterMax(el);
   const name = paMainName(main);
-  const sig = [main.id, main.name, main.peer_name, run, c, hot, pa.view, max, pa.ui.card, pa.asideShown, pa.renameErr,
+  const focusCard = typeof paFocusCardId === 'function' ? paFocusCardId() : '';
+  const sig = [main.id, main.name, main.peer_name, run, c, hot, pa.view, max, focusCard, pa.asideShown, pa.renameErr,
     workers.map((w) => w.sessionId + ':' + paItemsOfSession(w.sessionId).length + ':' + (w.taskId || '')).join(',')].join(';');
   if (el.dataset.paSig === sig && el.childElementCount) return;
   el.dataset.paSig = sig;

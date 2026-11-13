@@ -45,7 +45,7 @@ async function main() {
 
   console.log('右栏');
   ev("document.querySelector('#agent-aside').classList.remove('hidden'); pa.asideOpen = true; pa.ui.sel = ''; pa.ui.card = ''; agentRenderAside(true)");
-  check('没选卡片：空态说明怎么选', /选一张卡片/.test(doc.querySelector('#agent-aside .pa-empty').textContent) && !doc.querySelector('#agent-aside .pa-af'));
+  check('没有用户选择：默认就是最新「待人工」卡（不是空态）', ev('pa.ui.explicit') === false && /待人工/.test(doc.querySelector('.pa-ah').textContent) && /订单库分表迁移/.test(doc.querySelector('.pa-dt').textContent));
   check('常驻留言框始终在', !!doc.querySelector('#agent-aside #pa-cnote') && doc.querySelector('#pa-cnote').placeholder.includes('mainAgent'));
   ev("agentSelectItem('perm:p1')");
   check('权限门：卡片头 + 命令预览 + worker 说明', /进行中/.test(doc.querySelector('.pa-ah').textContent) && /git push/.test(doc.querySelector('.pa-cmd').textContent) && /覆盖远端分支/.test(doc.querySelector('.pa-say').textContent));
@@ -162,7 +162,7 @@ async function main() {
     { at: '2026-11-13 09:21:00', kind: '主 Agent 回复', text: '收到，退款链路先暂停', data: { turn_id: 't1' } },
     { at: '2026-11-13 09:30:00', kind: '评论', text: '单测 18/18 通过' },
   ])}`);
-  e5.ev("document.querySelector('#agent-aside').classList.remove('hidden'); pa.asideOpen = true; pa.view = 'queue'; pa.ui.card = 'refund'; pa.ui.sel = ''; pa.ui.tab = 'feed'; agentRenderAside(true)");
+  e5.ev("document.querySelector('#agent-aside').classList.remove('hidden'); pa.asideOpen = true; pa.view = 'queue'; agentOpenCard('refund'); pa.ui.tab = 'feed'; agentRenderAside(true)");
   const chips = () => [...e5.doc.querySelectorAll('#agent-aside .board-drawer-filters .board-filter-chip')].map((c) => c.textContent);
   check('筛选 chip 就是抽屉那套：全部 + 按事件类型（主 Agent 回复 / 用户消息 在前，其余按出现顺序）', J(chips()) === J(['全部 5', '主 Agent 回复 1', '用户消息 1', '建卡 1', '评论 2']), J(chips()));
   const row0 = e5.doc.querySelector('#agent-aside .board-drawer-timeline .board-drawer-event');
@@ -174,7 +174,7 @@ async function main() {
   check('点 chip 筛选：只剩这一类，chip 高亮', e5.doc.querySelectorAll('#agent-aside .board-drawer-event').length === 2 && e5.doc.querySelector('.board-filter-chip.active').textContent === '评论 2' && e5.ev('pa.ui.tf') === '评论');
   e5.ev("agentOpenCard('shard'); pa.ui.tab = 'feed'; agentRenderAside(true)");
   check('换一张卡，筛选回到「全部」（和抽屉一致）', e5.ev('pa.ui.tf') === 'all' && !!e5.doc.querySelector('.board-filter-chip.active') && /^全部/.test(e5.doc.querySelector('.board-filter-chip.active').textContent));
-  e5.ev("pa.ui.card = 'refund'; pa.ui.tab = 'ov'; agentRenderAside(true)");
+  e5.ev("agentOpenCard('refund'); pa.ui.tab = 'ov'; agentRenderAside(true)");
   check('概览里的「最近动态」是同一种行，只取最近 3 条', e5.doc.querySelectorAll('#agent-aside .pa-recent .board-drawer-event').length === 3);
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
