@@ -130,8 +130,83 @@ func TestBuildCodexArgsAddsBrowserMCP(t *testing.T) {
 	if !strings.Contains(joined, "mcp_servers.browser.command=") || !strings.Contains(joined, "model_provider=oneapi") {
 		t.Fatalf("browser/model provider not injected: %s", joined)
 	}
+	// agentdeck rides the same -c overrides whenever it is enabled.
+	if !strings.Contains(joined, "mcp_servers.agentdeck.command=") {
+		t.Fatalf("agentdeck server missing with browser on: %s", joined)
+	}
 	if strings.Contains(joined, "test-token") {
 		t.Fatalf("token leaked into argv: %s", joined)
+	}
+}
+
+// codexGateManager builds a Manager with browser and agentdeck switches driven
+// independently. The HTML hint is off so the only source of a -c override is
+// the MCP injection under test.
+func codexGateManager(t *testing.T, browser, agentdeck bool) *Manager {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	hintOff := false
+	ad := agentdeck
+	cm := config.NewManager("", &config.Config{
+		Listen:         "127.0.0.1:8321",
+		GatewayToken:   "test-token",
+		DataDir:        dir,
+		AgentdeckMCP:   &ad,
+		HTMLRenderHint: &hintOff,
+	})
+	return NewManager(cm, nil, func() bool { return browser })
+}
+
+func codexGateArgs(t *testing.T, m *Manager) string {
+	t.Helper()
+	sess := &store.Session{ID: "s1", CLI: "ducx", Provider: "codex", PermissionMode: "bypassPermissions"}
+	cli := &config.CLI{Name: "ducx", Kind: config.KindCodex, Path: "ducx", ModelProvider: "oneapi", PermissionMode: "bypassPermissions"}
+	prov := &config.Provider{Name: "codex", Kind: config.KindCodex}
+	return strings.Join(m.buildCodexArgs(Message{}, sess, cli, prov), " ")
+}
+
+// Browser off must not suppress the agentdeck MCP: the default install has the
+// browser switched off, and codex still needs list_sessions/send_message.
+func TestBuildCodexArgsAgentdeckMCPWithoutBrowser(t *testing.T) {
+	joined := codexGateArgs(t, codexGateManager(t, false, true))
+	for _, want := range []string{
+		"mcp_servers.agentdeck.command=",
+		"mcp_servers.agentdeck.args=[]",
+		"model_provider=oneapi", // any -c override needs the provider repeated
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "mcp_servers.browser.") {
+		t.Fatalf("browser server injected while off: %s", joined)
+	}
+	if strings.Contains(joined, "test-token") {
+		t.Fatalf("token leaked into argv: %s", joined)
+	}
+}
+
+func TestBuildCodexArgsBrowserOnly(t *testing.T) {
+	joined := codexGateArgs(t, codexGateManager(t, true, false))
+	if !strings.Contains(joined, "mcp_servers.browser.command=") {
+		t.Fatalf("browser server missing: %s", joined)
+	}
+	if strings.Contains(joined, "mcp_servers.agentdeck.") {
+		t.Fatalf("agentdeck injected while disabled: %s", joined)
+	}
+	if strings.Contains(joined, "test-token") {
+		t.Fatalf("token leaked into argv: %s", joined)
+	}
+}
+
+func TestBuildCodexArgsNoMCPWhenBothDisabled(t *testing.T) {
+	joined := codexGateArgs(t, codexGateManager(t, false, false))
+	if strings.Contains(joined, "mcp_servers.") {
+		t.Fatalf("MCP injected with both switches off: %s", joined)
+	}
+	if strings.Contains(joined, "model_provider=") {
+		t.Fatalf("model_provider added without any -c override: %s", joined)
 	}
 }
 
