@@ -2,6 +2,8 @@
 
 **在浏览器里远程驾驭 Claude Code / opencode / MiniMax Code / Qoder / Codex。单文件 Go 二进制，前端内嵌，开箱即用。**
 
+> **v0.5.0 · Personal Agent 正式发布**：一个主 Agent 带多个 worker，五个 CLI 可以混用；主 Agent 与 worker 通过引擎中立的 A2A 总线互相派工、回报和记账，全部收口在一个 Web 控制台里。
+
 AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流式对话、工具调用可视化、回滚、群聊编排和移动化体验整合到一个轻量级服务里——你只需把它跑在远程机器上，手机或电脑打开浏览器即可开始工作。
 
 > 项目内部标识仍是 `cc-webui`（Go module、二进制、`CC_WEBUI_*` 环境变量、`ccgw_token` Cookie、`~/.config/cc-webui`），只有展示名换成了 AgentDeck。
@@ -18,6 +20,41 @@ AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流
 
 ---
 
+## Personal Agent：一个主 Agent 带多个 worker
+
+这是 v0.5.0 的主线能力。打开「设置 → 界面形态 → Personal Agent」，控制台会从会话瀑布流切换成三栏：
+
+- **左栏**：主 Agent 头像 + 运行中的 worker 叠放；三个入口——「需要你队列」「主 Agent 会话」「看板任务」。看板只属于主 Agent，进入 worker 会话时会自动收起。
+- **中栏**：
+  - **需要你队列**：把权限门、AskUserQuestion、看板「待人工 / 待验收」合并成一条按紧急度排序的队列；55 秒窗口的门显示倒计时，超时或已处理会生成如实回执，不假装成功。
+  - **主 Agent 会话**：复用原对话流；连续 worker 回报/系统通知按人类轮次折叠成「N 条 worker 回报 · M 条系统通知」，主 Agent 自己的 board 工具调用单独折叠成「N 次看板操作」；人类消息和主 Agent 最终回复不折。回报组默认展开，组内工具细节仍可折叠。
+  - **看板任务**：按状态分列，点卡片打开右栏详情。
+- **右栏**：卡片优先详情（概览 / 动态 / 产物 / 等你处理），底部常驻 composer；关闭后完全收起，用右侧手柄或「给 mainAgent 留言」重新打开。「动态」复用看板时间线样式与「全部 / 事件 / 消息 / A2A / 工具」筛选，长文本可展开。
+- **作答**：权限/提问直达 worker；拍板/验收先送达 worker，再记时间线和更新看板，失败保留条目可重试；A2A 使用操作级幂等键，不会因重试吞掉第二次决定。
+- **真实数据**：`/api/needs-you`、`/api/agent-board(+events)`、`/api/sessions/{id}/permissions/pending`、`/api/a2a/send`、`/api/agent-board/tasks/{id}/events` 等，没有前端 mock。
+
+设计细节见 [AGENTS.md §17](AGENTS.md) 与 [docs/needs-you-rd.md](docs/needs-you-rd.md)。
+
+## 多 CLI 与跨引擎 A2A
+
+AgentDeck 的五个引擎（claude / opencode / mcode / qoder / codex）不是五个孤岛：
+
+- **主 Agent 和 worker 可以是不同引擎**。例如主 Agent 用 ducc，支付 worker 用 opencode，迁移 worker 用 codex；看板、A2A 回报和「需要你」队列在同一个控制台里。
+- **地址名引擎无关**。每个会话可以设置 `peer_name`，A2A 投递按精确 session id 或地址名解析；同名时有消歧规则。
+- **总线不需要接收方常驻**。`POST /api/a2a/send` 把消息排成目标会话的一轮（和用户发消息同一条 `Enqueue` 路径），一次性进程、共享 serve、常驻进程都能收。入站落成一条 `source:"a2a"` 的 user 事件，前端渲染成 A2A 气泡，回放与实况一致，不需要为每个引擎单独写 reader。
+- **所有引擎都注入 agentdeck MCP**：会话管理（`list_sessions` / `new_session` / `get_session` / `stop_session`）、A2A（`send_message`，支持 `send_id` 幂等）、读/搜（`read_session_messages` / `search_messages`）和主 Agent 的看板工具（`board_*`）。
+- **运行时通知也走 A2A**：worker 异常结束、卡住、停在人工门时，runtime 会向主 Agent 发通知；主 Agent 据此记账或在看板置「待人工」。
+
+```text
+主 Agent（claude / ducc）
+  ├─ A2A → worker-支付（opencode）
+  ├─ A2A → worker-迁移（codex）
+  ├─ 看板任务 ← worker / runtime 回报
+  └─ Personal Agent 队列 ← 权限门、提问、待人工、待验收
+```
+
+详见 [a2a-rd.md](a2a-rd.md)、[docs/main-agent-best-practices.md](docs/main-agent-best-practices.md) 和 [AGENTS.md §17](AGENTS.md)。
+
 ## 核心特性
 
 | 特性 | 说明 |
@@ -25,13 +62,15 @@ AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流
 | 单二进制部署 | `go build` 生成一个可执行文件，前端资源已用 `go:embed` 打包，无需 Node 构建。 |
 | 五引擎 | cli/provider 的 `kind` 选 `claude`（缺省）、`opencode`、`mcode`、`qoder` 或 `codex`，同一套界面里管理不同引擎的会话。会话绑定单一引擎，创建/修改/导入时 cli 与 provider 的 kind 必须一致。 |
 | 多 CLI / Provider / Model | 配置文件定义多个 CLI 与 API 后端；会话内一键热切换 CLI、Provider、Model、权限模式与推理档位（opencode 的对应概念是 variant）。opencode / mcode / qoder / codex 的模型清单由各自 CLI 动态提供，写死会过期；opencode 里登录的 provider 还会被自动发现，一般不用在配置里手写。 |
+| Personal Agent | 设置 → 界面形态切到 Personal Agent：左栏主 Agent 头像 + worker，中栏需要你队列 / 主 Agent 会话 / 任务看板，右栏卡片优先详情与常驻 composer。权限门 / 提问 / 待人工 / 待验收统一成队列，worker 回报与看板工具调用自动折叠。 |
+| 多 CLI 协作与 A2A | 五个引擎都能当主 Agent 或 worker，可以混用；`POST /api/a2a/send` 引擎中立，接收方不需要常驻。agentdeck MCP 给所有引擎注入 `send_message`、`new_session`、`read_session_messages`、`search_messages` 与看板工具；A2A 在对话流和轨迹里归入 A2A 角色。 |
 | 导入已有会话 | 扫描各引擎自己的历史目录（`~/.claude/projects`、`~/.qoder-cn/projects`、opencode / mcode 的会话库、codex 的 rollout 目录），把本地历史会话一键接进 Web UI 继续聊。 |
 | 回滚（rewind） | 每条带文件 checkpoint 的用户消息可 ⏪ 回滚。claude：CLI 恢复 Write/Edit 改过的文件、删除期间新建的文件，对话与 transcript 一并截断，消息文本回填输入框。opencode：走它自己的 revert 快照（stage + commit），对话由 opencode 的存储回滚。Bash 改的文件不在 checkpoint 内。其余引擎隐藏入口。 |
 | 流式实时对话 | SSE 推送，Markdown 渲染、代码高亮、工具调用折叠块、token 与花费统计、排队与停止。CLI 开启 `partial_messages` 后支持打字机式逐 token 增量渲染（claude 的 `--include-partial-messages`，opencode 走 `message.part.delta`）。会话信息条显示轮数、步数、累计耗时与最近一轮 tok/s。 |
 | 权限审批卡 | 非 bypass 的 claude/qoder 会话在工具调用前弹审批卡：允许本次 / 本次会话都允许（同名工具）/ 拒绝（可附理由），55s 超时自动拒绝。经 `--settings` 的 `PermissionRequest` hook 实现。opencode 的 `permission.asked` 与 `question.asked` 也映射到同一张卡；mcode（`--permission full/smart`）与 codex（沙箱模式）没有审批面。 |
 | 提问强提示 | 模型提问（AskUserQuestion / opencode question）有 55s 硬超时，而卡片只停在当前会话。所以提问时另有顶部居中横幅、侧栏整行脉动、工作区栏「待回答 N」徽标——跨会话也能看见，点一下直达那张卡。 |
 | 多 agent 群聊 | 一个群拉多个成员（各引擎通用），`@成员` 定向、`@all`/空群发并行跑；成员是隐藏影子会话（点名直接打开看单独回放），群有独立 transcript 与时间线，审批卡照常弹。 |
-| 常驻会话与跨会话消息 | claude 专属：会话可常驻（streaming-input 进程跨轮次保持在线）并注册一个地址名，其他 Claude 会话用内置 `SendMessage` 直接给它发消息，入站消息以紫色气泡显示。 |
+| 常驻与跨会话消息 | A2A 总线对所有引擎可用；claude 还可选择常驻（streaming-input 进程跨轮次保持在线）并兼容 claude 原生 `SendMessage`。入站 A2A 以紫色 peer 气泡显示，详情见下方「多 CLI 与跨引擎 A2A」。 |
 | 自动续跑目标 | 给会话挂一条达成条件，每轮干净结束后模型自评，未达标就自动再跑一轮，直到达标或触发轮数/时限熔断。条件可随时停止或清除；rewind 会清空目标。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块、子代理折叠卡片。 |
 | HTML / Mermaid 可视化 | 模型输出的 `html` 围栏可在消息里点「渲染」成沙箱 iframe——完整页面、图表、交互都行；`mermaid` 围栏可点「渲染」画成图，并跟随深浅主题切换。iframe 不给 `allow-same-origin`，页面完全自包含。服务端每轮向模型注入「把可视化输出成 HTML 围栏而不是写文件」的约定（config 里可关）。 |
@@ -204,11 +243,13 @@ AgentDeck 有五个引擎，由 `config.yaml` 里 cli/provider 的 `kind` 决定
 
 会话说「一直干到这条条件成立为止」：每轮**干净**结束后，runner 向模型注入一轮自评，正文最后一行的 `<!--goal:met-->` / `<!--goal:unmet ... -->` 决定是否达标；未达标就自动再排一轮。判定者是模型自己，所以条件写得越可验证越稳（`go test ./... 全绿` 好过「功能完成」）。熔断是 `max_turns`（默认 20，上限 200）与 `max_hours`（默认 4h，上限 48h）。用户停止 → 终态 `stopped`；rewind → 直接清空（回滚掉的正是目标在追的工作）。目标状态一律回读服务端，UI 只显示。
 
-### 常驻与跨会话消息（仅 claude）
+### 常驻（claude）与跨引擎 A2A
 
-开启常驻后，会话保持一个 `--input-format stream-json` 的双向进程在线，并把地址名写成 Claude transcript 末尾的 `custom-title`，CLI 据此注册 messaging socket。其他 Claude 会话用内置 `SendMessage({"to":"<地址名>", ...})` 发来消息；入站消息由 CLI 写成一条 `origin.kind:"peer"` 的 user 记录，经既有 stream 事件通路透天成紫色气泡。地址名变更需要重启常驻进程；rewind 会先拆掉常驻进程再截断 transcript，避免进程内存与磁盘历史分叉；服务重启后自动按已保存的地址名恢复。
+**A2A 总线对五个引擎都可用**：`POST /api/a2a/send {from,to,message,send_id?}` 按 session id 或地址名找到目标，把消息排成目标的一轮；接收方不需要常驻。入站事件带 `source:"a2a"` / `from` / `body`，前端渲染为 peer 气泡，轨迹视图归入 A2A，回放时与引擎 transcript 的回显去重。主 Agent 和 worker 可以分别使用不同引擎，详见 [a2a-rd.md](a2a-rd.md)。
 
-用一个常驻主会话给多个常驻 worker 派工、worker 用 `SendMessage` 回报的用法，见 [docs/main-agent-best-practices.md](docs/main-agent-best-practices.md)。
+**常驻是 claude 侧的可选增强**：开启常驻后，会话保持一个 `--input-format stream-json` 的双向进程在线，并把地址名写成 Claude transcript 末尾的 `custom-title`，CLI 据此注册 messaging socket；claude 原生 `SendMessage` 仍可作为 A2A 的兼容通道。地址名变更需要重启常驻进程；rewind 会先拆掉常驻进程再截断 transcript，避免进程内存与磁盘历史分叉；服务重启后自动按已保存的地址名恢复。
+
+用主 Agent 给多个 worker 派工、worker 用 A2A 回报的用法，见 [docs/main-agent-best-practices.md](docs/main-agent-best-practices.md)。
 
 ### 关于 env 注入
 
@@ -257,6 +298,10 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./cc-webui'
 | GET | `/api/me` | 当前登录信息 |
 | GET | `/api/clis` / `/api/providers` / `/api/profiles` / `/api/config` | 下拉与运行时配置（env 值不下发） |
 | GET / POST | `/api/sessions` | 会话列表（含状态、待回答提问、resume 命令）/ 创建 |
+| GET | `/api/needs-you` | Personal Agent「需要你」队列（权限/提问/待人工/待验收及计数） |
+| GET | `/api/agent-board` / `/api/agent-board/events` | 看板快照 / 变更 SSE |
+| POST | `/api/agent-board/tasks/{id}/events` | 追加看板任务时间线 |
+| POST | `/api/a2a/send` | 引擎中立跨会话消息 `{from,to,message,send_id?}` |
 | GET / PATCH / DELETE | `/api/sessions/{id}` | 详情 / 改名·换 profile·model·档位·权限·常驻·地址名 / 删除 |
 | POST | `/api/sessions/{id}/messages` | 发送消息 `{text, images, files}` |
 | POST | `/api/sessions/{id}/uploads?name=` | 上传附件（落盘后经消息文本引用，同名文件不覆盖） |
@@ -311,7 +356,11 @@ internal/opencodeapi/    # opencode serve 客户端：HTTP + SSE、权限/提问
 internal/mcodehist/      # mcode 引擎适配：stream-json 事件转换、transcript 回放、模型目录、统计
 internal/codexhist/      # codex/ducx 引擎适配：exec --json 事件转换、rollout 回放、模型目录、统计
 internal/statsagg/       # 五引擎共用的统计聚合核心
+internal/a2a/            # 引擎无关注跨会话消息：信封、agentdeck MCP 工具面、A2A 投递
+internal/boarddb/        # SQLite 看板：任务、时间线、产物、worker 绑定
+docs/needs-you-rd.md     # Personal Agent「需要你」队列设计
 web/                     # 免构建前端（vanilla JS + vendor 的 marked/DOMPurify/highlight.js/mermaid）
+web/agent*.js            # Personal Agent：队列、右栏、折叠、作答路径
 ```
 
 ---
