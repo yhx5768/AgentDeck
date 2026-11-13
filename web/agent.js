@@ -356,6 +356,7 @@ function paAfterNeeds() {
   if (typeof agentRenderQueue === 'function') agentRenderQueue();
   if (typeof agentAsideNeedsChanged === 'function') agentAsideNeedsChanged();
   if (typeof agentRenderTabbar === 'function') agentRenderTabbar();
+  if (typeof paRenderHandle === 'function') paRenderHandle(); // 把手角标 = 待办数，轮询时跟着刷新
   if (typeof agentFoldRefresh === 'function') agentFoldRefresh(); // 折叠组头部的「已入需要你」计数跟着队列走
 }
 

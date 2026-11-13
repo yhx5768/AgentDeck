@@ -177,6 +177,34 @@ async function main() {
   e5.ev("agentOpenCard('refund'); pa.ui.tab = 'ov'; agentRenderAside(true)");
   check('概览里的「最近动态」是同一种行，只取最近 3 条', e5.doc.querySelectorAll('#agent-aside .pa-recent .board-drawer-event').length === 3);
 
+
+  console.log('展开态的折叠把手');
+  const e6 = mk({ name: 'Soar.AI' });
+  e6.ev("pa.asideOpen = true; pa.view = 'queue'; document.querySelector('#agent-aside').classList.remove('hidden'); paSyncAside()");
+  const h = e6.doc.querySelector('#pa-aside-handle');
+  check('展开：把手可见、切到面板左缘（collapse）、图标朝右收起', !h.classList.contains('hidden') && h.classList.contains('collapse') && h.title === '收起右栏');
+  check('可访问：aria-label=收起右栏、aria-expanded=true、指向右栏', h.getAttribute('aria-label') === '收起右栏' && h.getAttribute('aria-expanded') === 'true' && h.getAttribute('aria-controls') === 'agent-aside');
+  check('是原生 button（键盘可达）', h.tagName === 'BUTTON' && h.type === 'button' && h.tabIndex === 0);
+  check('角标 = 待办数', !!h.querySelector('b') && h.querySelector('b').textContent === '5');
+  check('右上角 × 还在，两类关闭都可用', !!e6.doc.querySelector('#agent-aside .pa-xclose'));
+  h.focus();
+  check('键盘焦点能落在把手上', e6.doc.activeElement === h);
+  h.click();
+  check('点折叠把手 → 右栏收起（和 × 同一条关闭语义）', e6.doc.querySelector('#agent-aside').classList.contains('hidden') && e6.ev('pa.asideOpen') === false && e6.ev('pa.ui.explicit') === false);
+  check('收起后把手回到右缘、变成展开、角标还在', !h.classList.contains('collapse') && !h.classList.contains('hidden') && h.getAttribute('aria-label') === '展开卡片详情' && h.querySelector('b').textContent === '5');
+  check('收起后队列重新给右缘让位（pa-handle-on）', e6.doc.body.classList.contains('pa-handle-on'));
+  e6.ev('pa.needs.counts.all = 2; paRenderHandle()');
+  check('待办数变了，把手角标跟着刷新', h.querySelector('b').textContent === '2');
+  h.click();
+  check('再点展开 → 右栏回来、把手回到面板左缘、aria 变回收起', !e6.doc.querySelector('#agent-aside').classList.contains('hidden') && h.classList.contains('collapse') && h.getAttribute('aria-label') === '收起右栏');
+  check('展开时不给右缘让位（pa-handle-on 撤掉）', !e6.doc.body.classList.contains('pa-handle-on'));
+  e6.ev("agentOnSessionOpened(state.sessions.find(x => x.id === 's-pay'))");
+  check('worker 会话收起右栏时，把手也不显示', h.classList.contains('hidden'));
+  e6.ev("agentOnSessionOpened(state.sessions.find(x => x.main_agent))");
+  Object.defineProperty(e6.w, 'innerWidth', { value: 390, configurable: true });
+  e6.ev('paRenderHandle()');
+  check('手机 sheet 不显示折叠 tab（靠右上角 × / 左上角返回）', h.classList.contains('hidden'));
+
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);
 }

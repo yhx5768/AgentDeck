@@ -84,13 +84,21 @@ function paCloseAside() {
 function paRenderHandle() {
   const h = $('#pa-aside-handle');
   if (!h) return;
-  const show = paAsideAllowed() && !paAsideVisible() && !paIsMobile();
+  const open = paAsideVisible();
+  // 桌面 / 浮层都留一个把手：右栏收起时在右缘（展开），展开时挪到面板左缘（收起）。
+  // 手机整屏 sheet 不用（右上角 × 和左上角返回都能关）。
+  const show = paAsideAllowed() && !paIsMobile();
   h.classList.toggle('hidden', !show);
-  document.body.classList.toggle('pa-handle-on', show); // 队列给把手让出右边缘，别把行尾的时间 / 说明盖住
+  h.classList.toggle('collapse', show && open);
+  document.body.classList.toggle('pa-handle-on', show && !open); // 收起时队列给右缘把手让位
   if (!show) return;
   const n = pa.needs.counts.all || 0;
-  h.innerHTML = paSvg('panelR') + (n ? '<b>' + (n > 9 ? '9+' : n) + '</b>' : '');
-  h.onclick = () => paSyncAside(true);
+  h.innerHTML = paSvg(open ? 'chevR' : 'panelR', open ? 'l' : '') + (n ? '<b>' + (n > 9 ? '9+' : n) + '</b>' : '');
+  h.title = open ? '收起右栏' : '展开卡片详情';
+  h.setAttribute('aria-label', h.title);
+  h.setAttribute('aria-expanded', open ? 'true' : 'false');
+  h.setAttribute('aria-controls', 'agent-aside');
+  h.onclick = () => (open ? paCloseAside() : paSyncAside(true));
 }
 
 // 手机底部三标签（对话 / 需要你 / 看板），桌面不显示。
@@ -305,7 +313,7 @@ function paAsideHeader(m) {
     left.push(paEl('h2', { class: 'pa-h2', text: '卡片详情' }));
   }
   return paEl('header', { class: 'pa-ah' },
-    paEl('button', { type: 'button', class: 'icon-btn pa-back', title: '返回', 'aria-label': '返回', html: paSvg('back'), onclick: paCloseAside }),
+    paEl('button', { type: 'button', class: 'icon-btn pa-back', title: '收起右栏', 'aria-label': '收起右栏', html: paSvg('back'), onclick: paCloseAside }),
     left, paEl('span', { class: 'pa-sp' }),
     w ? paEl('button', { type: 'button', class: 'icon-btn', title: '打开 ' + w.name + ' 的会话\n次要入口：作答和跟进都能在这张卡里完成', 'aria-label': '打开 worker 会话', html: paSvg('arrowUR'), onclick: () => openSession(w.id) }) : null,
     paEl('button', { type: 'button', class: 'icon-btn pa-xclose', title: '关闭右栏', 'aria-label': '关闭右栏', html: paSvg('x'), onclick: paCloseAside }));
