@@ -272,7 +272,8 @@ function paUpdateA2a(fold) {
 }
 
 function paMakeFold(kind) {
-  const fold = paEl('div', { class: 'pa-fold' + (kind === 'silent' ? ' silent' : kind === 'a2a' ? ' a2a' : '') });
+  const extra = kind === 'silent' ? ' silent' : kind === 'a2a' ? ' a2a' : ' a2a-in';
+  const fold = paEl('div', { class: 'pa-fold' + extra });
   const head = paEl('button', { type: 'button', class: 'pa-fold-h', 'aria-expanded': 'false' });
   head.addEventListener('click', (e) => {
     if (e.target.closest('.lk')) return;
