@@ -75,7 +75,11 @@ async function main() {
     && !silentFolds().some((f) => f.classList.contains('a2a-in')));
   const css = fs.readFileSync(path.resolve(__dirname, '../../web/style.css'), 'utf8');
   const wrCss = css.slice(css.indexOf('.pa-fold.a2a-in'), css.indexOf('.pa-pill.mono'));
-  check('CSS: worker 回报组复用 --thinking 淡紫 token（不硬编码紫色）', wrCss.includes('var(--thinking)') && wrCss.includes('var(--accent)'));
+  check('CSS: 回报组状态色复用 --green / --warning-fg / --red token（不硬编码）',
+    wrCss.includes('--fold-accent: var(--thinking)') && wrCss.includes('.pa-fold.a2a-in.is-ok') && wrCss.includes('var(--green)')
+    && wrCss.includes('.pa-fold.a2a-in.is-warn') && wrCss.includes('var(--warning-fg)')
+    && wrCss.includes('.pa-fold.a2a-in.is-neutral') && wrCss.includes('var(--dim)')
+    && wrCss.includes('.pa-fold.a2a-in.is-error') && wrCss.includes('var(--red)') && wrCss.includes('var(--accent)'));
   check('折叠组占原来的位置：回报组 / 静默组 / 正文回复顺序不变', J([...b.box.children].map((n) => (n.classList.contains('pa-fold') ? (n.classList.contains('silent') ? 'silent' : 'fold') : n.classList.contains('msg-user') ? 'user' : n.querySelector('.tool-block') ? 'quiet' : 'text'))) === J(['user', 'fold', 'silent', 'text', 'fold']), J([...b.box.children].map((n) => n.className)));
   check('回报组默认展开（头部写「已展开」），静默组仍默认折叠', repFolds()[0].classList.contains('open') && !silentFolds()[0].classList.contains('open') && /已展开/.test(repFolds()[0].querySelector('.pa-fold-h').textContent));
   const head = repFolds()[0].querySelector('.pa-fold-h').textContent;
@@ -185,6 +189,50 @@ async function main() {
   check('thinking 组给「思考」小计，thinking 本体藏在组里', J([...only[0].querySelectorAll('.ws .pa-pill')].map((p) => p.textContent)) === J(['思考 ×1'])
     && only[0].querySelectorAll('.thinking-block').length === 1 && !b3.box.querySelector(':scope > .msg-assistant > .bubble > .thinking-block'));
   check('正文回复仍然在对话流里，不被吞', d3.querySelectorAll('#messages > .msg-assistant').length === 1 && b3.box.querySelector(':scope > .msg-assistant').textContent.includes('想好了'));
+
+  console.log('回报组状态色');
+  const env5 = makeEnv({ api: { '/api/needs-you': () => ({ items: [], counts: { all: 0, perm: 0, ask: 0, blocked: 0, review: 0 }, board: { ok: true } }), '/api/agent-board': () => sampleBoard() } });
+  const d5 = env5.doc, ev5 = env5.ev;
+  ev5("pa.mode = 'agent'; document.body.classList.add('pa-on'); pa.view = 'chat'");
+  ev5(`state.sessions = ${J(sampleSessions())}; state.agentBoard = ${J(sampleBoard())}; pa.needs.items = []; pa.needs.counts = { all: 0, perm: 0, ask: 0, blocked: 0, review: 0 }; pa.needs.loaded = true`);
+  ev5("state.current = state.sessions.find(s => s.main_agent)");
+  const b5 = build(d5);
+  b5.user('开始');
+  b5.quiet();
+  b5.peer('w·支付重构', '【完成】回调幂等键已上线', T0 + 1000);
+  b5.text('收到。');
+  ev5('agentFoldNow()');
+  const f5 = () => d5.querySelector('#messages > .pa-fold.a2a-in');
+  const tool5 = () => d5.querySelector('#messages > .pa-fold.silent');
+  check('普通/已完成 worker 回报组：is-ok 绿色，工具组不带状态色', !!f5() && f5().classList.contains('is-ok')
+    && !f5().classList.contains('is-warn') && f5().dataset.state === 'ok'
+    && !!tool5() && tool5().classList.contains('silent') && !tool5().classList.contains('is-ok') && !tool5().classList.contains('is-warn'));
+  ev5(`pa.needs.items = [{ id: 'blocked:t', kind: 'blocked', state: 'open', session_id: 's-pay', session_name: 'w·支付重构', title: '等待拍板', created_at: ${Date.now()} }]; pa.needs.counts = { all: 1, perm: 0, ask: 0, blocked: 1, review: 0 }`);
+  ev5('agentFoldRefresh()');
+  check('有待人工/需要你：is-warn 黄色，组头显示 1 项已入需要你', f5().classList.contains('is-warn')
+    && !f5().classList.contains('is-ok') && f5().dataset.state === 'warn'
+    && /1 项已入「需要你」/.test(f5().querySelector('.pa-fold-h').textContent));
+
+  b5.text('再看系统通知。');
+  b5.peer('runtime', 'worker 卡住：已静默 15 分钟没有产出', T0 + 20 * 60000);
+  b5.text('知道了。');
+  ev5('agentFoldNow()');
+  const groups5 = () => [...d5.querySelectorAll('#messages > .pa-fold.a2a-in')];
+  const sysNormal = groups5().find((f) => /系统通知/.test(f.textContent) && /卡住/.test(f.textContent) && !/异常结束/.test(f.textContent));
+  check('普通系统通知组：is-neutral 中性灰，不带红/绿/黄', !!sysNormal && sysNormal.classList.contains('is-neutral')
+    && !sysNormal.classList.contains('is-error') && !sysNormal.classList.contains('is-ok') && !sysNormal.classList.contains('is-warn')
+    && sysNormal.dataset.state === 'neutral' && !sysNormal.querySelector('.pa-rep.is-error'));
+
+  b5.text('最后看异常。');
+  b5.peer('runtime', 'worker 异常结束\n- 错误：boom', T0 + 30 * 60000);
+  b5.text('收到异常。');
+  ev5('agentFoldNow()');
+  const sysErr = groups5().find((f) => /异常结束/.test(f.textContent));
+  check('异常系统通知组：is-error 红色，行/图标/标题用 danger 标记', !!sysErr && sysErr.classList.contains('is-error')
+    && !sysErr.classList.contains('is-warn') && !sysErr.classList.contains('is-ok') && !sysErr.classList.contains('is-neutral')
+    && sysErr.dataset.state === 'error' && !!sysErr.querySelector('.pa-rep.is-error .err-ic')
+    && /异常/.test(sysErr.querySelector('.pa-fold-h').textContent));
+  check('普通系统通知行不带红色 class', !sysNormal.querySelector('.pa-rep.is-error'));
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);

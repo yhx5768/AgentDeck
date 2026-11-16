@@ -5579,35 +5579,50 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
 /* 出站 A2A 发送组：紫色发件卡自己的组，头部保留收件人 / 任务 id / 预览 */
 .pa-fold.a2a { border-color: color-mix(in srgb, var(--thinking) 30%, var(--border)); background: color-mix(in srgb, var(--thinking) 5%, var(--bg2)); }
 .pa-rep.a2a-send .pa-rep-h .w { color: var(--thinking); font-weight: 700; }
-/* 入站 worker 回报组：复用 A2A 发送组的紫色 token，但用 a2a-in 独立 class
-   和静默工具组区分；light / dark 都由 --thinking 与 color-mix 自动跟随。 */
+/* 入站 worker 回报组：a2a-in 独立 class，和静默工具组区分。
+   组状态由 paUpdateFold 写 is-ok / is-warn；颜色只走 --fold-accent，
+   light / dark 由 --green / --warning-fg 与 color-mix 自动跟随。 */
 .pa-fold.a2a-in {
-  border-color: color-mix(in srgb, var(--thinking) 30%, var(--border));
-  background: color-mix(in srgb, var(--thinking) 5%, var(--bg2));
+  --fold-accent: var(--thinking);
+  border-color: color-mix(in srgb, var(--fold-accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--fold-accent) 5%, var(--bg2));
+}
+.pa-fold.a2a-in.is-ok { --fold-accent: var(--green); }
+.pa-fold.a2a-in.is-warn { --fold-accent: var(--warning-fg); }
+.pa-fold.a2a-in.is-neutral { --fold-accent: var(--dim); }
+.pa-fold.a2a-in.is-error {
+  --fold-accent: var(--red);
+  border-left-width: 3px;
+  border-left-color: var(--red);
 }
 .pa-fold.a2a-in > .pa-fold-h {
   border-radius: calc(var(--r-xl) - 1px);
-  background: color-mix(in srgb, var(--thinking) 4%, transparent);
+  background: color-mix(in srgb, var(--fold-accent) 4%, transparent);
 }
-.pa-fold.a2a-in > .pa-fold-h:hover { background: color-mix(in srgb, var(--thinking) 9%, var(--bg2)); }
+.pa-fold.a2a-in > .pa-fold-h:hover { background: color-mix(in srgb, var(--fold-accent) 9%, var(--bg2)); }
 .pa-fold.a2a-in.open > .pa-fold-h { border-radius: calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px) 0 0; }
 .pa-fold.a2a-in > .pa-fold-b {
-  border-top-color: color-mix(in srgb, var(--thinking) 22%, var(--border));
-  background: color-mix(in srgb, var(--thinking) 2%, var(--bg2));
+  border-top-color: color-mix(in srgb, var(--fold-accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--fold-accent) 2%, var(--bg2));
 }
-.pa-fold.a2a-in .pa-fold-t b { color: var(--thinking); }
-.pa-fold.a2a-in .pa-rep-h .w { color: var(--thinking); }
+.pa-fold.a2a-in .pa-fold-t b { color: var(--fold-accent); }
+.pa-fold.a2a-in .pa-rep-h .w { color: var(--fold-accent); }
 .pa-fold.a2a-in .pa-rep.sys .pa-rep-h .w { color: var(--dim); }
-.pa-fold.a2a-in .pa-rep-h:hover { background: color-mix(in srgb, var(--thinking) 8%, var(--bg2)); }
+.pa-fold.a2a-in .pa-rep-h:hover { background: color-mix(in srgb, var(--fold-accent) 8%, var(--bg2)); }
 .pa-fold.a2a-in .pa-pill:not(.r):not(.a):not(.b):not(.g):not(.v):not(.bad) {
-  background: color-mix(in srgb, var(--thinking) 11%, var(--bg));
-  color: color-mix(in srgb, var(--thinking) 78%, var(--fg));
+  background: color-mix(in srgb, var(--fold-accent) 11%, var(--bg));
+  color: color-mix(in srgb, var(--fold-accent) 78%, var(--fg));
 }
 .pa-fold.a2a-in .pa-pill.a {
   background: color-mix(in srgb, var(--accent) 12%, var(--bg));
   color: var(--accent);
 }
 .pa-fold.a2a-in .lk { color: var(--accent); }
+.pa-fold.a2a-in .pa-rep.is-error .pa-rep-h .w { color: var(--red); }
+.pa-fold.a2a-in .pa-rep.is-error .pa-rep-h time { color: color-mix(in srgb, var(--red) 55%, var(--dim)); }
+.pa-fold.a2a-in .pa-rep.is-error .pa-rep-h .err-ic { display: inline-grid; color: var(--red); }
+.pa-fold.a2a-in .pa-rep.is-error .pa-rep-h { background: color-mix(in srgb, var(--red) 4%, transparent); }
+.pa-fold.a2a-in .pa-rep.is-error .pa-rep-h:hover { background: color-mix(in srgb, var(--red) 8%, var(--bg2)); }
 .pa-pill.mono { font-family: var(--font-mono); letter-spacing: -.01em; }
 .pa-pill.bad { color: var(--red); background: color-mix(in srgb, var(--red) 12%, var(--bg)); }
 .pa-fold-t .pv { color: var(--dim); max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
