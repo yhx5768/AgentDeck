@@ -159,6 +159,11 @@ function paOpText(c) {
 
 // 一个静默步骤在折叠组里的一行：时间 + 这步在干什么（看板操作给动作，混合工具给工具名 / 摘要，
 // 只有 thinking 就给「思考」和第一行）。带正文的消息只把工具卡搬进行里，正文留在原处。
+function paThinkingText(node) {
+  return [...node.querySelectorAll('.thinking-block .tool-body')]
+    .map((el) => (el.textContent || '').trim()).filter(Boolean).join('\n');
+}
+
 function paMakeStepRow(step) {
   const node = step.msg;
   const metas = step.metas;
@@ -170,7 +175,7 @@ function paMakeStepRow(step) {
   if (!calls.length) {
     w = '思考';
     pill = '思考';
-    tx = paFirstLine(((node.querySelector('.thinking-block .tool-body') || {}).textContent || '')) || '这一步只有思考';
+    tx = paFirstLine(paThinkingText(node)) || '这一步只有思考';
   } else if (pure) {
     w = '看板';
     pill = [...new Set(calls.map((c) => PA_VERB[c.verb] || c.verb))].join(' / ');
@@ -357,8 +362,19 @@ function paUpdateFold(fold) {
   head.append(paEl('span', { class: 'chev', html: paSvg('chevR', 's') }), titleEl, chips);
 }
 
+// thinking 内容可能比折叠行晚到（流式增量），组刷新时把纯 thinking 行的摘要补上。
+function paRefreshStepText(fold) {
+  fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep.step').forEach((row) => {
+    if (+row.dataset.n || !(+row.dataset.think)) return;
+    const tx = paFirstLine(paThinkingText(row)) || '这一步只有思考';
+    const cell = row.querySelector(':scope > .pa-rep-h .tx');
+    if (cell) cell.textContent = paClip(String(tx).replace(/\s+/g, ' ').trim(), 180);
+  });
+}
+
 // 静默步骤组的头部：总工具调用 / 步数 + 类型小计；整组都是看板操作时改给动作小计。
 function paUpdateSilent(fold) {
+  paRefreshStepText(fold);
   const rows = [...fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep')];
   let calls = 0, think = 0, any = false, pure = true;
   const types = new Map();

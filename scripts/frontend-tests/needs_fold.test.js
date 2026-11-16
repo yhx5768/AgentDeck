@@ -190,6 +190,24 @@ async function main() {
     && only[0].querySelectorAll('.thinking-block').length === 1 && !b3.box.querySelector(':scope > .msg-assistant > .bubble > .thinking-block'));
   check('正文回复仍然在对话流里，不被吞', d3.querySelectorAll('#messages > .msg-assistant').length === 1 && b3.box.querySelector(':scope > .msg-assistant').textContent.includes('想好了'));
 
+  console.log('thinking 内容晚到');
+  const env4 = makeEnv({ api: { '/api/needs-you': () => sampleNeeds(Date.now()), '/api/agent-board': () => sampleBoard() } });
+  const d4 = env4.doc, ev4 = env4.ev;
+  ev4("pa.mode = 'agent'; document.body.classList.add('pa-on'); pa.view = 'chat'");
+  ev4(`state.sessions = ${J(sampleSessions())}; state.agentBoard = ${J(sampleBoard())}`);
+  ev4("state.current = state.sessions.find(s => s.main_agent)");
+  const b4 = build(d4);
+  const asst4 = asstMaker(d4, b4.box);
+  b4.user('想一下');
+  asst4(thinkHtml(''), '10:20:00');
+  ev4('agentFoldNow()');
+  const row4 = d4.querySelector('#messages > .pa-fold.silent .pa-rep.step');
+  const tx4 = () => (row4 && row4.querySelector('.pa-rep-h .tx') ? row4.querySelector('.pa-rep-h .tx').textContent : '');
+  check('thinking 还没内容时显示占位', !!row4 && tx4() === '这一步只有思考', tx4());
+  row4.querySelector('.thinking-block .tool-body').textContent = '先看调用链，再决定是否改接口。';
+  ev4('agentFoldNow()');
+  check('流式 thinking 到达后行摘要跟着更新', /先看调用链/.test(tx4()), tx4());
+
   console.log('回报组状态色');
   const env5 = makeEnv({ api: { '/api/needs-you': () => ({ items: [], counts: { all: 0, perm: 0, ask: 0, blocked: 0, review: 0 }, board: { ok: true } }), '/api/agent-board': () => sampleBoard() } });
   const d5 = env5.doc, ev5 = env5.ev;
