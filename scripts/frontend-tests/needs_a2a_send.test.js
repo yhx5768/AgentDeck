@@ -69,6 +69,9 @@ async function main() {
   const a2a = () => [...doc.querySelectorAll('#messages > .pa-fold.a2a')];
   const rep = () => [...doc.querySelectorAll('#messages > .pa-fold:not(.silent):not(.a2a)')];
   const silent = () => [...doc.querySelectorAll('#messages > .pa-fold.silent')];
+  check('A2A 发送组仍是紫色 a2a class，不带 worker 状态色', a2a().length === 3
+    && a2a().every((f) => f.classList.contains('a2a') && !f.classList.contains('a2a-in')
+      && !f.classList.contains('is-ok') && !f.classList.contains('is-warn')));
   check('单条 A2A 发送也折进独立组，默认展开，组头 + 一行摘要可见', a2a().length === 3
     && solo.closest('.pa-fold') === a2a()[0] && solo.parentElement !== b.box
     && a2a()[0].classList.contains('open')

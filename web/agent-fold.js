@@ -112,13 +112,20 @@ function paMakeRow(node) {
   const bubble = node.querySelector('.bubble');
   const text = bubble ? bubble.textContent : '';
   const sys = from.toLowerCase() === 'runtime';
+  // runtime 的异常结束是错误级；卡住 / 人工门仍是普通系统通知（中性灰）。
+  const sysError = sys && (/^(?:worker\s*)?(?:异常|错误)/.test(String(text).trim())
+    || /【(?:异常|错误)】/.test(String(text))
+    || /(?:^|\n)\s*(?:错误|异常)[：:]/.test(String(text)));
   const tag = paTagOf(text);
   const fresh = !paSeenPeers.has(node);
   paSeenPeers.add(node);
   if (fresh && !state.renderingHistory && !state.replaying && pa.view !== 'chat') pa.unseen++;
-  const row = paEl('div', { class: 'pa-rep' + (sys ? ' sys' : ''), dataset: { from, ts: String(ts), dk: from + '\x00' + paNorm(paUntag(text)) } });
+  const row = paEl('div', { class: 'pa-rep' + (sys ? ' sys' : '') + (sysError ? ' is-error' : ''), dataset: {
+    from, ts: String(ts), dk: from + '\x00' + paNorm(paUntag(text)), sysError: sysError ? '1' : '',
+  } });
+  const errIc = sysError ? paEl('span', { class: 'err-ic', title: '系统异常', html: paSvg('alert', 's') }) : null;
   const head = paEl('button', { type: 'button', class: 'pa-rep-h', 'aria-expanded': 'false' },
-    paEl('time', { text: paHM(ts) }), paEl('span', { class: 'w', text: sys ? '系统' : from }),
+    errIc, paEl('time', { text: paHM(ts) }), paEl('span', { class: 'w', text: sys ? '系统' : from }),
     tag ? paEl('span', { class: 'pa-pill ' + (tag === '受阻' ? 'a' : tag === '需确认' || tag === '需人工' ? 'b' : ''), text: tag }) : null,
     paEl('span', { class: 'tx', text: paClip(paFirstLine(paUntag(text)) || paFirstLine(text), 160) }),
     paEl('span', { class: 'lk-slot' }));
@@ -317,6 +324,22 @@ function paUpdateFold(fold) {
     const slot = lastOf.get(from).querySelector('.lk-slot');
     slot.append(paEl('span', { class: 'lk', role: 'link', tabindex: '0', text: '已入「需要你」→', onclick: (e) => { e.stopPropagation(); agentFocusItem(items[0].id); } }));
   });
+  // 组头状态：组里还有待办 / 回报本身标了受阻、需人工或需确认 → 黄色；
+  // 否则普通 / 已完成回报 → 绿色。混合时以「需要你」为准。
+  const sysError = live.some((r) => r.classList.contains('sys') && r.dataset.sysError === '1');
+  const warnTag = reports.some((r) => {
+    const tag = r.querySelector('.pa-rep-h .pa-pill');
+    return tag && /^(受阻|需人工|需确认|待人工)$/.test(tag.textContent.trim());
+  });
+  const warn = !sysError && (queued > 0 || warnTag);
+  // 优先级：系统异常（红）> worker 待办（黄）> 普通/完成（绿）；
+  // 只有普通系统通知的组保持中性灰，不硬套 worker 的绿色。
+  const neutral = !sysError && !warn && reports.length === 0;
+  fold.classList.toggle('is-error', sysError);
+  fold.classList.toggle('is-warn', warn);
+  fold.classList.toggle('is-ok', !sysError && !warn && reports.length > 0);
+  fold.classList.toggle('is-neutral', neutral);
+  fold.dataset.state = sysError ? 'error' : warn ? 'warn' : neutral ? 'neutral' : 'ok';
   const open = fold.classList.contains('open');
   const head = fold.querySelector(':scope > .pa-fold-h');
   head.textContent = '';
@@ -329,6 +352,7 @@ function paUpdateFold(fold) {
   const chips = paEl('span', { class: 'ws' });
   [...by.entries()].slice(0, 6).forEach(([from, n]) => chips.append(paEl('span', { class: 'pa-pill', title: from, text: paClip(from.replace(/^w[·.\-_ ]/i, ''), 12) + (n > 1 ? ' ×' + n : '') })));
   if (by.size > 6) chips.append(paEl('span', { class: 'pa-pill', text: '+' + (by.size - 6) }));
+  if (sysError) chips.append(paEl('span', { class: 'pa-pill bad', text: '异常' }));
   if (queued) chips.append(paEl('span', { class: 'pa-pill a lk', role: 'link', text: queued + ' 项已入「需要你」', onclick: (e) => { e.stopPropagation(); agentShowView('queue'); } }));
   head.append(paEl('span', { class: 'chev', html: paSvg('chevR', 's') }), titleEl, chips);
 }
