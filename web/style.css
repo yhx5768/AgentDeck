@@ -5579,6 +5579,35 @@ body.pa-handle-on #needs-view { padding-right: 32px; }
 /* 出站 A2A 发送组：紫色发件卡自己的组，头部保留收件人 / 任务 id / 预览 */
 .pa-fold.a2a { border-color: color-mix(in srgb, var(--thinking) 30%, var(--border)); background: color-mix(in srgb, var(--thinking) 5%, var(--bg2)); }
 .pa-rep.a2a-send .pa-rep-h .w { color: var(--thinking); font-weight: 700; }
+/* 入站 worker 回报组：复用 A2A 发送组的紫色 token，但用 a2a-in 独立 class
+   和静默工具组区分；light / dark 都由 --thinking 与 color-mix 自动跟随。 */
+.pa-fold.a2a-in {
+  border-color: color-mix(in srgb, var(--thinking) 30%, var(--border));
+  background: color-mix(in srgb, var(--thinking) 5%, var(--bg2));
+}
+.pa-fold.a2a-in > .pa-fold-h {
+  border-radius: calc(var(--r-xl) - 1px);
+  background: color-mix(in srgb, var(--thinking) 4%, transparent);
+}
+.pa-fold.a2a-in > .pa-fold-h:hover { background: color-mix(in srgb, var(--thinking) 9%, var(--bg2)); }
+.pa-fold.a2a-in.open > .pa-fold-h { border-radius: calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px) 0 0; }
+.pa-fold.a2a-in > .pa-fold-b {
+  border-top-color: color-mix(in srgb, var(--thinking) 22%, var(--border));
+  background: color-mix(in srgb, var(--thinking) 2%, var(--bg2));
+}
+.pa-fold.a2a-in .pa-fold-t b { color: var(--thinking); }
+.pa-fold.a2a-in .pa-rep-h .w { color: var(--thinking); }
+.pa-fold.a2a-in .pa-rep.sys .pa-rep-h .w { color: var(--dim); }
+.pa-fold.a2a-in .pa-rep-h:hover { background: color-mix(in srgb, var(--thinking) 8%, var(--bg2)); }
+.pa-fold.a2a-in .pa-pill:not(.r):not(.a):not(.b):not(.g):not(.v):not(.bad) {
+  background: color-mix(in srgb, var(--thinking) 11%, var(--bg));
+  color: color-mix(in srgb, var(--thinking) 78%, var(--fg));
+}
+.pa-fold.a2a-in .pa-pill.a {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  color: var(--accent);
+}
+.pa-fold.a2a-in .lk { color: var(--accent); }
 .pa-pill.mono { font-family: var(--font-mono); letter-spacing: -.01em; }
 .pa-pill.bad { color: var(--red); background: color-mix(in srgb, var(--red) 12%, var(--bg)); }
 .pa-fold-t .pv { color: var(--dim); max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

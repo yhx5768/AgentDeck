@@ -1,5 +1,7 @@
 // Personal Agent：主 Agent 会话里 worker 回报 / 静默步骤的折叠——分组边界、去重、计数、幂等、合并、还原。
 const { makeEnv, sampleNeeds, sampleSessions, sampleBoard } = require('./pa_harness');
+const fs = require('fs');
+const path = require('path');
 
 let failed = 0;
 function check(name, cond, extra) {
@@ -69,6 +71,11 @@ async function main() {
   check('用户输入、主 Agent 正文不被折进去；静默工具步骤不切开 worker 回报组', repFolds().length === 2
     && repFolds()[0].querySelectorAll('.pa-rep').length === 4 && repFolds()[1].querySelectorAll('.pa-rep').length === 1, String(repFolds().length));
   check('静默工具步骤自己折成一组（不再平铺）', silentFolds().length === 1 && silentFolds()[0].querySelectorAll('.pa-rep.step').length === 1);
+  check('worker 回报组用 a2a-in 淡紫 class，工具组不带', repFolds().every((f) => f.classList.contains('a2a-in') && !f.classList.contains('a2a'))
+    && !silentFolds().some((f) => f.classList.contains('a2a-in')));
+  const css = fs.readFileSync(path.resolve(__dirname, '../../web/style.css'), 'utf8');
+  const wrCss = css.slice(css.indexOf('.pa-fold.a2a-in'), css.indexOf('.pa-pill.mono'));
+  check('CSS: worker 回报组复用 --thinking 淡紫 token（不硬编码紫色）', wrCss.includes('var(--thinking)') && wrCss.includes('var(--accent)'));
   check('折叠组占原来的位置：回报组 / 静默组 / 正文回复顺序不变', J([...b.box.children].map((n) => (n.classList.contains('pa-fold') ? (n.classList.contains('silent') ? 'silent' : 'fold') : n.classList.contains('msg-user') ? 'user' : n.querySelector('.tool-block') ? 'quiet' : 'text'))) === J(['user', 'fold', 'silent', 'text', 'fold']), J([...b.box.children].map((n) => n.className)));
   check('回报组默认展开（头部写「已展开」），静默组仍默认折叠', repFolds()[0].classList.contains('open') && !silentFolds()[0].classList.contains('open') && /已展开/.test(repFolds()[0].querySelector('.pa-fold-h').textContent));
   const head = repFolds()[0].querySelector('.pa-fold-h').textContent;
