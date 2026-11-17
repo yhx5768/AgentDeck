@@ -73,7 +73,7 @@ async function main() {
     && a2a().every((f) => f.classList.contains('a2a') && !f.classList.contains('a2a-in')
       && !f.classList.contains('is-ok') && !f.classList.contains('is-warn')));
   check('单条 A2A 发送也折进独立组，默认展开，组头 + 一行摘要可见', a2a().length === 4
-    && solo.closest('.pa-fold') === a2a()[0] && solo.parentElement !== b.box
+    && !solo.isConnected && a2a()[0].querySelectorAll('.pa-rep.a2a-send').length === 1
     && a2a()[0].classList.contains('open')
     && a2a()[0].querySelector('.pa-fold-h').getAttribute('aria-expanded') === 'true');
   const soloHead = a2a()[0].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
@@ -83,7 +83,7 @@ async function main() {
   check('单条组默认展开时原始发件卡在组内，但摘要行仍收起', a2a()[0].querySelectorAll('.pa-rep.a2a-send').length === 1
     && /solo-refund/.test(a2a()[0].querySelector('.pa-rep.a2a-send').textContent)
     && !a2a()[0].querySelector('.pa-rep.a2a-send').classList.contains('open')
-    && !!a2a()[0].querySelector('.pa-rep-b > .msg-assistant .tool-peer-send'));
+    && !!a2a()[0].querySelector('.pa-rep-b > .tool-peer-send'));
   a2a()[0].querySelector('.pa-fold-h').click();
   const soloKey = a2a()[0].dataset.key;
   check('手动折叠单条组：状态记进 pa.foldOpen', !a2a()[0].classList.contains('open')
@@ -101,12 +101,12 @@ async function main() {
     && /dispatch-login/.test(a2a()[1].querySelectorAll('.pa-rep.a2a-send')[1].textContent)
     && /风控文案继续推进/.test(a2a()[1].querySelectorAll('.pa-rep.a2a-send')[1].textContent)
     && [...a2a()[1].querySelectorAll('.pa-rep.a2a-send')].every((r) => !r.classList.contains('open'))
-    && a2a()[1].querySelectorAll('.pa-rep-b > .msg-assistant .tool-peer-send').length === 2);
+    && a2a()[1].querySelectorAll('.pa-rep-b > .tool-peer-send').length === 2);
   a2a()[1].querySelectorAll('.pa-rep-h')[1].click();
   check('点一行展开发件卡', a2a()[1].querySelectorAll('.pa-rep')[1].classList.contains('open') && !!a2a()[1].querySelectorAll('.pa-rep')[1].querySelector('.peer-send-to'));
   const h2 = a2a()[2].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
-  check('一条消息里两张发件卡也算 2 条，成一个默认展开的组、一行', a2a()[2].classList.contains('open')
-    && a2a()[2].querySelectorAll('.pa-rep.a2a-send').length === 1 && /^2 条 A2A 发送/.test(h2) && two.closest('.pa-fold') === a2a()[2], h2);
+  check('一条消息里两张发件卡拆成两行，成一个默认展开的组', a2a()[2].classList.contains('open')
+    && a2a()[2].querySelectorAll('.pa-rep.a2a-send').length === 2 && /^2 条 A2A 发送/.test(h2) && !two.isConnected, h2);
   check('混合步骤：发件卡单独折进 A2A 组，正文留在消息里，其它工具折到下面', mixed.parentElement === b.box
     && !mixed.querySelector('.tool-peer-send') && !mixed.querySelector('.tool-block:not(.tool-peer-send)')
     && a2a().length === 4 && mixed.nextElementSibling === a2a()[3]

@@ -265,19 +265,24 @@ function paSendMeta(card) {
     preview: paClip(paFirstLine(paUntag(text)) || paFirstLine(text) || summary, 100),
   };
 }
-function paMakeA2aRow(node) {
-  const metas = paSendCards(node).map(paSendMeta);
+function paMakeA2aRow(node, card) {
+  const cards = card ? [card] : paSendCards(node);
+  const metas = cards.map(paSendMeta);
+  const one = metas[0] || {};
   const ts = paParseTime(((node.querySelector('.msg-time') || {}).textContent || '').trim()) || Date.now();
-  const tos = [...new Set(metas.map((m) => m.to).filter(Boolean))];
-  const ids = [...new Set(metas.map((m) => m.id).filter(Boolean))];
-  const pv = paClip(metas.map((m) => m.preview).filter(Boolean).join('　'), 160);
-  const fail = metas.filter((m) => m.failed).length;
+  const tos = one.to ? [one.to] : [];
+  const ids = one.id ? [one.id] : [];
+  const pv = paClip(one.preview || '', 160);
+  const fail = one.failed ? 1 : 0;
   const row = paEl('div', { class: 'pa-rep a2a-send', dataset: {
-    ts: String(ts), n: String(metas.length), tos: JSON.stringify(tos), ids: JSON.stringify(ids), pv, fail: String(fail),
+    ts: String(ts), n: '1', tos: JSON.stringify(tos), ids: JSON.stringify(ids), pv, fail: String(fail),
   } });
+  row.__paSrc = node.__paSrc || node;
+  row.__paCards = cards;
+  row.__paOut = !node.__paSrc;
   const pills = [paEl('span', { class: 'w', text: '⇢' })];
-  metas[0] && metas[0].tag ? pills.push(paEl('span', { class: 'pa-pill v', text: metas[0].tag })) : null;
-  (tos.length ? tos.slice(0, 3) : ['A2A']).forEach((to) => pills.push(paEl('span', { class: 'pa-pill v', title: to, text: paClip(to, 14) })));
+  one.tag ? pills.push(paEl('span', { class: 'pa-pill v', text: one.tag })) : null;
+  (tos.length ? tos : ['A2A']).forEach((to) => pills.push(paEl('span', { class: 'pa-pill v', title: to, text: paClip(to, 14) })));
   if (ids.length) pills.push(paEl('span', { class: 'pa-pill mono', title: ids.join(' · '), text: '#' + paClip(ids.join(' · #'), 26) }));
   if (fail) pills.push(paEl('span', { class: 'pa-pill bad', text: '失败' }));
   const head = paEl('button', { type: 'button', class: 'pa-rep-h', 'aria-expanded': 'false' },
@@ -286,8 +291,11 @@ function paMakeA2aRow(node) {
     const open = row.classList.toggle('open');
     head.setAttribute('aria-expanded', open ? 'true' : 'false');
   });
-  row.append(head, paEl('div', { class: 'pa-rep-b' }, node));
+  row.append(head, paEl('div', { class: 'pa-rep-b' }, ...cards));
   return row;
+}
+function paMakeA2aRows(node) {
+  return paSendCards(node).map((card) => paMakeA2aRow(node, card));
 }
 function paUpdateA2a(fold) {
   const rows = [...fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep')];
@@ -468,13 +476,15 @@ function paFoldRun(members, kind) {
     else if (silent) {
       const step = paStepOf(m);
       if (step) rows.push(paMakeStepRow(step));
-    } else if (a2a) rows.push(paMakeA2aRow(m));
+    } else if (a2a) rows.push(...paMakeA2aRows(m));
     else rows.push(paMakeRow(m));
   });
   const body = target.querySelector(':scope > .pa-fold-b');
   body.textContent = '';
   body.append(...rows);
-  members.forEach((m) => { if (paIsFold(m) && m !== target) m.remove(); });
+  members.forEach((m) => {
+    if (m !== target && (paIsFold(m) || (a2a && m.nodeType === 1))) m.remove();
+  });
   const first = rows[0];
   target.dataset.key = first ? (silent ? 'silent' : a2a ? 'a2a' : first.dataset.from) + '@' + first.dataset.ts : '';
   const key = target.dataset.key;
@@ -592,6 +602,7 @@ function agentUnfoldAll() {
   if (!box) return;
   box.querySelectorAll('.pa-fold').forEach((fold) => {
     const out = [];
+    const outSeen = new Set();
     fold.querySelectorAll(':scope > .pa-fold-b > .pa-rep').forEach((row) => {
       if (row.dataset.partial === '1') {
         // 带正文的消息：把工具卡放回原消息（消息还在就放回它下面）
@@ -610,6 +621,18 @@ function agentUnfoldAll() {
           out.push(msg);
         }
       } else {
+        if (row.__paSrc) {
+          // 发件卡已按条拆成行：还原到原消息 bubble；send-only 消息去重后放回对话流
+          const src = row.__paSrc;
+          const bubble = src.querySelector(':scope > .bubble');
+          if (bubble) bubble.append(...(row.__paCards || []));
+          if (row.__paOut && !outSeen.has(src)) {
+            outSeen.add(src);
+            out.push(src);
+          }
+          delete src.dataset.paSendWrapped;
+          return;
+        }
         const msg = row.querySelector(':scope > .pa-rep-b > .msg');
         if (msg && msg.__paSrc) {
           // 混合步骤抽出的发件卡：还原回原消息，不把合成壳放回对话流
