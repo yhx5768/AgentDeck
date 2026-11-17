@@ -1297,7 +1297,7 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
   align-items: flex-end;
   max-width: 880px;
 }
-.msg-user .role-tag { display: none; }
+.msg-user .role-tag { display: flex; justify-content: flex-end; }
 
 .msg-user .bubble {
   display: inline-block;
@@ -1320,7 +1320,8 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 
 /* 入站 peer 消息（其他会话发来的）：左侧窄气泡，紫色描边，
    与自己的蓝色右气泡、claude 的全宽正文区分开 */
-.msg-peer .role-tag { color: var(--thinking); text-transform: none; }
+.msg-peer .role-tag { color: var(--thinking); text-transform: none; cursor: pointer; }
+.msg-peer .role-tag:hover { text-decoration: underline; text-underline-offset: 2px; }
 .msg-peer .bubble {
   display: inline-block;
   max-width: 75%;

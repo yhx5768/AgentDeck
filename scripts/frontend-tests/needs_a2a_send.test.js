@@ -151,6 +151,11 @@ async function main() {
     && mixed.parentElement === b.box && !!solo.querySelector('.tool-peer-send')
     && !!early.querySelector('.tool-peer-send') && !!live.querySelector('.tool-peer-send')
     && !!mixed.querySelector('.tool-peer-send'));
+
+  ev("state.sessions = [{id: 'peer-nav', name: 'AgentDeck-WorkerA2A', peer_name: 'AgentDeck-WorkerA2A'}]; window.__peerJump = null; openSession = function (id) { window.__peerJump = id; }");
+  const navPeer = b.peer('AgentDeck-WorkerA2A', '【回报】可跳转', T0 + 30 * 60000);
+  navPeer.querySelector('.role-tag').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  check('点击入站 peer 的「来自 X」跳到对应会话', ev('window.__peerJump') === 'peer-nav', String(ev('window.__peerJump')));
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);
 }

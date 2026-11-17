@@ -576,6 +576,23 @@ function paFoldScan(box) {
 }
 
 // ---------- 对外挂点（app.js 里 typeof 守卫调用） ----------
+// 入站 A2A / peer 气泡的「来自 X」可点击跳到对应会话；折叠后节点仍保留
+// data-peer-from，所以用 document 事件委托，展开原始气泡后也能点。
+document.addEventListener('click', function peerSenderJump(event) {
+  const tag = event.target && event.target.closest
+    ? event.target.closest('.msg-peer > .role-tag') : null;
+  if (!tag) return;
+  const message = tag.parentElement;
+  const from = message && String(message.dataset.peerFrom || '').split(/\s*\[/)[0].trim().toLowerCase();
+  if (!from) return;
+  const sessions = (typeof state !== 'undefined' && state.sessions) || [];
+  const session = sessions.find((s) => String(s.peer_name || s.name || '').trim().toLowerCase() === from);
+  if (!session || typeof openSession !== 'function') return;
+  event.preventDefault();
+  event.stopPropagation();
+  openSession(session.id);
+});
+
 function agentFoldNow() {
   if (!agentModeOn() || !state.current || !state.current.main_agent) return;
   const box = $('#messages');

@@ -7596,7 +7596,7 @@ function renderEvent(ev, box) {
     // Replace any pending optimistic bubble with the authoritative one.
     const last = box.lastElementChild;
     if (last && last.classList.contains('msg-optimistic')) last.remove();
-    const bubble = addMsg('msg-user', '你', box, ev.ts);
+    const bubble = addMsg('msg-user', '', box, ev.ts);
     appendUserContent(bubble, d.text, d.images);
     // A checkpoint uuid means this message can be rewound (files + dialogue).
     if (d && d.checkpoint) {
