@@ -49,6 +49,16 @@ type openCodeTurnV2 struct {
 	drained  chan struct{}
 	drainedO sync.Once
 
+	// promptAt is the wall clock (unix ms) just before the prompt POST. The
+	// status fallback only trusts an idle timestamp at or after it, so a
+	// previous turn's idle can never end this one.
+	promptAt int64
+	// probe asks the server for the session's busy/idle timestamps. It is a
+	// field so tests can drive the fallback without a live server.
+	probe func(ctx context.Context) (busy, idle int64, err error)
+	// pollEvery overrides the status-probe interval (tests shorten it).
+	pollEvery time.Duration
+
 	doneCh  chan struct{}
 	doneO   sync.Once
 	turnCh  chan struct{} // closed when the execution terminal event lands
@@ -664,17 +674,74 @@ func (t *openCodeTurnV2) drain() {
 	}
 }
 
-// waitTurn blocks until the execution terminal event, an interrupt, or the
-// safety timeout.
+// ocV2StatusPollInterval is how often waitTurn asks the server whether the
+// execution already finished. The SSE terminal event normally closes a turn in
+// milliseconds; this is the net for a subscription that died mid-turn.
+const ocV2StatusPollInterval = 5 * time.Second
+
+// waitTurn blocks until the execution terminal event, an interrupt, the
+// status-probe fallback, or the safety timeout.
 func (t *openCodeTurnV2) waitTurn(ctx context.Context) {
-	select {
-	case <-t.turnCh:
-	case <-t.doneCh:
-	case <-t.stopCh:
-	case <-ctx.Done():
-	case <-time.After(turnWaitTimeout):
+	deadline := time.NewTimer(turnWaitTimeout)
+	defer deadline.Stop()
+
+	var tick <-chan time.Time
+	if t.probe != nil {
+		every := t.pollEvery
+		if every <= 0 {
+			every = ocV2StatusPollInterval
+		}
+		tk := time.NewTicker(every)
+		defer tk.Stop()
+		tick = tk.C
 	}
-	t.drain()
+
+	for {
+		select {
+		case <-t.turnCh:
+			t.drain()
+			return
+		case <-t.doneCh:
+			t.drain()
+			return
+		case <-t.stopCh:
+			t.drain()
+			return
+		case <-ctx.Done():
+			t.drain()
+			return
+		case <-deadline.C:
+			t.drain()
+			return
+		case <-tick:
+			if t.idleByStatus(ctx) {
+				t.drain()
+				return
+			}
+		}
+	}
+}
+
+// idleByStatus reports whether opencode has already finished this turn.
+//
+// The SSE terminal event is the normal turn boundary, but opencode v2 closes
+// /api/event subscriptions when it reloads a location (observed on a fresh
+// serve right after its MCP servers finish connecting). A terminal event lost
+// in that gap used to leave the turn waiting for the full 12h safety timeout —
+// the session showed "运行中" with a growing queue while opencode had been idle
+// for minutes. The lifecycle timestamps are the source of truth, so poll them.
+func (t *openCodeTurnV2) idleByStatus(ctx context.Context) bool {
+	if t.probe == nil || t.promptAt == 0 {
+		return false
+	}
+	busy, idle, err := t.probe(ctx)
+	if err != nil {
+		return false
+	}
+	if idle < t.promptAt || idle < busy {
+		return false
+	}
+	return true
 }
 
 func (t *openCodeTurnV2) interrupt() {
@@ -753,34 +820,62 @@ func (m *Manager) runOpenCodeTurnV2(sessionID string, msg Message, sess *store.S
 	}
 
 	// Subscribe before prompting so no event of this turn can slip through the
-	// gap between the POST and the stream.
+	// gap between the POST and the stream. Re-subscribe if the server drops the
+	// subscription: v2 closes /api/event streams when it reloads a location
+	// (seen on a fresh serve right after its MCP servers connect), and a dead
+	// stream used to stall the turn forever.
 	events := make(chan opencodev2.Event, 512)
 	go func() {
 		defer close(events)
-		_ = srv.Stream(ctx, func(ev opencodev2.Event) {
-			sid := ev.SessionID()
-			if sid == "" && !ev.Control() {
-				return
-			}
-			if sid != "" && sid != ocSID {
-				return
-			}
-			select {
-			case events <- ev:
-				return
-			default:
-			}
-			if ev.Control() {
+		for {
+			err := srv.Stream(ctx, func(ev opencodev2.Event) {
+				sid := ev.SessionID()
+				if sid == "" && !ev.Control() {
+					return
+				}
+				if sid != "" && sid != ocSID {
+					return
+				}
 				select {
 				case events <- ev:
-				case <-ctx.Done():
-				case <-time.After(2 * time.Second):
+					return
+				default:
 				}
+				if ev.Control() {
+					select {
+					case events <- ev:
+					case <-ctx.Done():
+					case <-time.After(2 * time.Second):
+					}
+				}
+			})
+			if ctx.Err() != nil {
+				return
 			}
-		})
+			if err != nil {
+				log.Printf("opencode v2 event stream ended (session %s): %v; resubscribing", sessionID, err)
+			} else {
+				log.Printf("opencode v2 event stream ended (session %s); resubscribing", sessionID)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
 	}()
 	go turn.consume(events)
 	go turn.reconcileLoop()
+
+	turn.probe = func(ctx context.Context) (int64, int64, error) {
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		st, err := srv.GetSession(cctx, ocSID)
+		if err != nil {
+			return 0, 0, err
+		}
+		return st.Time.Busy, st.Time.Idle, nil
+	}
 
 	prompt := opencodev2.PromptInput{Text: msg.Text}
 	for _, img := range msg.Images {
@@ -793,6 +888,7 @@ func (m *Manager) runOpenCodeTurnV2(sessionID string, msg Message, sess *store.S
 			URI: "file://" + f.Path, Name: f.Name,
 		})
 	}
+	turn.promptAt = time.Now().UnixMilli()
 	res, err := srv.Prompt(ctx, ocSID, prompt)
 	if err != nil {
 		cancel()

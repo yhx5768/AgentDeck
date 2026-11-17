@@ -271,9 +271,19 @@ type SessionState struct {
 	Title    string    `json:"title"`
 	ParentID string    `json:"parentID"`
 	Model    *ModelRef `json:"model"`
+	Outcome  string    `json:"outcome"`
 	Location struct {
 		Directory string `json:"directory"`
 	} `json:"location"`
+	// Time carries the agent-loop lifecycle timestamps (unix ms). Busy is set
+	// when an execution starts and Idle when it completes; the turn uses them
+	// to detect a finished execution when the SSE terminal event was lost.
+	Time struct {
+		Created int64 `json:"created"`
+		Updated int64 `json:"updated"`
+		Busy    int64 `json:"busy"`
+		Idle    int64 `json:"idle"`
+	} `json:"time"`
 }
 
 // PromptFile is one attachment on a v2 prompt.
