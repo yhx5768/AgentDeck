@@ -107,6 +107,9 @@
     <!-- Personal Agent「需要你」队列：只在 Personal Agent 模式下由 agent-queue.js 渲染 -->
     <div id="needs-view" class="hidden"></div>
 
+    <!-- 聊天区 + worker 绑定卡片面板：面板只在 worker 会话（非主 Agent）显示，
+         默认收起成右侧窄条，点开展开为固定宽度面板；窄屏下改成覆盖层。 -->
+    <div id="chat-shell">
     <div id="chat-view" class="hidden">
       <header id="chat-header">
         <div class="title-row">
@@ -315,6 +318,12 @@
         </div>
       </footer>
     </div>
+
+    <!-- worker 绑定卡片面板：由 app.js 的 wc* 函数渲染。收起时是一条窄轨
+         （图标 + 数量 + 竖排文字），展开时是手风琴列表。 -->
+    <aside id="worker-cards" class="hidden" aria-label="绑定卡片"></aside>
+    </div><!-- /#chat-shell -->
+    <div id="worker-cards-mask" class="wc-mask hidden" aria-hidden="true"></div>
 
     <!-- 群聊视图：多成员并行时间线，工具细节去成员会话看 -->
     <div id="group-view" class="hidden">
