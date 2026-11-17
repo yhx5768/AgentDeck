@@ -219,6 +219,38 @@ function paMakeStepRow(step) {
 // ---------- 出站 A2A 发送组 ----------
 // 发件卡（含单条）都折进「N 条 A2A 发送」组，组头保留收件人 / 任务 id / 预览 / 失败标记，
 // 点开看每条原始发件卡（收件人跳转、markdown、投递结果都在卡里）。
+// 混合步骤里的发件卡单独抽出来折进 A2A 发送组，正文和其它工具留在原消息。
+// 抽出的卡放进一个合成消息壳，沿用现有 send-only 分组逻辑；还原时再放回原 bubble。
+function paWrapPartialSends(box) {
+  for (const msg of [...box.children]) {
+    if (!msg.classList || !msg.classList.contains('msg-assistant') || msg.dataset.paSendWrapped) continue;
+    const bubble = msg.querySelector(':scope > .bubble');
+    if (!bubble) continue;
+    const sends = [...bubble.querySelectorAll(':scope > .tool-peer-send')];
+    if (!sends.length) continue;
+    const blocks = [...bubble.querySelectorAll(':scope > .tool-block')];
+    const others = blocks.filter((b) => !b.classList.contains('tool-peer-send'));
+    if (!others.length && !paHasVisibleText(msg)) continue; // 纯发件消息沿用整条进组的逻辑
+    const wrapper = msg.cloneNode(false);
+    wrapper.classList.add('pa-send-wrapper');
+    wrapper.dataset.paSendWrapper = '1';
+    wrapper.__paSrc = msg;
+    const time = msg.querySelector('.msg-time');
+    if (time) {
+      const tag = document.createElement('div');
+      tag.className = 'role-tag';
+      tag.append('agent', time.cloneNode(true));
+      wrapper.append(tag);
+    }
+    const wb = document.createElement('div');
+    wb.className = 'bubble';
+    sends.forEach((card) => wb.appendChild(card));
+    wrapper.append(wb);
+    msg.dataset.paSendWrapped = '1';
+    msg.after(wrapper);
+  }
+}
+
 function paSendCards(msg) {
   return [...msg.querySelectorAll(':scope > .bubble > .tool-peer-send')];
 }
@@ -422,8 +454,10 @@ function paFoldRun(members, kind) {
   const wasOpen = members.some((m) => paIsFold(m) && m.classList.contains('open'));
   const lead = silent && !paIsFold(members[0]) ? paStepOf(members[0]) : null;
   if (lead && lead.partial) {
-    // 带正文的回复：正文留在原处，组挂在这条回复下面
-    members[0].after(target);
+    // 带正文的回复：正文留在原处，组挂在这条回复下面；若发件组已经挂在后面，排到发件组之后
+    const next = members[0].nextElementSibling;
+    const anchor = next && paIsA2aFold(next) ? next : members[0];
+    anchor.after(target);
   } else if (target !== members[0]) {
     // 纯工具 / thinking 的步骤 / 发件消息：组占这一段第一个位置，消息随后被搬进组里
     members[0].before(target);
@@ -465,6 +499,7 @@ function paFoldRun(members, kind) {
 // 正文回复为边界，不跨过去吞内容。
 function paFoldScan(box) {
   let repRuns = 0;
+  paWrapPartialSends(box);
   const process = (kind, isMember, isBarrier) => {
     const found = [];
     let run = null;
@@ -576,7 +611,15 @@ function agentUnfoldAll() {
         }
       } else {
         const msg = row.querySelector(':scope > .pa-rep-b > .msg');
-        if (msg) out.push(msg);
+        if (msg && msg.__paSrc) {
+          // 混合步骤抽出的发件卡：还原回原消息，不把合成壳放回对话流
+          const src = msg.__paSrc;
+          const bubble = src.isConnected ? src.querySelector(':scope > .bubble') : null;
+          if (bubble) bubble.append(...msg.querySelectorAll(':scope > .bubble > .tool-peer-send'));
+          delete src.dataset.paSendWrapped;
+        } else if (msg) {
+          out.push(msg);
+        }
       }
     });
     fold.replaceWith(...out);

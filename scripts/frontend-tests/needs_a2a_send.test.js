@@ -61,7 +61,7 @@ async function main() {
   // 一条消息里两张发件卡：仍然算 2 条发送，一个组、一行
   const two = b.asst(b.sendHtml('w·数据迁移', '【催办】演练方案进度', 'nudge-mig') + b.sendHtml('w·监控告警', '【催办】分级清单进度', 'nudge-alert'), '10:08:00');
   b.text('已经催过了。', '10:08:01');
-  // 混合步骤：正文 + 发件卡 + 其它工具（正文和发件卡留在原处，只折其它工具）
+  // 混合步骤：正文 + 发件卡 + 其它工具（发件卡单独折进 A2A 组，正文留在原处，其它工具折到下面）
   const mixed = b.asst('<p>顺手记一下。</p>' + b.sendHtml('w·登录改版', '【同步】灰度先按现在的来', 'sync-login') + b.bash(), '10:10:00');
   b.peer('w·登录改版', '【完成】已收到同步', T0 + 20 * 60000);
   ev('agentFoldNow()');
@@ -69,10 +69,10 @@ async function main() {
   const a2a = () => [...doc.querySelectorAll('#messages > .pa-fold.a2a')];
   const rep = () => [...doc.querySelectorAll('#messages > .pa-fold:not(.silent):not(.a2a)')];
   const silent = () => [...doc.querySelectorAll('#messages > .pa-fold.silent')];
-  check('A2A 发送组仍是紫色 a2a class，不带 worker 状态色', a2a().length === 3
+  check('A2A 发送组仍是紫色 a2a class，不带 worker 状态色', a2a().length === 4
     && a2a().every((f) => f.classList.contains('a2a') && !f.classList.contains('a2a-in')
       && !f.classList.contains('is-ok') && !f.classList.contains('is-warn')));
-  check('单条 A2A 发送也折进独立组，默认展开，组头 + 一行摘要可见', a2a().length === 3
+  check('单条 A2A 发送也折进独立组，默认展开，组头 + 一行摘要可见', a2a().length === 4
     && solo.closest('.pa-fold') === a2a()[0] && solo.parentElement !== b.box
     && a2a()[0].classList.contains('open')
     && a2a()[0].querySelector('.pa-fold-h').getAttribute('aria-expanded') === 'true');
@@ -91,7 +91,7 @@ async function main() {
     && /已折叠/.test(a2a()[0].querySelector('.pa-fold-h').textContent));
   ev('agentFoldNow()');
   check('重复扫描保持手动折叠', !a2a()[0].classList.contains('open') && ev(`pa.foldOpen[${J(soloKey)}]`) === false);
-  check('两条连续发送折成独立的「2 条 A2A 发送」组，默认展开', a2a().length === 3 && a2a()[1].classList.contains('open'));
+  check('两条连续发送折成独立的「2 条 A2A 发送」组，默认展开', a2a().length === 4 && a2a()[1].classList.contains('open'));
   const h = a2a()[1].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
   check('组头部：N 条 A2A 发送 + 收件人 chip + 任务 id + 预览 + 已展开', /^2 条 A2A 发送/.test(h)
     && /支付重构/.test(h) && /登录改版/.test(h) && /dispatch-refund/.test(h) && /退款失败口径确认/.test(h)
@@ -107,8 +107,11 @@ async function main() {
   const h2 = a2a()[2].querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' ');
   check('一条消息里两张发件卡也算 2 条，成一个默认展开的组、一行', a2a()[2].classList.contains('open')
     && a2a()[2].querySelectorAll('.pa-rep.a2a-send').length === 1 && /^2 条 A2A 发送/.test(h2) && two.closest('.pa-fold') === a2a()[2], h2);
-  check('混合步骤：正文和发件卡留在消息里，其它工具折到下面', mixed.parentElement === b.box && !!mixed.querySelector('.tool-peer-send')
-    && !mixed.querySelector('.tool-block:not(.tool-peer-send)') && mixed.nextElementSibling === silent()[0]
+  check('混合步骤：发件卡单独折进 A2A 组，正文留在消息里，其它工具折到下面', mixed.parentElement === b.box
+    && !mixed.querySelector('.tool-peer-send') && !mixed.querySelector('.tool-block:not(.tool-peer-send)')
+    && a2a().length === 4 && mixed.nextElementSibling === a2a()[3]
+    && a2a()[3].querySelectorAll('.pa-rep.a2a-send').length === 1
+    && a2a()[3].nextElementSibling === silent()[0]
     && silent()[0].querySelectorAll('.pa-rep.step').length === 1 && !silent()[0].querySelector('.tool-peer-send'));
   check('回报组默认展开、静默组默认折叠，与 A2A 发送组互不混合', rep().length === 2 && rep().every((f) => f.classList.contains('open') && f.querySelectorAll('.pa-rep').length === 1 && !f.querySelector('.tool-peer-send'))
     && silent().length === 1 && !silent()[0].classList.contains('open'));
@@ -121,7 +124,7 @@ async function main() {
   target.before(early);
   ev('agentFoldNow()');
   const after = a2a()[0];
-  check('前插更早的发送并进手动折叠的组，计数增加但保持折叠', a2a().length === 3
+  check('前插更早的发送并进手动折叠的组，计数增加但保持折叠', a2a().length === 4
     && after.querySelectorAll('.pa-rep.a2a-send').length === 2
     && /^2 条 A2A 发送/.test(after.querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' '))
     && !after.classList.contains('open') && ev(`pa.foldOpen[${J(after.dataset.key)}]`) === false);
@@ -135,7 +138,7 @@ async function main() {
   after.after(live);
   ev('agentFoldNow()');
   const afterLive = a2a()[0];
-  check('实时新发送并进手动展开的组，计数增加且保持展开', a2a().length === 3
+  check('实时新发送并进手动展开的组，计数增加且保持展开', a2a().length === 4
     && afterLive.querySelectorAll('.pa-rep.a2a-send').length === 3
     && /^3 条 A2A 发送/.test(afterLive.querySelector('.pa-fold-h').textContent.replace(/\s+/g, ' '))
     && afterLive.classList.contains('open') && ev(`pa.foldOpen[${J(afterLive.dataset.key)}]`) === true);
