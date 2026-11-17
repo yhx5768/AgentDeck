@@ -82,6 +82,14 @@ function main() {
   ev('agentRenderAside(true)');
   check('一张待人工都没有：显示现有空态，不报错', !!doc.querySelector('#agent-aside .pa-empty') && /选一张卡片/.test(doc.querySelector('#agent-aside .pa-empty').textContent) && !doc.querySelector('#agent-aside .pa-dt'));
   check('默认焦点为空，也没有把显式选择留在体内', ev('paAsideModel().taskId') === '' && ev('pa.ui.explicit') === false);
+  // 角标数的是全部档位（含验收/补答），默认焦点只自动打开待人工 —— 其余档位必须在空态里落地，
+  // 否则「1 项在等你」展开后什么都没有（实测踩到：唯一一条是「待验收」）。
+  const rows = doc.querySelectorAll('#agent-aside .pa-waits .pa-row');
+  check('空态列出「在等你」的条目', rows.length === 2 && /待验收/.test(rows[0].textContent), String(rows.length));
+  ev("document.querySelector('#agent-aside .pa-waits .pa-row').click()");
+  s = JSON.parse(show());
+  check('点清单里的条目：右栏打开那张卡（显式焦点）', s.card === 'rev' && s.explicit === true, JSON.stringify(s));
+  check('打开的是验收卡，动作区可用', /待验收/.test(head()) && /任务 rev/.test(st()), head() + ' | ' + st());
 
   console.log('关闭 / 重开');
   setTask('b-old', { status: '待人工' });

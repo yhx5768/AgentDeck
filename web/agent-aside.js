@@ -322,12 +322,39 @@ function paAsideHeader(m) {
 function paAsideEmpty() {
   const c = pa.needs.counts.all || 0;
   const tasks = paBoardTasks().length;
-  return paEl('div', { class: 'pa-ab' },
-    paEl('div', { class: 'pa-empty' },
+  const items = paItems();
+  const box = paEl('div', { class: 'pa-ab' },
+    paEl('div', { class: 'pa-empty' + (items.length ? ' tight' : '') },
       paEl('div', { class: 'big dim', html: paSvg('kanban', 'l') }),
       paEl('h3', { text: '选一张卡片' }),
-      paEl('p', { text: '在队列、看板或左栏头像里点一张卡片，这里显示它的概览、产物和动态，并可直接作答。' })),
-    paEl('p', { class: 'pa-hint center', text: tasks + ' 张卡 · ' + paRunningWorkers().length + ' 个 worker 运行中 · ' + c + ' 项在等你' }));
+      paEl('p', { text: items.length
+        ? '没有需要你拍板的「待人工」卡；下面这些在等你处理，点一下就在右栏打开。'
+        : '在队列、看板或左栏头像里点一张卡片，这里显示它的概览、产物和动态，并可直接作答。' })));
+  if (items.length) box.append(paAsideWaiting(items));
+  box.append(paEl('p', { class: 'pa-hint center', text: tasks + ' 张卡 · ' + paRunningWorkers().length + ' 个 worker 运行中 · ' + c + ' 项在等你' }));
+  return box;
+}
+
+// 空态下的「在等你」清单。默认焦点只自动打开「待人工」卡（验收/补答档按告警阶梯不抢焦点，
+// 见 docs/needs-you-rd.md），可角标数的是全部档位 —— 不列出来，角标就成了死胡同。这里点一下
+// 就是显式焦点，和从队列里点那一行等价。
+function paAsideWaiting(items) {
+  const rows = items.slice(0, 5).map((it) => {
+    const row = paQueueRow(it);
+    row.removeAttribute('data-pa-id'); // 队列的键盘 / 点击委托只绑 #needs-view 里的行
+    row.addEventListener('click', () => agentSelectItem(it.id));
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); agentSelectItem(it.id); }
+    });
+    return row;
+  });
+  const box = paEl('div', { class: 'pa-waits' },
+    paEl('div', { class: 'pa-waits-h' },
+      paEl('span', { text: '在等你' }),
+      paEl('em', { text: String(items.length) })));
+  paAppend(box, rows);
+  if (items.length > 5) box.append(paEl('p', { class: 'pa-hint', text: '还有 ' + (items.length - 5) + ' 项，去「需要你」看全部。' }));
+  return box;
 }
 
 function paCardTabs(m) {
