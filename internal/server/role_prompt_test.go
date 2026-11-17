@@ -156,3 +156,129 @@ func TestCreateSessionRolePromptOtherEngines(t *testing.T) {
 		t.Fatalf("role_prompt = %q", got)
 	}
 }
+
+// createWorkerSession creates a worker (parent_id set, the shape AgentDeck's
+// new_session produces) and returns the stored record.
+func createWorkerSession(t *testing.T, s *Server, st *store.Store, rolePrompt string) *store.Session {
+	t.Helper()
+	parent := createSession(t, s, st, map[string]any{"name": "main"})
+	body := map[string]any{
+		"name": "worker", "cli": "claude", "provider": "gw", "model": "m1",
+		"cwd": t.TempDir(), "parent_id": parent.ID,
+	}
+	if rolePrompt != "" {
+		body["role_prompt"] = rolePrompt
+	}
+	w := postCreateSession(t, s, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create worker: code = %d, body=%s", w.Code, w.Body.String())
+	}
+	var view sessionView
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatalf("unmarshal view: %v", err)
+	}
+	return st.Get(view.Session.ID)
+}
+
+// TestCreateWorkerSessionAppendsReportRule pins the worker contract: a session
+// created under a parent reports through the agentdeck MCP tool, not Claude's
+// native SendMessage (whose sender identity AgentDeck cannot resolve).
+func TestCreateWorkerSessionAppendsReportRule(t *testing.T) {
+	s, st := createResidentServer(t)
+	sess := createWorkerSession(t, s, st, "")
+	rp := sess.RolePrompt
+	if !strings.Contains(rp, "mcp__agentdeck__send_message") {
+		t.Fatalf("worker role prompt missing the MCP send_message rule: %q", rp)
+	}
+	if !strings.Contains(rp, "task_id") {
+		t.Fatalf("worker role prompt does not require task_id: %q", rp)
+	}
+	if !strings.Contains(rp, "不要使用 Claude 原生 SendMessage") {
+		t.Fatalf("worker role prompt does not forbid native SendMessage: %q", rp)
+	}
+	if strings.Contains(rp, "只用原生 SendMessage") || strings.Contains(rp, "用 SendMessage 回报") {
+		t.Fatalf("worker role prompt still carries the old native-SendMessage rule: %q", rp)
+	}
+	if got := strings.Count(rp, workerReportRuleMarker); got != 1 {
+		t.Fatalf("report-rule marker count = %d, want 1: %q", got, rp)
+	}
+}
+
+// TestCreateWorkerSessionKeepsExplicitRolePrompt: the caller's own text is
+// preserved and the fixed rule is appended after it (never overwritten).
+func TestCreateWorkerSessionKeepsExplicitRolePrompt(t *testing.T) {
+	s, st := createResidentServer(t)
+	const custom = "你是 cc-webui 的 worker，只做被指派的任务。"
+	sess := createWorkerSession(t, s, st, custom)
+	if !strings.HasPrefix(sess.RolePrompt, custom) {
+		t.Fatalf("explicit role prompt not preserved: %q", sess.RolePrompt)
+	}
+	if !strings.Contains(sess.RolePrompt, "mcp__agentdeck__send_message") {
+		t.Fatalf("rule not appended to explicit role prompt: %q", sess.RolePrompt)
+	}
+}
+
+// TestCreateWorkerSessionReportRuleIdempotent: a role prompt that already
+// carries the marker (e.g. copied from another worker) is left untouched.
+func TestCreateWorkerSessionReportRuleIdempotent(t *testing.T) {
+	s, st := createResidentServer(t)
+	pre := "已有规则\n\n" + workerReportRule
+	sess := createWorkerSession(t, s, st, pre)
+	if sess.RolePrompt != pre {
+		t.Fatalf("role prompt changed despite marker: %q", sess.RolePrompt)
+	}
+	if got := strings.Count(sess.RolePrompt, workerReportRuleMarker); got != 1 {
+		t.Fatalf("marker count = %d, want 1: %q", got, sess.RolePrompt)
+	}
+}
+
+// TestCreateNonWorkerSessionHasNoReportRule: main agents and top-level sessions
+// are unaffected — only parent_id workers get the injected rule.
+func TestCreateNonWorkerSessionHasNoReportRule(t *testing.T) {
+	s, st := createResidentServer(t)
+	for _, body := range []map[string]any{
+		{"name": "main", "main_agent": true, "role_prompt": "主 Agent 规则"},
+		{"name": "plain", "role_prompt": "普通会话规则"},
+		{"name": "empty"},
+	} {
+		sess := createSession(t, s, st, body)
+		want, _ := body["role_prompt"].(string)
+		if sess.RolePrompt != want {
+			t.Fatalf("%s: role_prompt = %q, want %q", body["name"], sess.RolePrompt, want)
+		}
+		if strings.Contains(sess.RolePrompt, workerReportRuleMarker) {
+			t.Fatalf("%s: non-worker got the report rule: %q", body["name"], sess.RolePrompt)
+		}
+	}
+}
+
+// TestCreateWorkerSessionRolePromptSizeLimit: the composed prompt (caller text
+// + fixed rule) is validated against the same 32 KiB cap; the exact boundary
+// still passes.
+func TestCreateWorkerSessionRolePromptSizeLimit(t *testing.T) {
+	s, st := createResidentServer(t)
+	// Room for the caller text + the "\n\n" separator + the rule.
+	exact := strings.Repeat("x", maxRolePromptBytes-len(workerReportRule)-2)
+	if sess := createWorkerSession(t, s, st, exact); len(sess.RolePrompt) != maxRolePromptBytes {
+		t.Fatalf("composed size = %d, want %d", len(sess.RolePrompt), maxRolePromptBytes)
+	}
+	// One byte over the cap after composing → 400.
+	parent := createSession(t, s, st, map[string]any{"name": "main2"})
+	w := postCreateSession(t, s, map[string]any{
+		"name": "worker", "cli": "claude", "provider": "gw", "model": "m1",
+		"cwd": t.TempDir(), "parent_id": parent.ID,
+		"role_prompt": strings.Repeat("x", maxRolePromptBytes-len(workerReportRule)-1),
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("composed over limit: code = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	// An oversized caller value is still rejected by the pre-check.
+	w = postCreateSession(t, s, map[string]any{
+		"name": "worker", "cli": "claude", "provider": "gw", "model": "m1",
+		"cwd": t.TempDir(), "parent_id": parent.ID,
+		"role_prompt": strings.Repeat("x", maxRolePromptBytes+1),
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized caller value: code = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+}

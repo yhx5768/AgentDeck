@@ -846,6 +846,36 @@ func validateRolePrompt(s string) error {
 	return nil
 }
 
+// workerReportRuleMarker marks the server-injected worker reporting rule. It
+// makes applyWorkerReportRule idempotent: a caller that echoes a previously
+// stored worker role prompt back on create never accumulates copies.
+const workerReportRuleMarker = "<!--agentdeck-worker-report-rule-->"
+
+// workerReportRule is appended to the role prompt of every worker session
+// (parent_id set, i.e. created by another agent over AgentDeck). Workers must
+// report through the agentdeck MCP send_message tool: AgentDeck cannot reliably
+// resolve the sender identity of Claude's native SendMessage, so it would show
+// up as a local UDS alias instead of the worker's address name.
+const workerReportRule = workerReportRuleMarker + `
+## Worker 回报规则（AgentDeck 注入）
+- 完成、需要人工拍板或卡住时，必须使用 AgentDeck MCP 工具 mcp__agentdeck__send_message 回报主 Agent（mainAgent）：带 task_id，from 用当前会话的地址名。
+- 不要使用 Claude 原生 SendMessage：AgentDeck 无法稳定解析它的发件身份，会显示成本地 UDS 别名。
+- 若 MCP send_message 不可用，把完整回报写进本轮最后回复，并在本地文件留档，下一轮重试。
+`
+
+// applyWorkerReportRule appends the fixed reporting rule to a worker role
+// prompt without overwriting what the caller already set, and without
+// duplicating an already-present copy.
+func applyWorkerReportRule(rolePrompt string) string {
+	if strings.Contains(rolePrompt, workerReportRuleMarker) {
+		return rolePrompt
+	}
+	if strings.TrimSpace(rolePrompt) == "" {
+		return workerReportRule
+	}
+	return rolePrompt + "\n\n" + workerReportRule
+}
+
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name           string `json:"name"`
@@ -946,6 +976,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Workers dispatched over AgentDeck (parent_id set) must report through the
+	// agentdeck MCP tool. Append the fixed rule to whatever role prompt the
+	// caller already supplied, then re-run the size check so an oversized
+	// composed prompt still fails with the existing 400.
+	rolePrompt := body.RolePrompt
+	if parentID != "" {
+		rolePrompt = applyWorkerReportRule(rolePrompt)
+		if err := validateRolePrompt(rolePrompt); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	now := time.Now()
 	sess := &store.Session{
 		ID:             newID(),
@@ -958,7 +1000,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		PermissionMode: body.PermissionMode,
 		Resident:       body.Resident,
 		PeerName:       peerName,
-		RolePrompt:     body.RolePrompt,
+		RolePrompt:     rolePrompt,
 		MainAgent:      body.MainAgent,
 		ParentID:       parentID,
 		CreatedAt:      now,
