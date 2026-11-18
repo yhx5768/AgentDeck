@@ -3186,6 +3186,29 @@ function boardArtifactRoundCard(group, latest) {
   return section;
 }
 
+// 托管产物由 AgentDeck 进程自己服务，但服务端下发的 artifact.url 是按
+// public_base_url / browser.trusted_origins 铸出来的绝对地址，可能是与当前
+// 页面不同的 origin。预览 iframe、新窗口打开、下载都依赖浏览器的登录 cookie：
+// 跨 origin 时那份 cookie 不在，轻则 401，重则被 CORS 直接拦掉（Markdown
+// 预览的 fetch 就是这样）。托管产物在当前 origin 下有一模一样的路由，所以换
+// 掉 origin、保留 path+query（反向代理的子路径前缀不能丢）；kind=url 是外部
+// 链接、legacy 没有 URL，一律保持原样。
+function boardArtifactViewURL(artifact) {
+  if (!artifact || !artifact.url) return '';
+  if (artifact.legacy || artifact.kind === 'url' || !artifact.id) return artifact.url;
+  let parsed;
+  try {
+    parsed = new URL(artifact.url, location.href);
+  } catch (_) {
+    return artifact.url;
+  }
+  if (!location.origin || parsed.origin === location.origin) return artifact.url;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return artifact.url;
+  // 只改写本服务的产物路由；其余地址是原样存储的，换 origin 可能指到别的站。
+  if (parsed.pathname.indexOf('/api/agent-board/artifacts/') < 0) return artifact.url;
+  return location.origin + parsed.pathname + parsed.search;
+}
+
 function boardArtifactAction(label, href, download) {
   const a = document.createElement('a');
   a.className = 'board-artifact-action';
@@ -3259,7 +3282,8 @@ function boardArtifactItem(task, artifact) {
       actions.append(boardCopyButton(artifact.url, '复制链接'));
     }
   } else if (artifact.url) {
-    actions.append(boardArtifactAction('打开', artifact.url));
+    const viewURL = boardArtifactViewURL(artifact);
+    actions.append(boardArtifactAction('打开', viewURL));
     if (boardArtifactPreviewable(artifact)) {
       const preview = document.createElement('button');
       preview.type = 'button';
@@ -3271,7 +3295,8 @@ function boardArtifactItem(task, artifact) {
       };
       actions.append(preview);
     }
-    actions.append(boardArtifactAction('下载', artifact.url, true));
+    actions.append(boardArtifactAction('下载', viewURL, true));
+    // 复制的是对外可分享的规范地址（public_base_url），不是本窗口的同源视图地址。
     actions.append(boardCopyButton(artifact.url, '复制链接'));
   }
   if (!artifact.legacy && artifact.id) {
@@ -3308,11 +3333,14 @@ function boardOpenArtifactPreview(artifact) {
   const mask = $('#board-artifact-preview');
   const body = $('#board-artifact-preview-body');
   if (!mask || !body || !artifact || !artifact.url) return;
+  // 预览 iframe / 新窗口 / fetch 全部走当前 origin，复用本窗口的登录 cookie；
+  // artifact.url 指向的 public origin 在别的 cookie jar 里可能根本没登录态。
+  const viewURL = boardArtifactViewURL(artifact);
   boardPreviewArtifact = artifact;
   const title = $('#board-artifact-preview-title');
   if (title) title.textContent = artifact.title || artifact.filename || '产物预览';
   const open = $('#board-artifact-preview-open');
-  if (open) open.href = artifact.url;
+  if (open) open.href = viewURL;
   body.innerHTML = '';
   if (artifact.kind === 'html') {
     const frame = document.createElement('iframe');
@@ -3322,12 +3350,12 @@ function boardOpenArtifactPreview(artifact) {
     frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
     frame.setAttribute('referrerpolicy', 'no-referrer');
     frame.title = artifact.title || 'HTML 产物预览';
-    frame.src = artifact.url;
+    frame.src = viewURL;
     body.append(frame);
   } else {
     const loading = boardMuted('加载中…');
     body.append(loading);
-    fetch(artifact.url, { credentials: 'same-origin' })
+    fetch(viewURL, { credentials: 'same-origin' })
       .then((resp) => {
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         return resp.text();
@@ -3978,9 +4006,10 @@ function boardRenderLinks(task) {
   addItem('验证/进展报告', task.report_file, '文');
   (Array.isArray(task.artifacts) ? task.artifacts : []).forEach((artifact) => {
     if (artifact.legacy) return;
+    const viewURL = boardArtifactViewURL(artifact);
     addItem(artifact.title || artifact.filename || '产物',
-      artifact.url || artifact.filename || '',
-      boardArtifactKindLabel(artifact), artifact.url || '');
+      viewURL || artifact.filename || '',
+      boardArtifactKindLabel(artifact), viewURL || '');
   });
   addItem('会话 id', task.session, '会');
   addItem('工作目录', task.cwd, '目录');

@@ -69,6 +69,7 @@ ${grabFn('boardArtifactGroupOf')}
 ${grabFn('boardArtifactGroups')}
 ${grabFn('boardArtifactTimeRange')}
 ${grabFn('boardArtifactRoundCard')}
+${grabFn('boardArtifactViewURL')}
 ${grabFn('boardArtifactAction')}
 ${grabFn('boardArtifactItem')}
 ${grabFn('boardWrapArtifactTables')}
@@ -80,12 +81,14 @@ window.__renderOverview = boardRenderOverview;
 window.__renderLinks = boardRenderLinks;
 window.__openPreview = boardOpenArtifactPreview;
 window.__closePreview = boardCloseArtifactPreview;
+window.__viewURL = boardArtifactViewURL;
 `);
 
 const renderOverview = w.__renderOverview;
 const renderLinks = w.__renderLinks;
 const openPreview = w.__openPreview;
 const closePreview = w.__closePreview;
+const viewURL = w.__viewURL;
 
 let failed = 0;
 function check(name, cond, extra) {
@@ -297,6 +300,58 @@ async function main() {
   check('关闭后卸载 iframe 并隐藏',
     mask.classList.contains('hidden') && !mask.querySelector('iframe'));
 
+  // 7a. 跨 origin 托管产物：artifact.url 由 public_base_url / trusted_origins
+  //     铸成，可能和当前页面（http://deck.local）不同源。预览 iframe、新窗口
+  //     打开、打开/下载都必须换回当前 origin 复用本窗口登录态；复制链接保留
+  //     对外的规范地址。kind=url 外链不能被改写。
+  const crossURL = 'https://ccview.example.com/api/agent-board/artifacts/A-cross';
+  renderOverview(baseTask({
+    artifacts: [{
+      id: 'A-cross', task_id: 'T-1', title: '跨源报告', kind: 'html', filename: 'report.html',
+      url: crossURL, url_source: 'trusted_origins', url_local_only: false,
+    }],
+  }));
+  const crossItem = doc.querySelector('#board-drawer-artifacts .board-artifact');
+  const crossOpen = crossItem.querySelector('a.board-artifact-action');
+  const crossDL = [...crossItem.querySelectorAll('a.board-artifact-action')].find((a) => a.textContent === '下载');
+  check('跨源「打开」走当前 origin',
+    crossOpen && crossOpen.href === 'http://deck.local/api/agent-board/artifacts/A-cross',
+    crossOpen && crossOpen.href);
+  check('跨源「下载」走当前 origin',
+    crossDL && crossDL.href === 'http://deck.local/api/agent-board/artifacts/A-cross?download=1',
+    crossDL && crossDL.href);
+  check('复制链接仍是对外规范地址',
+    crossItem.querySelector('.board-copy-btn').dataset.value === crossURL);
+
+  openPreview({ id: 'A-cross', title: '跨源报告', kind: 'html', url: crossURL });
+  const crossFrame = mask.querySelector('iframe.board-artifact-frame');
+  check('跨源预览 iframe 走当前 origin',
+    crossFrame && crossFrame.src === 'http://deck.local/api/agent-board/artifacts/A-cross',
+    crossFrame && crossFrame.src);
+  check('跨源「新窗口打开」走当前 origin',
+    mask.querySelector('#board-artifact-preview-open').href === 'http://deck.local/api/agent-board/artifacts/A-cross');
+  closePreview();
+
+  // 反向代理子路径前缀与 query 必须保留，只换 origin。
+  openPreview({
+    id: 'A-pre', title: '前缀产物', kind: 'html',
+    url: 'https://ccview.example.com/deck/api/agent-board/artifacts/A-pre?rev=2',
+  });
+  check('换 origin 保留路径前缀与 query',
+    mask.querySelector('iframe.board-artifact-frame').src
+      === 'http://deck.local/deck/api/agent-board/artifacts/A-pre?rev=2');
+  closePreview();
+
+  // 非本服务产物路由的 URL 不改写（避免把外部地址打到当前 origin）。
+  check('外部 URL 不改写',
+    viewURL({ id: 'A-x', kind: 'html', url: 'https://example.com/report.html' })
+      === 'https://example.com/report.html');
+  check('kind=url 不改写',
+    viewURL({ id: 'A-u', kind: 'url', url: 'https://example.com/doc' }) === 'https://example.com/doc');
+  check('同源托管产物保持原样',
+    viewURL({ id: 'A-s', kind: 'html', url: 'http://deck.local/api/agent-board/artifacts/A-s' })
+      === 'http://deck.local/api/agent-board/artifacts/A-s');
+
   // 7b. Markdown 预览：复用 ws-md 正文排版，宽表由外层容器横向滚动
   w.__mdHTML = '<h1>标题</h1>'
     + '<table><thead><tr><th>机器</th><th>状态</th></tr></thead>'
@@ -315,6 +370,22 @@ async function main() {
   check('宽表套横向滚动容器', !!(tableWrap && tableWrap.querySelector('table')));
   check('表格没有被改成 display:block',
     !tableWrap || !/display\s*:\s*block/.test(tableWrap.querySelector('table').getAttribute('style') || ''));
+  closePreview();
+
+  // 跨源 Markdown 预览的 fetch 也必须走当前 origin：fetch 的
+  // credentials:'same-origin' 对跨源不带 cookie，且服务端无 CORS 头，直接
+  // TypeError（实测线上就是这样）。
+  w.fetch = (u) => {
+    w.__fetchURL = u;
+    return Promise.resolve({ ok: true, text: () => Promise.resolve('# MD') });
+  };
+  openPreview({
+    id: 'A-md-x', title: '跨源 README', kind: 'markdown',
+    url: 'https://ccview.example.com/api/agent-board/artifacts/A-md-x',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  check('跨源 Markdown 预览 fetch 走当前 origin',
+    w.__fetchURL === 'http://deck.local/api/agent-board/artifacts/A-md-x', String(w.__fetchURL));
   closePreview();
   w.__mdHTML = null;
 
@@ -347,12 +418,19 @@ async function main() {
     artifacts: [{
       id: 'A-1', task_id: 'T-1', title: '验收报告', kind: 'html', filename: 'report.html',
       url: 'http://deck.local/api/agent-board/artifacts/A-1',
+    }, {
+      id: 'A-2', task_id: 'T-1', title: '跨源报告', kind: 'html', filename: 'report2.html',
+      url: 'https://ccview.example.com/api/agent-board/artifacts/A-2',
     }],
   }));
   const linkItems = [...doc.querySelectorAll('#board-drawer-links .board-link-item')];
   const artifactLink = linkItems.find((el) => el.querySelector('.board-link-title').textContent === '验收报告');
   check('关联页列出产物', !!artifactLink
     && artifactLink.querySelector('a.board-link-open').href === 'http://deck.local/api/agent-board/artifacts/A-1');
+  const crossArtifactLink = linkItems.find((el) => el.querySelector('.board-link-title').textContent === '跨源报告');
+  check('关联页跨源产物走当前 origin', !!crossArtifactLink
+    && crossArtifactLink.querySelector('a.board-link-open').href === 'http://deck.local/api/agent-board/artifacts/A-2',
+    crossArtifactLink && crossArtifactLink.querySelector('a.board-link-open').href);
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);

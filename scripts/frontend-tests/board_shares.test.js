@@ -136,6 +136,7 @@ const sharesAdminFilters = { q: '', status: '', scope: '', kind: '', sort: 'crea
 ${grabFn('boardArtifactSize')}
 ${grabFn('boardArtifactKindLabel')}
 ${grabFn('boardArtifactPreviewable')}
+${grabFn('boardArtifactViewURL')}
 ${grabFn('boardArtifactAction')}
 ${grabFn('boardArtifactItem')}
 ${grabFn('boardShareStatusLabel')}
