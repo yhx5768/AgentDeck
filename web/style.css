@@ -5106,6 +5106,7 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .shares-count-chip.active { color: var(--green); border-color: var(--green); }
 .shares-count-chip.expired { color: var(--warning-fg); border-color: var(--warning-border); }
 .shares-count-chip.revoked { color: var(--red); border-color: var(--red); }
+.shares-count-chip.shares-views-chip { color: var(--accent); border-color: var(--accent); }
 .shares-error { font-size: 10.5px; color: var(--red); line-height: 1.5; margin-bottom: 8px; }
 .shares-list { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg2); overflow: hidden; }
 .shares-row { display: grid; grid-template-columns: minmax(190px, 1.35fr) minmax(160px, 1.1fr) minmax(240px, 1.7fr) 72px minmax(150px, auto); gap: 10px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--border); }

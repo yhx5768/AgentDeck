@@ -3690,6 +3690,13 @@ function sharesAdminRenderSummary(filtered) {
       chip.textContent = label + ' ' + value;
       summary.append(chip);
     });
+    // 访问量合计（所有分享，不受筛选影响，与其它计数的口径一致）。
+    const totals = sharesAdminVisitTotals(sharesAdminItems);
+    const views = document.createElement('span');
+    views.className = 'shares-count-chip shares-views-chip';
+    views.textContent = 'PV ' + totals.pv + ' · UV ' + totals.uv;
+    views.title = 'PV 打开次数 · UV 独立访客数';
+    summary.append(views);
   }
   const visible = $('#shares-count');
   if (visible) {
@@ -3697,6 +3704,15 @@ function sharesAdminRenderSummary(filtered) {
       ? '共 ' + sharesAdminItems.length + ' 条'
       : '显示 ' + filtered.length + ' / ' + sharesAdminItems.length + ' 条';
   }
+}
+
+// PV/UV come from the server as integers; tolerate older rows / missing fields.
+function sharesAdminVisitTotals(items) {
+  return (items || []).reduce((acc, share) => {
+    acc.pv += Number(share.pv) || 0;
+    acc.uv += Number(share.uv) || 0;
+    return acc;
+  }, { pv: 0, uv: 0 });
 }
 
 function sharesAdminRow(share) {
@@ -3755,6 +3771,11 @@ function sharesAdminRow(share) {
     share.expires_at ? '到期 ' + share.expires_at : '永久有效',
   ].filter(Boolean).join(' · ');
   link.append(times);
+  const views = document.createElement('div');
+  views.className = 'shares-row-meta shares-pvuv';
+  views.textContent = 'PV ' + (Number(share.pv) || 0) + ' · UV ' + (Number(share.uv) || 0);
+  views.title = 'PV 打开次数 · UV 独立访客数';
+  link.append(views);
 
   const status = document.createElement('span');
   status.className = 'board-share-status ' + (share.status || 'unknown');

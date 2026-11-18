@@ -274,14 +274,16 @@ func (s *Server) handleAgentBoardArtifact(w http.ResponseWriter, r *http.Request
 		http.Redirect(w, r, artifact.URL, http.StatusFound)
 		return
 	}
-	s.serveArtifactFile(w, r, artifact, false)
+	s.serveArtifactFile(w, r, artifact, false, nil)
 }
 
 // serveArtifactFile streams one hosted artifact. The authenticated route keeps
 // the long-lived immutable cache (artifacts are append-only); public /s/
 // links override it with no-store so revocation and expiry take effect
 // immediately, and add X-Robots-Tag so shared pages never get indexed.
-func (s *Server) serveArtifactFile(w http.ResponseWriter, r *http.Request, artifact *boarddb.TaskArtifact, public bool) {
+// beforeServe (optional) runs once all checks pass, right before the response
+// body is written, so callers can count a served artifact without counting 404s.
+func (s *Server) serveArtifactFile(w http.ResponseWriter, r *http.Request, artifact *boarddb.TaskArtifact, public bool, beforeServe func()) {
 	root := s.artifactsRoot()
 	abs := filepath.Join(root, artifact.StoragePath)
 	if strings.TrimSpace(artifact.StoragePath) == "" || !pathWithin(root, abs) {
@@ -325,6 +327,9 @@ func (s *Server) serveArtifactFile(w http.ResponseWriter, r *http.Request, artif
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment",
 			map[string]string{"filename": artifact.Filename}))
 		w.Header().Set("Cache-Control", "private, no-store")
+	}
+	if beforeServe != nil {
+		beforeServe()
 	}
 	http.ServeContent(w, r, artifact.Filename, info.ModTime(), file)
 }

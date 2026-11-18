@@ -156,6 +156,7 @@ ${grabFn('sharesAdminBindControls')}
 ${grabFn('sharesAdminStatusCounts')}
 ${grabFn('sharesAdminPopulateScope')}
 ${grabFn('sharesAdminFiltered')}
+${grabFn('sharesAdminVisitTotals')}
 ${grabFn('sharesAdminRenderSummary')}
 ${grabFn('sharesAdminRow')}
 ${grabFn('sharesAdminRender')}
@@ -189,7 +190,7 @@ function makeShare(extra) {
     id: 'S-1', artifact_id: 'A-1', artifact_title: '验收报告', artifact_kind: 'html',
     artifact_filename: 'report.html', task_id: 'T-1', task_title: '任务A', project: '项目A',
     status: 'active', active: true, url: 'https://deck.example/s/T1',
-    created_at: '2026-11-11 12:00:00', expires_at: '', created_by: 'local',
+    created_at: '2026-11-11 12:00:00', expires_at: '', created_by: 'local', pv: 12, uv: 3,
   }, extra || {});
 }
 
@@ -199,19 +200,19 @@ function sharesFixture() {
     makeShare({
       id: 'S-2', artifact_id: 'A-2', artifact_title: '旧报告', artifact_kind: 'markdown',
       artifact_filename: 'old.md', task_id: 'T-2', task_title: '任务B', project: '项目B',
-      status: 'expired', active: false, url: undefined,
+      status: 'expired', active: false, url: undefined, pv: 4, uv: 2,
       created_at: '2026-11-10 12:00:00', expires_at: '2026-11-11 12:00:00',
     }),
     makeShare({
       id: 'S-3', artifact_id: 'A-3', artifact_title: '已取消报告', artifact_kind: 'html',
       artifact_filename: 'revoked.html', task_id: 'T-3', task_title: '任务C', project: '项目A',
       status: 'revoked', active: false, url: undefined, revoked_at: '2026-11-09 13:00:00',
-      created_at: '2026-11-09 12:00:00', expires_at: '2026-11-12 12:00:00',
+      created_at: '2026-11-09 12:00:00', expires_at: '2026-11-12 12:00:00', pv: 1, uv: 1,
     }),
     makeShare({
       id: 'S-4', artifact_id: 'A-4', artifact_title: '数据包', artifact_kind: 'file',
       artifact_filename: 'bundle.zip', task_id: 'T-1', task_title: '任务A', project: '项目A',
-      url: 'https://deck.example/s/T4',
+      url: 'https://deck.example/s/T4', pv: 0, uv: 0,
       created_at: '2026-11-11 13:00:00', expires_at: '2026-11-20 12:00:00',
     }),
   ];
@@ -317,7 +318,9 @@ async function main() {
     new Set(rows().map((r) => r.querySelector('.shares-task .shares-row-title').textContent)).size === 3);
   check('状态计数',
     [...doc.querySelectorAll('#shares-summary .shares-count-chip')]
-      .map((el) => el.textContent).join(',') === '全部 4,有效 2,已过期 1,已取消 1');
+      .map((el) => el.textContent).join(',') === '全部 4,有效 2,已过期 1,已取消 1,PV 17 · UV 6');
+  check('汇总显示 PV/UV 合计',
+    doc.querySelector('#shares-summary .shares-views-chip').textContent === 'PV 17 · UV 6');
   check('可见条数', doc.querySelector('#shares-count').textContent === '共 4 条');
 
   // 4. 行字段：产物/任务/链接/时间/状态
@@ -334,6 +337,10 @@ async function main() {
     row1.querySelector('.shares-link .shares-url').href === 'https://deck.example/s/T1'
     && row1.querySelector('.shares-link .shares-row-meta').textContent.includes('创建 2026-11-11 12:00:00')
     && row1.querySelector('.shares-link .shares-row-meta').textContent.includes('永久有效'));
+  check('行内展示 PV/UV',
+    row1.querySelector('.shares-pvuv').textContent === 'PV 12 · UV 3');
+  check('缺省/零访问行展示 PV 0 · UV 0',
+    doc.querySelector('#shares-list .shares-row[data-share-id="S-4"] .shares-pvuv').textContent === 'PV 0 · UV 0');
   check('行有状态徽章', row1.querySelector('.board-share-status').textContent === '有效');
   check('失效行不显示可点击链接',
     doc.querySelector('#shares-list .shares-row[data-share-id="S-2"] .shares-url').tagName !== 'A');
@@ -412,7 +419,7 @@ async function main() {
   check('撤销后不再显示取消按钮', !revokedRow.querySelector('.board-share-revoke'));
   check('撤销后计数更新',
     [...doc.querySelectorAll('#shares-summary .shares-count-chip')]
-      .map((el) => el.textContent).join(',') === '全部 4,有效 1,已过期 1,已取消 2');
+      .map((el) => el.textContent).join(',') === '全部 4,有效 1,已过期 1,已取消 2,PV 17 · UV 6');
 
   // 12. 空态
   w.__setShares([]);

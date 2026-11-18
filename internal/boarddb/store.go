@@ -32,7 +32,7 @@ var statusOrder = []string{"新建", "进行中", "待人工", "待验收", "已
 
 const schema = `
 CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('version', '4')
+INSERT INTO schema_meta(key, value) VALUES ('version', '5')
   ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -103,6 +103,19 @@ CREATE TABLE IF NOT EXISTS artifact_shares (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_shares_token ON artifact_shares(token_hash);
 CREATE INDEX IF NOT EXISTS idx_shares_artifact ON artifact_shares(artifact_id, created_at DESC);
+
+-- artifact_share_visitors aggregates anonymous opens per share. Only a
+-- per-share salted HMAC of the visitor identity is stored — never the raw
+-- cookie value, IP or user agent. hits is that visitor's open count, so
+-- PV = SUM(hits) and UV = COUNT(DISTINCT visitor_hash).
+CREATE TABLE IF NOT EXISTS artifact_share_visitors (
+  share_id TEXT NOT NULL REFERENCES artifact_shares(id) ON DELETE CASCADE,
+  visitor_hash TEXT NOT NULL,
+  hits INTEGER NOT NULL DEFAULT 0,
+  first_seen TEXT NOT NULL DEFAULT '',
+  last_seen TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (share_id, visitor_hash)
+);
 
 CREATE TABLE IF NOT EXISTS task_events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -900,10 +913,13 @@ func (s *Store) CreateArtifact(input map[string]any) (map[string]any, error) {
 // ArtifactShare is one row of artifact_shares. TokenHash is the SHA-256 of the
 // public URL token; the plaintext capability token is never persisted. The
 // Artifact*/Task* fields are filled by ListShares for the management view.
+// PV/UV aggregate artifact_share_visitors (0 when the link has never been
+// opened).
 type ArtifactShare struct {
 	ID, ArtifactID, TokenHash, ExpiresAt, RevokedAt, CreatedBy, CreatedAt string
 	ArtifactTitle, ArtifactKind, ArtifactFilename, TaskID, TaskTitle      string
 	TaskProject                                                           string
+	PV, UV                                                                int64
 }
 
 func (s *ArtifactShare) toMap() map[string]any {
@@ -911,6 +927,7 @@ func (s *ArtifactShare) toMap() map[string]any {
 		"id": s.ID, "artifact_id": s.ArtifactID,
 		"expires_at": s.ExpiresAt, "revoked_at": s.RevokedAt,
 		"created_by": s.CreatedBy, "created_at": s.CreatedAt,
+		"pv": s.PV, "uv": s.UV,
 	}
 	if s.ArtifactTitle != "" || s.ArtifactKind != "" || s.ArtifactFilename != "" {
 		out["artifact_title"] = s.ArtifactTitle
@@ -992,16 +1009,41 @@ func (s *Store) GetShareByTokenHash(tokenHash string) (*ArtifactShare, error) {
 	return scanShare(s.db.QueryRow(shareSelect+" WHERE token_hash=?", tokenHash))
 }
 
+// RecordShareVisit adds one successful public open for shareID. The caller has
+// already reduced the visitor to a per-share salted hash, so this store never
+// sees a raw cookie, IP or user agent. The first open for a visitor inserts the
+// row; later opens only bump hits/last_seen, which is what keeps UV stable.
+func (s *Store) RecordShareVisit(shareID, visitorHash string) error {
+	shareID = strings.TrimSpace(shareID)
+	visitorHash = strings.TrimSpace(visitorHash)
+	if shareID == "" || visitorHash == "" {
+		return fmt.Errorf("share id and visitor hash required")
+	}
+	at := now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`INSERT INTO artifact_share_visitors(share_id,visitor_hash,hits,first_seen,last_seen)
+		VALUES(?,?,1,?,?)
+		ON CONFLICT(share_id,visitor_hash) DO UPDATE SET hits=hits+1, last_seen=excluded.last_seen`,
+		shareID, visitorHash, at, at)
+	return err
+}
+
 // ListShares returns every share with the artifact/task labels the management
 // panel needs, newest first. Revoked/expired rows stay visible so the user can
-// see what happened to a link.
+// see what happened to a link. PV/UV are aggregated from
+// artifact_share_visitors; links without visits report 0/0.
 func (s *Store) ListShares() ([]map[string]any, error) {
 	rows, err := s.db.Query(`SELECT s.id,s.artifact_id,s.token_hash,s.expires_at,s.revoked_at,
 		s.created_by,s.created_at,a.title,a.kind,a.filename,a.task_id,
-		COALESCE(t.title,''),COALESCE(t.project,'')
+		COALESCE(t.title,''),COALESCE(t.project,''),COALESCE(v.pv,0),COALESCE(v.uv,0)
 		FROM artifact_shares s
 		JOIN task_artifacts a ON a.id=s.artifact_id
 		LEFT JOIN tasks t ON t.id=a.task_id
+		LEFT JOIN (
+			SELECT share_id, SUM(hits) AS pv, COUNT(DISTINCT visitor_hash) AS uv
+			FROM artifact_share_visitors GROUP BY share_id
+		) v ON v.share_id=s.id
 		ORDER BY s.created_at DESC, s.rowid DESC`)
 	if err != nil {
 		return nil, err
@@ -1013,7 +1055,7 @@ func (s *Store) ListShares() ([]map[string]any, error) {
 		if err := rows.Scan(&share.ID, &share.ArtifactID, &share.TokenHash, &share.ExpiresAt,
 			&share.RevokedAt, &share.CreatedBy, &share.CreatedAt, &share.ArtifactTitle,
 			&share.ArtifactKind, &share.ArtifactFilename, &share.TaskID, &share.TaskTitle,
-			&share.TaskProject); err != nil {
+			&share.TaskProject, &share.PV, &share.UV); err != nil {
 			return nil, err
 		}
 		out = append(out, share.toMap())
