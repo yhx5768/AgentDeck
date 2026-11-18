@@ -7,7 +7,12 @@ import (
 	"cc-webui/internal/config"
 )
 
-// HTML 渲染提示词——让模型知道「这个聊天界面能把一页 HTML 渲染成活的页面」。
+// 报告/可视化输出提示词——让模型知道这个界面既能渲染一整页 HTML，也有
+// （AgentDeck 的）产物托管机制，从而把完整报告发成产物、把聊天留给结论。
+//
+// 策略：完整报告/仪表盘优先发布成产物（artifact_publish），聊天只回链接 +
+// 3–5 条结论；单屏能看完的小型图表/示意图才走内联 html 围栏；没有产物机制时
+// 回退内联 HTML。流程图/时序图等结构化示意图仍走 mermaid 围栏。
 //
 // 为什么用 --append-system-prompt 注入，而不是只写在 AGENTS.md 里：
 // AGENTS.md 是**仓库作用域**的。会话的工作目录不在 cc-webui 仓库里时（比如
@@ -20,23 +25,30 @@ import (
 //	claude / qoder  --append-system-prompt <text>
 //	mcode           --append-system-prompt <text>
 //	codex / ducx    -c instructions=<text>（见 codexInstructions）
-//	opencode        没有等价 flag。v1 prompt body 里的 system 字段是 **覆盖**
-//	                agent 自己的 system prompt（见 opencodeapi.PromptInput 的
-//	                注释），填进去会把 opencode 的 agent 指令顶掉，比不注入更糟，
-//	                所以 opencode 暂时不注入，opencode 会话只能靠 cwd 在仓库里
-//	                读到 AGENTS.md 那份约定。TODO: 等 opencode 给出 append 语义
-//	                的入口（或确认 system 是追加）再补上。
-const htmlRenderHint = `【本界面的 HTML 渲染能力】
+//	opencode        没有 append 语义（v1 prompt body 的 system 字段是**覆盖**
+//	                agent 自己的 system prompt，见 opencodeapi.PromptInput），
+//	                改走隔离配置目录的 instructions（HTML_RENDER_HINT.md，
+//	                见 ocrules.go）。
+const htmlRenderHint = `【报告与可视化：产物优先，内联只做小型图】
 
-这个对话界面能把一整页 HTML 直接渲染成聊天里的**活的页面**（沙箱 iframe，可跑脚本、
-内联 SVG 图表、canvas、动画和交互控件），不需要用户去开浏览器、不需要写文件到磁盘。
+这个对话界面能直接渲染一整页 HTML（沙箱 iframe，可跑脚本、内联 SVG 图表、
+canvas、动画和交互控件），也能渲染 Mermaid。但**完整报告不应该塞进聊天**：
 
-用户要图表、仪表盘、报表页、幻灯片式排版、示意图、信息图、带视觉样式的表格，或任何
-"多元素的可视化"时，**直接输出一个 markdown 代码块，语言标记写 html**，内容是一份完整
-的 HTML 文档（就是三个反引号包住 html 再跟文档的那种写法）。不要写成 .html 文件让
-用户自己去开——那样用户在聊天里根本看不到。
+- **完整报告 / 仪表盘 / 多图表、多段分析 / 需要长期保存或分享的内容**：优先发布成
+  会话或看板的 HTML 产物。当前环境有产物机制时就用它（AgentDeck 是 artifact_publish，
+  把产物挂到对应的看板任务；其他环境有对应机制则用各自的方式）。聊天里只回复
+  **产物链接 + 3–5 条关键结论**，不要把完整报告再压缩成一份内联 HTML 重复输出。
+- **单屏能看完的小型图表 / 示意图 / 信息图**：才直接在聊天里输出 markdown 代码块，
+  语言标记写 html，内容是一份完整的 HTML 文档（三个反引号包住 html 再跟文档）。
+  不要写 .html 文件让用户自己去开——那样用户在聊天里根本看不到。
+- 如果当前会话/环境**没有产物或看板机制**（例如没有可挂载的看板任务、也没有别的
+  产物接口）：回退到内联 HTML（或环境里已有的可用方式）交付完整内容，不要因为
+  优先产物就把报告丢掉、只给一个打不开的链接。
 
-这份文档必须：
+**不要为了展示把完整报告复制成聊天里的长 HTML**——那会把对话刷屏，也不利于保存和
+分享。
+
+内联 HTML 必须：
 
 - **完全自包含**：不许外部 CSS / JS / 字体 / 任何网络请求。
 - 含 <!doctype html>、<html>、<head>、<body>。

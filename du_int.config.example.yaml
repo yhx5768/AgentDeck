@@ -30,8 +30,11 @@ main_agent:
 # 远端 worker / 别的机器要访问产物时建议显式配置。
 # public_base_url: "https://ccview.xpsl.soarx.cc"
 
-# 每一轮都往 system prompt 追加「本界面能把整页 HTML 渲染成活的页面」的约定，
-# 让模型把图表/仪表盘直接输出成 ```html 围栏。注释掉 = 开（默认），设 false 关闭。
+# 每一轮都往 system prompt 追加「报告与可视化怎么交付」的约定：完整报告 / 仪表盘
+# 优先发布成会话或看板的 HTML 产物（artifact_publish），聊天里只回产物链接和
+# 3–5 条关键结论；小型图表才输出 ```html 围栏，流程图 / 时序图等仍用 mermaid。
+# 没有产物机制时回退到内联 HTML。
+# 注释掉 = 开（默认），设 false 关闭。
 # ducc（claude 引擎）走 --append-system-prompt；ducx（codex 引擎）走
 # -c instructions=<TOML 字符串>。详见 config.example.yaml 的说明。
 # html_render_hint: false

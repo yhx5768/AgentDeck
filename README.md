@@ -105,7 +105,7 @@ flowchart TB
 | 常驻与跨会话消息 | A2A 总线对所有引擎可用；claude 还可选择常驻（streaming-input 进程跨轮次保持在线）并兼容 claude 原生 `SendMessage`。入站 A2A 以紫色 peer 气泡显示，详情见下方「多 CLI 与跨引擎 A2A」。 |
 | 自动续跑目标 | 给会话挂一条达成条件，每轮干净结束后模型自评，未达标就自动再跑一轮，直到达标或触发轮数/时限熔断。条件可随时停止或清除；rewind 会清空目标。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块、子代理折叠卡片。 |
-| HTML / Mermaid 可视化 | 模型输出的 `html` 围栏可在消息里点「渲染」成沙箱 iframe——完整页面、图表、交互都行；`mermaid` 围栏可点「渲染」画成图，并跟随深浅主题切换。iframe 不给 `allow-same-origin`，页面完全自包含。服务端每轮向模型注入「把可视化输出成 HTML 围栏而不是写文件」的约定（config 里可关）。 |
+| HTML / Mermaid 可视化 | 模型输出的 `html` 围栏可在消息里点「渲染」成沙箱 iframe——小型图表、交互都行；`mermaid` 围栏可点「渲染」画成图，并跟随深浅主题切换。iframe 不给 `allow-same-origin`，页面完全自包含。完整报告 / 仪表盘优先发布成会话或看板的 HTML 产物（AgentDeck 用 `artifact_publish`），聊天里只回产物链接 + 3–5 条关键结论；只有单屏能看完的小型可视化才走内联 `html`，没有产物机制时回退内联。服务端每轮向模型注入这套约定（config 里可关）。 |
 | 会话分叉 | claude / qoder 可把当前 transcript 复制成新会话，从同一上下文另开一条分支（不动原会话）。 |
 | 轨迹视图 | 会话内「轨迹」tab 把同一份事件流投影成按轮(turn)分组的台账：折叠/展开轮次、按角色（用户/助手/工具）筛选、关键词搜索，点开单条记录看 summary / preview / raw 三档详情。对话流之外的另一种审阅视角。 |
 | 使用统计 | 统计本机全部会话（Claude Code、opencode、mcode、qoder、codex 五个引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/当前连续/最长连续/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。opencode 走它的 CLI 官方面（`session list` 只看得见当前目录所属的项目桶，故枚举全部项目额外走一条只读 `opencode db` 查询，实测只读不写，失败自动退回按桶列举）；mcode 读它自己的 `messages.jsonl` transcript（mcode 没有 `session list`/`export` 这类 CLI 面）；qoder 与 Claude Code 同构，读 `~/.qoder-cn/projects` 的 jsonl；codex 读 `$CODEX_HOME/sessions` 的 rollout（ducx 为 `~/.baidu-cx`）。增量缓存——首次全量扫描较慢，之后秒回。注意 qoder 的 `usage` 不上报 token 数（计费走 `credits`），所以对 qoder 会话而言消息数/工具数/活跃天数都准，token 类指标对它无意义。 |
@@ -277,7 +277,7 @@ providers:
     models: []                   # 留空：来自 `codex debug models --bundled`
 ```
 
-完整字段请参考 `config.example.yaml`（只保留 ducc / ducx 的百度内部精简版见 `du_int.config.example.yaml`）。`html_render_hint: false` 可关闭每轮向模型注入的 HTML/Mermaid 输出约定。
+完整字段请参考 `config.example.yaml`（只保留 ducc / ducx 的百度内部精简版见 `du_int.config.example.yaml`）。`html_render_hint: false` 可关闭每轮向模型注入的报告/可视化（HTML/Mermaid）输出约定。
 
 ### 热加载
 
@@ -327,7 +327,7 @@ flowchart LR
 
 模型回复里的 `html` 围栏会被 `md()` 升级成带「渲染」按钮的 artifact 壳：默认显示源码，点一下才挂 `sandbox="allow-scripts"` 的 srcdoc iframe。iframe **不给 `allow-same-origin`**，页面碰不到 app 的 localStorage / DOM / 带 cookie 的同源接口；高度跟随内容，外层封顶 640px（可全屏，全屏是搬节点不重建 iframe，页面脚本状态不丢）。宿主还向 iframe 注入主题 CSS 变量（`--background`/`--foreground`/`--accent` 等），页面跟随深浅色。`mermaid` 围栏走同一套壳，点「渲染」才动态加载 `/vendor/mermaid.min.js` 并画成 SVG（`securityLevel:'strict'`，产出再过一遍 DOMPurify），切主题会重画。轨迹视图不渲染 frame，只看代码。
 
-为了让模型知道这个能力，服务端每轮向 system prompt 注入一段约定（图表/仪表盘直接输出 HTML 围栏，不要写 `.html` 文件）。注入路径按引擎而异：claude/qoder/mcode 走 `--append-system-prompt`，codex 走 `-c instructions=<TOML 字符串>`，opencode 走它自己的 `instructions` 配置（AgentDeck 维护隔离的 `~/.config/cc-webui/opencode/`，不碰用户全局规则）。`html_render_hint: false` 可整体关闭。
+为了让模型知道这个能力，服务端每轮向 system prompt 注入一段约定：完整报告 / 仪表盘优先发布成会话或看板的 HTML 产物（AgentDeck 用 `artifact_publish`），聊天里只回产物链接和 3–5 条关键结论；只有单屏能看完的小型图表 / 示意图才直接输出 `html` 围栏，流程图 / 时序图等结构化示意图仍用 `mermaid` 围栏；没有产物机制时回退到内联 HTML。注入路径按引擎而异：claude/qoder/mcode 走 `--append-system-prompt`，codex 走 `-c instructions=<TOML 字符串>`，opencode 走它自己的 `instructions` 配置（AgentDeck 维护隔离的 `~/.config/cc-webui/opencode/`，不碰用户全局规则）。`html_render_hint: false` 可整体关闭。
 
 ### 自动续跑目标（Session Goals）
 

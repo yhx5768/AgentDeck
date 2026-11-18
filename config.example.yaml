@@ -43,9 +43,11 @@ default_cwd: "~"
 #   trusted_origins: []    # 反代未透传 Host/X-Forwarded-* 时，额外信任的浏览器 Origin，如 "https://ccview.example.com"
 #   trust_forwarded_headers: false  # 仅当反代会覆盖 X-Forwarded-Host/Proto 时才开启；nginx 默认会透传客户端伪造值
 
-# 每一轮都往 system prompt 追加一段「本界面能把整页 HTML 渲染成活的页面」的
-# 提示词（文本在 internal/runner/htmlhint.go），让模型把图表/仪表盘直接输出成
-# ```html 围栏而不是写成文件丢给用户自己开。
+# 每一轮都往 system prompt 追加一段「报告与可视化怎么交付」的提示词（文本在
+# internal/runner/htmlhint.go）：完整报告 / 仪表盘优先发布成会话或看板的 HTML
+# 产物（AgentDeck 用 artifact_publish），聊天里只回产物链接和 3–5 条关键结论；
+# 只有单屏能看完的小型图表 / 示意图才直接输出 ```html 围栏，流程图 / 时序图等
+# 仍用 mermaid 围栏。没有产物机制时回退到内联 HTML，不丢内容。
 # 注释掉 = 开（默认）。设 false 才关闭。
 # 覆盖范围：
 #   claude / qoder / mcode —— 走 --append-system-prompt 追加进每轮 system prompt。
