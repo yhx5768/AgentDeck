@@ -166,15 +166,24 @@ func containsArg(args []string, s string) bool {
 	return false
 }
 
-// TestHTMLRenderHintContent pins the properties the hint must keep having for
-// the renderer to work: it must name the fenced-html spelling (so the model
-// emits ```html rather than a file), demand self-containment, and name the
-// host CSS variables with a fallback. A rewrite that drops any of these
-// silently degrades the feature in ways no test elsewhere would catch.
+// TestHTMLRenderHintContent pins the properties the hint must keep having:
+// the artifact-first policy (full reports go to an artifact, the chat gets the
+// link plus a few conclusions), the inline-html fallback for small
+// single-screen visuals, the fenced-html spelling, the mermaid fence, and the
+// renderer contract (self-containment, host CSS variables with fallback, chart
+// sizing). A rewrite that drops any of these silently degrades the feature in
+// ways no test elsewhere would catch.
 func TestHTMLRenderHintContent(t *testing.T) {
 	for _, want := range []string{
+		"产物",               // artifact-first policy for full reports
+		"artifact_publish", // AgentDeck's publishing mechanism
+		"完整报告",             // what must not be duplicated inline
+		"3–5",              // chat reply = link + a few key conclusions
+		"小型",               // inline is only for small visuals
+		"回退",               // fall back when no artifact mechanism exists
 		"三个反引号",            // the ```html fence spelling
 		"html",             // the language tag
+		"Mermaid",          // structured diagrams stay in mermaid fences
 		"自包含",              // self-contained
 		"--background",     // host CSS variables
 		"--accent",         //
@@ -191,6 +200,26 @@ func TestHTMLRenderHintContent(t *testing.T) {
 	// one that would break the literal.
 	if strings.Contains(htmlRenderHint, "`") {
 		t.Error("hint contains a raw backtick")
+	}
+}
+
+// TestHTMLRenderHintPolicyOrder pins the decision order the model should
+// follow: artifact first for full reports, inline only for small visuals, and
+// an explicit fallback when no artifact mechanism exists. If these paragraphs
+// ever get reordered, the hint starts reading as "inline first" again.
+func TestHTMLRenderHintPolicyOrder(t *testing.T) {
+	artifact := strings.Index(htmlRenderHint, "优先发布成")
+	inline := strings.Index(htmlRenderHint, "单屏能看完的小型")
+	fallback := strings.Index(htmlRenderHint, "没有产物或看板机制")
+	if artifact < 0 || inline < 0 || fallback < 0 {
+		t.Fatalf("policy paragraphs missing (artifact=%d inline=%d fallback=%d)", artifact, inline, fallback)
+	}
+	if !(artifact < inline && inline < fallback) {
+		t.Fatalf("policy order wrong: artifact=%d inline=%d fallback=%d", artifact, inline, fallback)
+	}
+	// The anti-flood rule must be explicit, not implied.
+	if !strings.Contains(htmlRenderHint, "不要为了展示把完整报告复制成聊天里的长 HTML") {
+		t.Error("hint lost the explicit no-copying-full-report rule")
 	}
 }
 
