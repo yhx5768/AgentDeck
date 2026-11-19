@@ -384,9 +384,16 @@ async function paEnsureBoard(force) {
   if (!force && state.agentBoard && Date.now() - (state.mainAgentBoardAt || 0) < 8000) return;
   paBoardBusy = true;
   try {
-    state.agentBoard = await api('/api/agent-board');
-    state.mainAgentBoardAt = Date.now();
-    pa.boardErr = '';
+    if (typeof boardShow === 'function') {
+      // 复用看板的静默刷新：已有数据时不清空、不闪 loading，并顺带渲染/派发
+      // 看板变更（PA 的 cluster / 队列读同一份 state.agentBoard）。
+      await boardShow(true);
+      pa.boardErr = state.boardLastError || '';
+    } else {
+      state.agentBoard = await api('/api/agent-board');
+      state.mainAgentBoardAt = Date.now();
+      pa.boardErr = '';
+    }
   } catch (e) {
     pa.boardErr = (e && e.message) || String(e);
   } finally {
@@ -403,19 +410,30 @@ function paAfterBoard() {
 }
 
 let paBoardTimer = 0;
+let paNeedsTimer = 0;
 function paConnectBoard() {
   if (pa.boardEs || typeof EventSource === 'undefined') return;
   const es = new EventSource('/api/agent-board/events');
-  const refresh = () => {
-    clearTimeout(paBoardTimer);
-    paBoardTimer = setTimeout(() => { paEnsureBoard(true); agentRefreshNeeds(); }, 250);
+  // 和看板 tab 共用同一套 delta 合并：两个连接收到同一事件时按 task_id 去重，
+  // 只拉一次受影响的卡；无法合并时回退静默全量。PA 侧另外刷新「需要你」队列。
+  const ingest = (kind) => (ev) => {
+    if (typeof boardIngestEvent === 'function' && typeof boardOnReady === 'function') {
+      if (kind === 'ready') boardOnReady();
+      else boardIngestEvent(ev); // 自己会做 180ms 窗口合并
+    } else {
+      clearTimeout(paBoardTimer);
+      paBoardTimer = setTimeout(() => paEnsureBoard(true), 250);
+    }
+    clearTimeout(paNeedsTimer);
+    paNeedsTimer = setTimeout(agentRefreshNeeds, 250);
   };
-  es.addEventListener('ready', refresh);
-  es.addEventListener('board', refresh);
+  es.addEventListener('ready', ingest('ready'));
+  es.addEventListener('board', ingest('board'));
   pa.boardEs = es;
 }
 function paDisconnectBoard() {
   clearTimeout(paBoardTimer);
+  clearTimeout(paNeedsTimer);
   if (pa.boardEs) { pa.boardEs.close(); pa.boardEs = null; }
 }
 

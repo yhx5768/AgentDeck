@@ -46,16 +46,63 @@ func TestBoardHubBroadcast(t *testing.T) {
 	h := newBoardHub()
 	a := h.subscribe()
 	b := h.subscribe()
-	h.broadcast()
-	for _, ch := range []chan struct{}{a, b} {
+	h.broadcast(boardChange{TaskID: "T-1", Kind: "update", Status: "进行中"})
+	var seqs []uint64
+	for _, sub := range []*boardSub{a, b} {
 		select {
-		case <-ch:
+		case <-sub.notify:
 		case <-time.After(time.Second):
 			t.Fatal("subscriber did not receive broadcast")
 		}
+		full, changes := sub.take()
+		if full || len(changes) != 1 || changes[0].TaskID != "T-1" || changes[0].Kind != "update" {
+			t.Fatalf("take() = full:%v changes:%+v", full, changes)
+		}
+		if changes[0].At == "" {
+			t.Fatal("broadcast should stamp a server time")
+		}
+		if changes[0].Seq == 0 {
+			t.Fatal("broadcast should stamp a sequence")
+		}
+		seqs = append(seqs, changes[0].Seq)
+	}
+	if seqs[0] != seqs[1] {
+		t.Fatalf("every subscriber must see the same seq, got %v", seqs)
 	}
 	h.unsubscribe(a)
 	h.unsubscribe(b)
+}
+
+func TestBoardHubCoalescesPerTask(t *testing.T) {
+	h := newBoardHub()
+	sub := h.subscribe()
+	h.broadcast(boardChange{TaskID: "T-1", Kind: "event", At: "2026-11-19 10:00:00"})
+	h.broadcast(boardChange{TaskID: "T-1", Kind: "reply", At: "2026-11-19 10:00:01"})
+	h.broadcast(boardChange{TaskID: "T-2", Kind: "update", At: "2026-11-19 10:00:02"})
+	<-sub.notify
+	full, changes := sub.take()
+	if full || len(changes) != 2 {
+		t.Fatalf("take() = full:%v changes:%+v", full, changes)
+	}
+	byID := map[string]boardChange{}
+	for _, ev := range changes {
+		byID[ev.TaskID] = ev
+	}
+	if byID["T-1"].Kind != "reply" {
+		t.Fatalf("latest per-task change should win, got %+v", byID["T-1"])
+	}
+	if byID["T-2"].Kind != "update" {
+		t.Fatalf("T-2 = %+v", byID["T-2"])
+	}
+
+	// A resync marker supersedes queued deltas.
+	h.broadcast(boardChange{TaskID: "T-3", Kind: "update"})
+	h.broadcast(boardChange{Kind: "resync"})
+	<-sub.notify
+	full, changes = sub.take()
+	if !full || len(changes) != 0 {
+		t.Fatalf("resync should discard deltas, got full:%v changes:%+v", full, changes)
+	}
 }
 
 func TestHandleAgentBoardEventsStreams(t *testing.T) {
@@ -91,8 +138,41 @@ func TestHandleAgentBoardEventsStreams(t *testing.T) {
 	if got := readEvent(); got != "ready" {
 		t.Fatalf("first event = %q", got)
 	}
-	hub.broadcast()
+	hub.broadcast(boardChange{TaskID: "T-1", Kind: "update", Status: "已完成"})
 	if got := readEvent(); got != "board" {
 		t.Fatalf("second event = %q", got)
+	}
+	// The data line follows the event line and carries the delta.
+	var data string
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read data: %v", err)
+		}
+		if strings.HasPrefix(line, "data: ") {
+			data = strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+			break
+		}
+	}
+	if !strings.Contains(data, `"task_id":"T-1"`) || !strings.Contains(data, `"status":"已完成"`) {
+		t.Fatalf("delta data = %s", data)
+	}
+
+	hub.broadcast(boardChange{})
+	if got := readEvent(); got != "board" {
+		t.Fatalf("third event = %q", got)
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read data: %v", err)
+		}
+		if strings.HasPrefix(line, "data: ") {
+			data = strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+			break
+		}
+	}
+	if !strings.Contains(data, `"full":true`) {
+		t.Fatalf("resync data = %s", data)
 	}
 }

@@ -210,8 +210,9 @@ func (s *Server) appendBoardNote(taskID, kind, text string) {
 	}
 	if _, err := s.boardDB.AppendEvent(taskID, kind, text, "", "incident"); err != nil {
 		log.Printf("worker notify: board note %s: %v", taskID, err)
+		return
 	}
-	s.broadcastAgentBoard()
+	s.broadcastAgentBoard(boardChange{TaskID: taskID, Kind: "incident"})
 }
 
 // questionSummary renders an AskUserQuestion input's questions as one line.

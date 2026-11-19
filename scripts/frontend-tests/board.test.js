@@ -41,17 +41,28 @@ const doc = w.document;
 w.eval(`
 const $ = (sel) => document.querySelector(sel);
 const state = { agentBoard: null, boardSelectedId: null, boardCollapsed: new Set() };
-function boardCloseDrawer() {}
+function boardCloseDrawer() { state.boardSelectedId = null; }
 function boardOpenDrawer() {}
 ${grabFn('boardTaskTags')}
 ${grabFn('boardTaskCard')}
+${grabFn('boardStatusOrder')}
+${grabFn('boardTaskVisible')}
+${grabFn('boardSyncProjects')}
+${grabFn('boardColumnNode')}
+${grabFn('boardCounts')}
+${grabFn('boardSortTasks')}
+${grabFn('boardUpdateEmptyState')}
+${grabFn('boardRebuildStatusColumn')}
+${grabFn('boardApplyTaskUpdates')}
 ${grabFn('renderBoard')}
 window.__state = state;
 window.__renderBoard = renderBoard;
+window.__apply = boardApplyTaskUpdates;
 `);
 
 const state = w.__state;
 const renderBoard = w.__renderBoard;
+const applyUpdates = w.__apply;
 
 let failed = 0;
 function check(name, cond, extra) {
@@ -104,6 +115,61 @@ function main() {
   renderBoard();
   check('无任务时显示空态', !doc.querySelector('#board-empty').classList.contains('hidden') &&
     doc.querySelector('#board-empty').textContent.includes('暂无任务'));
+
+  // ---------- 增量 patch（SSE delta） ----------
+  console.log('看板增量 patch');
+  const baseTasks = () => ([
+    { id: 'T-1', title: '任务A', status: '进行中', project: 'cc-webui', worker: 'w1', tags: ['测试'], progress: '80%', updated_at: '2026-11-04 15:40' },
+    { id: 'T-2', title: '任务B', status: '进行中', project: 'cc-webui', updated_at: '2026-11-04 15:39' },
+    { id: 'T-3', title: '任务C', status: '新建', project: 'other', updated_at: '2026-11-04 15:38' },
+  ]);
+  const freshBoard = () => ({
+    source: 'sqlite', generated_at: '2026-11-04 15:40',
+    projects: ['cc-webui', 'other'],
+    status_order: ['新建', '进行中', '待人工', '待验收', '已完成', '已取消'],
+    counts: {}, tasks: baseTasks(),
+  });
+  state.agentBoard = freshBoard();
+  doc.querySelector('#board-project-filter').value = '';
+  renderBoard();
+
+  const untouched = doc.querySelector('.board-card[data-task-id="T-3"]');
+  const updatedT1 = Object.assign({}, baseTasks()[0], { status: '已完成', progress: '100%' });
+  applyUpdates([{ id: 'T-1', task: updatedT1 }]);
+
+  const newCol = [...doc.querySelectorAll('.board-column')].find((c) => c.querySelector('.board-column-title').textContent === '进行中');
+  const doneCol = [...doc.querySelectorAll('.board-column')].find((c) => c.querySelector('.board-column-title').textContent === '已完成');
+  check('delta：卡片移动到新状态列', !!doneCol.querySelector('.board-card[data-task-id="T-1"]') &&
+    !newCol.querySelector('.board-card[data-task-id="T-1"]'));
+  check('delta：旧状态列计数下降', newCol.querySelector('.board-column-count').textContent === '1');
+  check('delta：新状态列计数上升', doneCol.querySelector('.board-column-count').textContent === '1');
+  check('delta：其他列卡片节点原地保留（未整板重绘）',
+    doc.contains(untouched) && untouched === doc.querySelector('.board-card[data-task-id="T-3"]'));
+  check('delta：项目筛选项不变', JSON.stringify([...doc.querySelectorAll('#board-project-filter option')].map((o) => o.value)) ===
+    JSON.stringify(['', 'cc-webui', 'other']));
+  check('delta：卡片内容已更新', doneCol.querySelector('.board-card[data-task-id="T-1"] .board-card-progress').textContent === '100%');
+
+  // 新项目出现：下拉补项，当前筛选保持。
+  doc.querySelector('#board-project-filter').value = 'other';
+  renderBoard();
+  applyUpdates([{ id: 'T-4', task: { id: 'T-4', title: '任务D', status: '新建', project: 'new-proj', updated_at: '2026-11-04 15:41' } }]);
+  check('delta：新项目出现在下拉里', [...doc.querySelectorAll('#board-project-filter option')].some((o) => o.value === 'new-proj'));
+  check('delta：当前项目筛选保持', doc.querySelector('#board-project-filter').value === 'other');
+  check('delta：被筛掉的卡不渲染', !doc.querySelector('.board-card[data-task-id="T-4"]'));
+
+  // 归档/删除：卡片移除并关闭抽屉。
+  doc.querySelector('#board-project-filter').value = '';
+  renderBoard();
+  state.boardSelectedId = 'T-1';
+  applyUpdates([{ id: 'T-1', remove: true }]);
+  check('delta：归档任务从列里移除', !doc.querySelector('.board-card[data-task-id="T-1"]'));
+  check('delta：移除选中任务后关闭抽屉', state.boardSelectedId === null);
+
+  // 全量重排时保留滚动位置。
+  const view = doc.querySelector('#board-view');
+  view.scrollTop = 120;
+  renderBoard({ preserveScroll: true });
+  check('全量重排保留滚动位置', view.scrollTop === 120);
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);

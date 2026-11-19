@@ -589,13 +589,23 @@ const state = {
   maRenderSig: '',            // 主 Agent 头像条渲染签名，避免 5s 轮询重启动效
   previewWorkers: false,      // 测试预览：?preview_workers=N + agent_board_mock_busy
   agentBoard: null,        // GET /api/agent-board snapshot (read-only)
-  agentBoardLoading: false,
+  agentBoardLoading: false, // 全量快照请求进行中（只有初次加载会显示 loading）
   boardSelectedId: null,   // 抽屉里展示的任务 id
   boardCollapsed: new Set(), // 已折叠的状态列
   boardEs: null,           // /api/agent-board/events SSE
   // worker 会话右侧「绑定卡片」面板（见 wc* 段）：抽屉式 SSE 只在面板展开时连。
   workerCardsEs: null,     // /api/agent-board/events（worker 面板专用连接）
   workerCardsSid: null,    // 上面这条 SSE 属于哪个会话
+  boardEsOpen: false,      // SSE 已收到 ready（断线后由 EventSource 自动重连）
+  boardSyncTimer: 0,       // 事件合并后的延迟刷新定时器
+  boardFallbackTimer: 0,   // SSE 断线/长时间静默时的低频兜底定时器
+  boardPending: new Map(), // task_id -> 最近一条 delta（事件合并）
+  boardSeenSeq: new Map(), // task_id -> 已接收的最大 seq（双 SSE 连接去重）
+  boardNeedFull: false,    // 收到无法按卡增量处理（或重连）的变更
+  boardSyncing: false,     // 增量刷新进行中
+  boardDirty: false,       // 刷新进行中又收到新事件
+  boardLastFullAt: 0,      // 最近一次全量快照完成时间
+  boardLastError: '',      // 最近一次后台刷新失败的原因（不清空已有看板）
   drafts: {},         // sessionId -> {text, attachments}
   attached: [],       // 待发送附件：[{kind:'image',media_type,data} | {kind:'file',name,size,path}]
   nsAttached: [],     // images staged in the new-session composer
@@ -2764,22 +2774,188 @@ function switchChatTab(tab) {
   if (typeof agentOnTabSwitch === 'function') agentOnTabSwitch(tab);
 }
 
-// 本地 store 变化时后端发 refresh 事件；前端重取快照。EventSource 带 cookie，
-// 不需要 query token。浏览器断线会自动重连。
+// 看板自动刷新：SSE 只负责「哪张卡变了」的轻量 delta，前端按 task_id 只重取
+// 那一张（GET /api/agent-board/tasks/{id}）并原地 patch。事件先合并 180ms，
+// 同一张卡多次变更只取最后一条；收到 full/未知事件才回退全量快照。全量快照
+// 永远在后台拉，不清空列、不显示「正在读取看板快照…」——那个提示只属于初次加载。
+// EventSource 自带断线重连；另外每 30s 检查一次，断线或 5 分钟没同步就兜底拉一次。
 function boardConnect() {
-  if (state.boardEs) return;
+  if (state.boardEs || typeof EventSource === 'undefined') return;
   const es = new EventSource('/api/agent-board/events');
-  const refresh = () => boardShow(true);
-  es.addEventListener('ready', refresh);
-  es.addEventListener('board', refresh);
+  es.addEventListener('ready', boardOnReady);
+  es.addEventListener('board', boardIngestEvent);
+  es.onerror = () => {
+    state.boardEsOpen = false;
+    boardStartFallback();
+  };
   state.boardEs = es;
+  boardStartFallback();
 }
 
 function boardDisconnect() {
+  boardStopFallback();
+  if (state.boardSyncTimer) {
+    clearTimeout(state.boardSyncTimer);
+    state.boardSyncTimer = 0;
+  }
+  state.boardEsOpen = false;
+  state.boardPending.clear();
+  state.boardNeedFull = false;
+  state.boardSeenSeq.clear();
   if (!state.boardEs) return;
   state.boardEs.close();
   state.boardEs = null;
 }
+
+function boardOnReady() {
+  state.boardEsOpen = true;
+  state.boardSeenSeq.clear(); // 服务重启后 seq 从头开始，重连必须重新接受
+  boardStartFallback();
+  if (!state.agentBoard) {
+    if (!state.agentBoardLoading) boardLoadSnapshot();
+    return;
+  }
+  // 重连期间可能漏过事件：静默补一次全量，不闪 loading。
+  state.boardNeedFull = true;
+  boardSchedule(50);
+}
+
+function boardIngestEvent(ev) {
+  let payload = {};
+  try { payload = JSON.parse((ev && ev.data) || '{}'); } catch (_) { payload = {}; }
+  if (payload.full || !Array.isArray(payload.changes) || !payload.changes.length) {
+    state.boardNeedFull = true;
+  } else {
+    for (const change of payload.changes) {
+      if (!change || !change.task_id) {
+        state.boardNeedFull = true;
+        continue;
+      }
+      const seq = Number(change.seq) || 0;
+      if (seq) {
+        const seen = state.boardSeenSeq.get(change.task_id) || 0;
+        if (seq <= seen) continue; // 另一条 SSE（看板 tab / PA 面板）已经收过这条
+        state.boardSeenSeq.set(change.task_id, seq);
+      }
+      state.boardPending.set(change.task_id, change);
+    }
+  }
+  boardSchedule(180);
+}
+
+// 窗口式去抖：第一次事件后就定下刷新点，窗口内的后续事件只合并、不推迟，
+// 免得持续事件流把刷新无限延后。
+function boardSchedule(delay) {
+  if (document.hidden && delay > 0) return;
+  if (state.boardSyncTimer) return;
+  state.boardSyncTimer = setTimeout(() => {
+    state.boardSyncTimer = 0;
+    boardFlush();
+  }, delay);
+}
+
+async function boardFlush() {
+  if (document.hidden) return; // 页面隐藏时暂停，回到前台再补
+  if (state.agentBoardLoading || state.boardSyncing) {
+    state.boardDirty = true;
+    return;
+  }
+  if (!state.agentBoard && !state.boardNeedFull) {
+    await boardLoadSnapshot();
+    return;
+  }
+  if (state.boardNeedFull) {
+    state.boardNeedFull = false;
+    await boardLoadSnapshot();
+    return;
+  }
+  if (!state.boardPending.size) return;
+  const changes = [...state.boardPending.values()];
+  state.boardPending.clear();
+  // 一次变更多个任务（批量导入等）时逐卡拉取的收益已经不大，直接静默全量。
+  if (changes.length > 8) {
+    await boardLoadSnapshot();
+    return;
+  }
+  await boardLoadDeltas(changes);
+}
+
+async function boardLoadDeltas(changes) {
+  if (!state.agentBoard) {
+    state.boardNeedFull = true;
+    return;
+  }
+  state.boardSyncing = true;
+  try {
+    // 只拉受影响的卡；并行请求在事件合并后通常只有一两条。
+    const results = await Promise.all(changes.map(async (change) => {
+      if (change.archived) return { id: change.task_id, remove: true };
+      const data = await api('/api/agent-board/tasks/' + encodeURIComponent(change.task_id));
+      return { id: change.task_id, task: data.task };
+    }));
+    if (!boardApplyTaskUpdates(results)) {
+      state.boardNeedFull = true;
+      return;
+    }
+    const at = changes.map((c) => c.at).filter(Boolean).sort().pop();
+    if (at) {
+      state.agentBoard.generated_at = at;
+      const updated = $('#board-updated');
+      if (updated) {
+        updated.textContent = '最后更新 ' + at;
+        updated.title = '';
+      }
+    }
+    state.boardLastError = '';
+    state.mainAgentBoardAt = Date.now();
+    renderMainAgents();
+    if (typeof paAfterBoard === 'function') paAfterBoard();
+  } catch (err) {
+    // 单卡拉取失败（网络/404/已归档）→ 回退一次静默全量刷新；已有看板保持不动。
+    state.boardNeedFull = true;
+    console.warn('看板增量刷新失败，改为全量刷新', err);
+  } finally {
+    state.boardSyncing = false;
+    if (state.boardPending.size || state.boardNeedFull || state.boardDirty) {
+      state.boardDirty = false;
+      boardSchedule(0);
+    }
+  }
+}
+
+function boardStartFallback() {
+  if (state.boardFallbackTimer) return;
+  state.boardFallbackTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (!state.boardEs) { boardStopFallback(); return; }
+    const stale = Date.now() - (state.boardLastFullAt || 0) > 5 * 60 * 1000;
+    if (!state.boardEsOpen || stale) {
+      state.boardNeedFull = true;
+      boardSchedule(0);
+    }
+  }, 30000);
+}
+
+function boardStopFallback() {
+  if (!state.boardFallbackTimer) return;
+  clearInterval(state.boardFallbackTimer);
+  state.boardFallbackTimer = 0;
+}
+
+// 页面隐藏时暂停自动刷新（事件仍在本地合并），回到前台补一次；隐藏超过
+// 一分钟则直接补全量快照，避免长时间没同步。
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (state.boardSyncTimer) {
+      clearTimeout(state.boardSyncTimer);
+      state.boardSyncTimer = 0;
+    }
+    return;
+  }
+  if (!state.boardEs && !state.agentBoard && !state.boardPending.size) return;
+  if (Date.now() - (state.boardLastFullAt || 0) > 60000) state.boardNeedFull = true;
+  if (state.boardPending.size || state.boardNeedFull) boardSchedule(0);
+});
 
 // 看板只对 main_agent 会话显示；取消标记时如果正停在看板，切回对话。
 function syncMainAgentTabs(s) {
@@ -4476,7 +4652,10 @@ function boardCloseDrawer() {
   });
 }
 
-function boardOpenDrawer(task) {
+function boardOpenDrawer(task, opts) {
+  const keepScroll = !!(opts && opts.keepScroll);
+  const timelineEl = $('#board-drawer-timeline');
+  const timelineScroll = keepScroll && timelineEl ? timelineEl.scrollTop : 0;
   state.boardSelectedId = task.id || null;
   boardDrawerTask = task;
   document.querySelectorAll('.board-card').forEach((el) => {
@@ -4509,7 +4688,10 @@ function boardOpenDrawer(task) {
   boardRenderLinks(task);
   boardRenderRaw(task);
   boardShowPane(boardDrawerPane);
-  boardReplySync(task);
+  const revealed = boardReplySync(task);
+  // 增量刷新重绘抽屉时，如果用户正翻着时间线，保持原来的滚动位置（自动高亮
+  // 新回复时除外——那种情况应该滚到新回复上）。
+  if (keepScroll && !changed && !revealed && timelineEl) timelineEl.scrollTop = timelineScroll;
   $('#board-drawer-mask').classList.add('open');
   $('#board-drawer').classList.add('open');
 }
@@ -5042,13 +5224,198 @@ function boardStale(data) {
   return Date.now() - ts > minutes * 60000;
 }
 
-function renderBoard() {
+function boardStatusOrder(data) {
+  return (data && data.status_order) || ['新建', '进行中', '待人工', '待验收', '已完成', '已取消'];
+}
+
+function boardTaskVisible(task) {
+  const filter = $('#board-project-filter');
+  const selected = filter ? filter.value : '';
+  return !selected || task.project === selected;
+}
+
+// 项目下拉保持当前选中项；选中项目消失时退回「全部项目」（与旧 renderBoard 一致）。
+function boardSyncProjects(data) {
+  const filter = $('#board-project-filter');
+  if (!filter) return '';
+  const projects = data.projects || [];
+  const current = filter.value;
+  filter.replaceChildren(new Option('全部项目', ''));
+  projects.forEach((p) => filter.append(new Option(p, p)));
+  filter.value = projects.includes(current) ? current : '';
+  return filter.value;
+}
+
+function boardColumnNode(status, list) {
+  const collapsed = state.boardCollapsed.has(status);
+  const column = document.createElement('section');
+  column.className = 'board-column' + (collapsed ? ' collapsed' : '');
+  const head = document.createElement('div');
+  head.className = 'board-column-head';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'board-column-toggle';
+  toggle.title = collapsed ? '展开列' : '折叠列';
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+  toggle.textContent = collapsed ? '›' : '‹';
+  toggle.onclick = (e) => {
+    e.stopPropagation();
+    if (collapsed) state.boardCollapsed.delete(status);
+    else state.boardCollapsed.add(status);
+    renderBoard();
+  };
+  const name = document.createElement('span');
+  name.className = 'board-column-title';
+  name.textContent = status;
+  const count = document.createElement('span');
+  count.className = 'board-column-count';
+  count.textContent = String(list.length);
+  head.append(toggle, name, count);
+  const body = document.createElement('div');
+  body.className = 'board-column-body';
+  body.dataset.status = status;
+  if (!list.length) {
+    const none = document.createElement('div');
+    none.className = 'board-card-meta';
+    none.textContent = '暂无';
+    body.append(none);
+  } else {
+    list.forEach((task) => body.append(boardTaskCard(task)));
+  }
+  column.append(head, body);
+  return column;
+}
+
+function boardCounts(data) {
+  const counts = {};
+  boardStatusOrder(data).forEach((status) => { counts[status] = 0; });
+  (data.tasks || []).forEach((task) => {
+    const key = task.status || '其他';
+    counts[key] = (counts[key] || 0) + 1;
+  });
+  return counts;
+}
+
+function boardSortTasks(tasks) {
+  tasks.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+  return tasks;
+}
+
+function boardUpdateEmptyState() {
+  const data = state.agentBoard;
+  const empty = $('#board-empty');
+  if (!data || !empty) return;
+  const selected = $('#board-project-filter') ? $('#board-project-filter').value : '';
+  const tasks = (data.tasks || []).filter((t) => !selected || t.project === selected);
+  if (!tasks.length) {
+    empty.textContent = selected ? `项目「${selected}」下没有任务。` : '暂无任务。';
+    empty.classList.remove('hidden');
+  } else {
+    empty.classList.add('hidden');
+  }
+}
+
+// 只重建一列（卡和计数）。返回 false 表示这个状态还没有对应的列（自定义
+// 状态），调用方需要退回一次整板重排。
+function boardRebuildStatusColumn(status) {
+  const data = state.agentBoard;
+  const columns = $('#board-columns');
+  if (!data || !columns) return false;
+  let column = null;
+  columns.querySelectorAll('.board-column').forEach((node) => {
+    if (column) return;
+    const title = node.querySelector('.board-column-title');
+    if (title && title.textContent === status) column = node;
+  });
+  if (!column) return false;
+  const collapsed = state.boardCollapsed.has(status);
+  const toggle = column.querySelector('.board-column-toggle');
+  if (toggle) {
+    toggle.title = collapsed ? '展开列' : '折叠列';
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.textContent = collapsed ? '›' : '‹';
+  }
+  const list = (data.tasks || []).filter((task) => (task.status || '其他') === status && boardTaskVisible(task));
+  const count = column.querySelector('.board-column-count');
+  if (count) count.textContent = String(list.length);
+  const body = column.querySelector('.board-column-body');
+  if (!body) return false;
+  body.innerHTML = '';
+  if (!list.length) {
+    const none = document.createElement('div');
+    none.className = 'board-card-meta';
+    none.textContent = '暂无';
+    body.append(none);
+  } else {
+    list.forEach((task) => body.append(boardTaskCard(task)));
+  }
+  return true;
+}
+
+// 把增量取回的任务原地合并进 state + DOM。只重建受影响的状态列，其他列（含
+// 滚动位置、卡片节点）保持不动；看板不在前台时只更新 state，回前台再渲染。
+function boardApplyTaskUpdates(results) {
+  const data = state.agentBoard;
+  if (!data) return false;
+  const tasks = data.tasks || (data.tasks = []);
+  const affected = new Set();
+  let selected = null;
+  let selectedGone = false;
+  for (const result of results || []) {
+    if (!result || !result.id) continue;
+    const index = tasks.findIndex((task) => task.id === result.id);
+    const prev = index >= 0 ? tasks[index] : null;
+    if (result.remove || !result.task) {
+      if (prev) {
+        affected.add(prev.status || '其他');
+        tasks.splice(index, 1);
+      }
+      if (state.boardSelectedId === result.id) selectedGone = true;
+      continue;
+    }
+    const task = Object.assign({}, prev || {}, result.task);
+    if (prev) tasks[index] = task;
+    else tasks.push(task);
+    if (prev) affected.add(prev.status || '其他');
+    affected.add(task.status || '其他');
+    if (state.boardSelectedId === task.id) selected = task;
+  }
+  boardSortTasks(tasks);
+  data.projects = [...new Set(tasks.map((task) => task.project).filter(Boolean))].sort();
+  data.counts = boardCounts(data);
+  const before = $('#board-project-filter') ? $('#board-project-filter').value : '';
+  const after = boardSyncProjects(data);
+  const view = $('#board-view');
+  const visible = view && !view.classList.contains('hidden');
+  if (before && after !== before) {
+    // 当前筛选的项目整个消失了：整板静默重排一次。
+    if (visible) renderBoard({ preserveScroll: true });
+  } else if (visible) {
+    for (const status of affected) {
+      if (!boardRebuildStatusColumn(status)) {
+        renderBoard({ preserveScroll: true });
+        break;
+      }
+    }
+  }
+  if (visible) boardUpdateEmptyState();
+  if (selectedGone) {
+    boardCloseDrawer();
+  } else if (selected && visible && !(typeof agentModeOn === 'function' && agentModeOn())) {
+    boardOpenDrawer(selected, { keepScroll: true });
+  }
+  return true;
+}
+
+function renderBoard(opts) {
+  const o = opts || {};
   const data = state.agentBoard;
   const columns = $('#board-columns');
   const empty = $('#board-empty');
   const updated = $('#board-updated');
-  const filter = $('#board-project-filter');
   if (!data) return;
+  const scroller = $('#board-view');
+  const scroll = (o.preserveScroll && scroller) ? scroller.scrollTop : 0;
 
   if (data.source === 'missing') {
     updated.textContent = data.error || '';
@@ -5059,16 +5426,12 @@ function renderBoard() {
   }
 
   updated.textContent = data.generated_at ? `最后更新 ${data.generated_at}` : '';
+  updated.title = '';
 
-  const projects = data.projects || [];
-  const current = filter.value;
-  filter.replaceChildren(new Option('全部项目', ''));
-  projects.forEach((p) => filter.append(new Option(p, p)));
-  filter.value = projects.includes(current) ? current : '';
-  const selected = filter.value;
+  const selected = boardSyncProjects(data);
   const tasks = (data.tasks || []).filter((t) => !selected || t.project === selected);
 
-  const order = data.status_order || ['新建', '进行中', '待人工', '待验收', '已完成', '已取消'];
+  const order = boardStatusOrder(data);
   const groups = new Map(order.map((s) => [s, []]));
   tasks.forEach((t) => {
     const key = t.status || '其他';
@@ -5083,81 +5446,95 @@ function renderBoard() {
   if (!tasks.length) {
     empty.textContent = selected ? `项目「${selected}」下没有任务。` : '暂无任务。';
     empty.classList.remove('hidden');
-    return;
-  }
-  empty.classList.add('hidden');
-  for (const [status, list] of groups) {
-    if (!order.includes(status) && !list.length) continue;
-    const collapsed = state.boardCollapsed.has(status);
-    const column = document.createElement('section');
-    column.className = 'board-column' + (collapsed ? ' collapsed' : '');
-    const head = document.createElement('div');
-    head.className = 'board-column-head';
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'board-column-toggle';
-    toggle.title = collapsed ? '展开列' : '折叠列';
-    toggle.setAttribute('aria-expanded', String(!collapsed));
-    toggle.textContent = collapsed ? '›' : '‹';
-    toggle.onclick = (e) => {
-      e.stopPropagation();
-      if (collapsed) state.boardCollapsed.delete(status);
-      else state.boardCollapsed.add(status);
-      renderBoard();
-    };
-    const name = document.createElement('span');
-    name.className = 'board-column-title';
-    name.textContent = status;
-    const count = document.createElement('span');
-    count.className = 'board-column-count';
-    count.textContent = String(list.length);
-    head.append(toggle, name, count);
-    const body = document.createElement('div');
-    body.className = 'board-column-body';
-    if (!list.length) {
-      const none = document.createElement('div');
-      none.className = 'board-card-meta';
-      none.textContent = '暂无';
-      body.append(none);
-    } else {
-      list.forEach((task) => body.append(boardTaskCard(task)));
+  } else {
+    empty.classList.add('hidden');
+    for (const [status, list] of groups) {
+      if (!order.includes(status) && !list.length) continue;
+      columns.append(boardColumnNode(status, list));
     }
-    column.append(head, body);
-    columns.append(column);
   }
-  // SSE 刷新后如果抽屉还开着，用新任务数据重绘抽屉，保持实时。
+  // SSE 刷新后如果抽屉还开着，用新任务数据重绘抽屉，保持实时（不跳滚动位置）。
   if (state.boardSelectedId && !(typeof agentModeOn === 'function' && agentModeOn())) {
     const selectedTask = tasks.find((t) => t.id === state.boardSelectedId);
-    if (selectedTask) boardOpenDrawer(selectedTask);
+    if (selectedTask) boardOpenDrawer(selectedTask, { keepScroll: true });
   }
+  if (o.preserveScroll && scroller) scroller.scrollTop = scroll;
 }
 
-async function boardShow(force = false) {
-  if (state.agentBoardLoading) return;
-  if (!force && state.agentBoard) {
-    renderBoard();
-    return;
+async function boardLoadSnapshot(opts) {
+  const o = opts || {};
+  if (state.agentBoardLoading) {
+    state.boardDirty = true;
+    return false;
   }
+  const initial = !state.agentBoard;
   state.agentBoardLoading = true;
   const empty = $('#board-empty');
-  empty.textContent = '正在读取看板快照…';
-  empty.classList.remove('hidden');
-  $('#board-columns').innerHTML = '';
+  const updated = $('#board-updated');
+  const prevUpdated = updated ? updated.textContent : '';
+  if (initial) {
+    // 只有第一次进入看板才显示 loading 并清空；后台刷新绝不动已有 DOM。
+    if (empty) {
+      empty.textContent = '正在读取看板快照…';
+      empty.classList.remove('hidden');
+    }
+    const cols = $('#board-columns');
+    if (cols) cols.innerHTML = '';
+  } else if (o.manual && updated) {
+    updated.textContent = '刷新中…';
+  }
   try {
-    state.agentBoard = await api('/api/agent-board');
+    const data = await api('/api/agent-board');
+    state.agentBoard = data;
     state.mainAgentBoardAt = Date.now();
-    renderBoard();
+    state.boardLastFullAt = Date.now();
+    state.boardLastError = '';
+    const view = $('#board-view');
+    const visible = view && !view.classList.contains('hidden');
+    // 看板不在前台（例如 PA 模式停在队列）时只更新 state，省掉整板 DOM 重排。
+    if (visible) renderBoard({ preserveScroll: !initial });
     renderMainAgents();
     if (typeof paAfterBoard === 'function') paAfterBoard();
+    return true;
   } catch (err) {
-    empty.textContent = '读取看板失败：' + err.message;
-    empty.classList.remove('hidden');
+    state.boardLastError = (err && err.message) || String(err);
+    if (initial) {
+      empty.textContent = '读取看板失败：' + state.boardLastError;
+      empty.classList.remove('hidden');
+    } else {
+      // 后台刷新失败时保留当前看板，只在「最后更新」处提示，不闪空态。
+      if (updated) {
+        updated.textContent = '刷新失败：' + state.boardLastError;
+        updated.title = prevUpdated || '';
+      }
+      console.warn('看板刷新失败', err);
+    }
+    return false;
   } finally {
     state.agentBoardLoading = false;
+    if (state.boardDirty || state.boardPending.size || state.boardNeedFull) {
+      state.boardDirty = false;
+      boardSchedule(0);
+    }
   }
 }
 
-$('#board-refresh').onclick = () => { boardCloseDrawer(); boardShow(true); };
+async function boardShow(force = false, opts = {}) {
+  if (!force && state.agentBoard) {
+    renderBoard();
+    return true;
+  }
+  if (!state.agentBoard) return boardLoadSnapshot({ manual: !!force });
+  // 已有数据时一律后台刷新：不清空列、不显示 loading，滚动/抽屉/筛选保持。
+  if (state.agentBoardLoading || state.boardSyncing) {
+    state.boardNeedFull = true;
+    state.boardDirty = true;
+    return false;
+  }
+  return boardLoadSnapshot({ manual: !!(opts && opts.manual) });
+}
+
+$('#board-refresh').onclick = () => { boardShow(true, { manual: true }); };
 $('#board-project-filter').onchange = () => renderBoard();
 $('#board-drawer-close').onclick = () => boardCloseDrawer();
 $('#board-drawer-mask').onclick = () => boardCloseDrawer();
