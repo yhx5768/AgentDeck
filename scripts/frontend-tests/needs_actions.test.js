@@ -138,12 +138,49 @@ async function main() {
   check('留言发给主 Agent，带结构化 board_task_id', !!msg && msg.body.board_task_id === 'refund' && /先别动退款/.test(msg.body.text));
   check('消息正文带卡片上下文（task_id / 标题）', /task_id: refund/.test(msg.body.text) && /支付网关/.test(msg.body.text));
   check('同时往卡片时间线记一条用户消息', callsTo(w, /POST \/api\/agent-board\/tasks\/refund\/events/)[0].body.kind === '用户消息');
-  check('发完清掉草稿，状态进入「回复中」并开始等回复', ta().value === '' && /回复中/.test(doc.querySelector('.pa-cstatus').textContent) && ev('pa.cmp.wait.taskId') === 'refund');
-  check('回写之前不算已回复', (ev('paCheckReply()'), ev('!!pa.cmp.wait')));
+  check('发完清掉草稿，状态进入「回复中」并开始等回复', ta().value === '' && /回复中/.test(doc.querySelector('.pa-cstatus').textContent) && !!ev('pa.cmp.wait.refund'));
+  check('回写之前不算已回复', (ev('paCheckReply()'), ev('!!pa.cmp.wait.refund')));
   ev(`state.agentBoard.tasks.find(t => t.id === 'refund').timeline.push({ at: '2026-11-13 10:05:00', kind: '主 Agent 回复', text: '收到，退款链路先暂停', data: { turn_id: 't9' } })`);
   ev('paCheckReply()');
-  check('看板里出现新的主 Agent 回复 → 标已回复、切到「动态」并把这条回复闪一下（和抽屉一致）', !ev('pa.cmp.wait') && /已回复/.test(doc.querySelector('.pa-cstatus').textContent) && ev('pa.ui.tab') === 'feed'
+  check('看板里出现新的主 Agent 回复 → 标已回复、切到「动态」并把这条回复闪一下（和抽屉一致）', !ev('pa.cmp.wait.refund') && /已回复/.test(doc.querySelector('.pa-cstatus').textContent) && ev('pa.ui.tab') === 'feed'
     && !!doc.querySelector('#agent-aside .board-drawer-event.board-event-fresh[data-kind="主 Agent 回复"]'));
+
+  console.log('切卡后的留言状态');
+  env = fresh();
+  ({ w, doc, ev } = env);
+  const sendOn = async (text) => {
+    const box = doc.querySelector('#pa-cnote');
+    box.value = text;
+    box.dispatchEvent(new w.Event('input'));
+    await ev('paSendNote()');
+  };
+  ev("agentSelectItem('perm:p1')"); // 卡 refund
+  await sendOn('退款先停一下');
+  check('refund 留言后显示「回复中」', /回复中/.test(doc.querySelector('.pa-cstatus').textContent) && !!ev('pa.cmp.wait.refund'));
+  ev("agentSelectItem('blocked:shard')"); // 卡 shard，没有等待
+  check('切到没有等待的卡：不显示上一张卡的「回复中」', !doc.querySelector('.pa-cstatus'));
+  check('等待状态仍按卡保留', !!ev('pa.cmp.wait.refund') && !ev('pa.cmp.wait.shard'));
+  ev("agentSelectItem('perm:p1')");
+  check('切回仍在等待的卡：恢复「回复中」', /回复中/.test(doc.querySelector('.pa-cstatus').textContent));
+
+  ev("agentSelectItem('blocked:shard')");
+  const beforeTab = ev('pa.ui.tab');
+  ev(`state.agentBoard.tasks.find(t => t.id === 'refund').timeline.push({ at: '2026-11-13 10:06:00', kind: '主 Agent 回复', text: '收到', data: { turn_id: 'tr1' } })`);
+  ev('paCheckReply()');
+  check('别的卡的回复到达：当前卡不显示「已回复」，也不把视图切走', !doc.querySelector('.pa-cstatus') && ev('pa.ui.tab') === beforeTab);
+  ev("agentSelectItem('perm:p1')");
+  check('切回被回复的卡：显示「已回复」且等待已清', /已回复/.test(doc.querySelector('.pa-cstatus').textContent) && !ev('pa.cmp.wait.refund'));
+
+  env = fresh();
+  ({ w, doc, ev } = env);
+  ev("agentSelectItem('perm:p1')");
+  await sendOn('refund 等回复');
+  ev("agentSelectItem('blocked:shard')");
+  await sendOn('shard 等回复');
+  check('两张卡可以同时在等回复', !!ev('pa.cmp.wait.refund') && !!ev('pa.cmp.wait.shard') && /回复中/.test(doc.querySelector('.pa-cstatus').textContent));
+  ev(`state.agentBoard.tasks.find(t => t.id === 'refund').timeline.push({ at: '2026-11-13 10:07:00', kind: '主 Agent 回复', text: '好', data: { turn_id: 'tr2' } })`);
+  ev('paCheckReply()');
+  check('一张卡的回复只清它自己的等待，另一张卡仍是「回复中」', !ev('pa.cmp.wait.refund') && !!ev('pa.cmp.wait.shard') && /回复中/.test(doc.querySelector('.pa-cstatus').textContent));
 
   env = fresh();
   ({ w, doc, ev } = env);

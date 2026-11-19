@@ -946,10 +946,30 @@ function paJumpChat() {
 // 这一轮的最终回复自动写回卡片时间线（与看板抽屉里的 composer 同一条链路）。
 // 不选卡片时就是一条普通消息。附件走会话上传目录，规则与抽屉一致。
 function paCmpKey() { return pa.ui.card || '_'; }
-function paCmpStatus(text, kind) {
-  pa.cmp.status = text || '';
-  pa.cmp.kind = kind || '';
+// 留言框状态属于「当时选中的卡片」，不是全局一条：切到别的卡时上一张卡的
+// 「已发送 · 回复中…」不能跟过去。status 按卡片 key 存，wait 按 taskId 存
+// （两张卡可以同时在等回复）；渲染时都只看当前卡片那一条。
+function paCmpSetStatus(key, text, kind) {
+  const c = pa.cmp;
+  if (!c.status || typeof c.status !== 'object') c.status = {};
+  if (text) c.status[key] = { text: text, kind: kind || '' };
+  else delete c.status[key];
+}
+function paCmpStatus(text, kind, key) {
+  paCmpSetStatus(key || paCmpKey(), text, kind);
   paRenderComposer();
+}
+function paCmpWaitOf(key) {
+  if (!key || key === '_' || !pa.cmp.wait || typeof pa.cmp.wait !== 'object') return null;
+  return pa.cmp.wait[key] || null;
+}
+// 当前卡片要显示的状态：卡片自己记的文案优先；没有文案但仍在等回复时，
+// 兜出「回复中」（例如清附件顺手清了提示，但等待本身还在）。
+function paCmpStatusOf(key) {
+  const st = pa.cmp.status && typeof pa.cmp.status === 'object' ? pa.cmp.status[key] : null;
+  if (st && st.text) return st;
+  if (paCmpWaitOf(key)) return { text: '已发送 · 回复中…', kind: 'queued' };
+  return null;
 }
 function paRenderComposer() {
   const box = $('#pa-acmp');
@@ -957,22 +977,24 @@ function paRenderComposer() {
   const main = paPrimaryMain();
   const task = pa.ui.card ? paTaskById(pa.ui.card) : null;
   const c = pa.cmp;
-  const sig = [main && main.id, task && task.id, c.att.map((a) => a.name).join(','), c.busy, c.status, c.kind].join('|');
+  const key = paCmpKey();
+  const st = paCmpStatusOf(key);
+  const sig = [main && main.id, task && task.id, c.att.map((a) => a.name).join(','), c.busy, st ? st.text : '', st ? st.kind : ''].join('|');
   if (box.dataset.sig === sig && box.childElementCount) return;
   const old = box.querySelector('textarea');
   const foc = !!old && document.activeElement === old;
   if (old) c.drafts[box.dataset.card || '_'] = old.value;
   box.dataset.sig = sig;
-  box.dataset.card = paCmpKey();
+  box.dataset.card = key;
   box.textContent = '';
   const off = !main;
   const ta = paEl('textarea', {
     id: 'pa-cnote', rows: '1', 'aria-label': '给主 Agent 留言', disabled: off ? true : null,
     placeholder: off ? '还没有主 Agent，先在中间选择 CLI 和模型创建' : (task ? '给 ' + paMainName(main) + ' 留言（带上这张卡的上下文）' : '给 ' + paMainName(main) + ' 留言'),
   });
-  ta.value = c.drafts[paCmpKey()] || '';
+  ta.value = c.drafts[key] || '';
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(120, ta.scrollHeight) + 'px'; };
-  ta.addEventListener('input', () => { c.drafts[paCmpKey()] = ta.value; grow(); });
+  ta.addEventListener('input', () => { c.drafts[key] = ta.value; grow(); });
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); paSendNote(); }
   });
@@ -983,11 +1005,11 @@ function paRenderComposer() {
   const picker = paEl('input', { type: 'file', multiple: '', hidden: '' });
   picker.addEventListener('change', () => { const fs = [...picker.files]; picker.value = ''; paAddFiles(fs); });
   const attBox = paEl('div', { class: 'attached-images pa-catt' });
-  renderAttachmentThumbs(attBox, c.att, () => { c.status = ''; paRenderComposer(); });
+  renderAttachmentThumbs(attBox, c.att, () => { paCmpSetStatus(paCmpKey(), ''); paRenderComposer(); });
   box.ondragover = (e) => { if (e.dataTransfer && e.dataTransfer.types.includes('Files')) e.preventDefault(); };
   box.ondrop = (e) => { if (e.dataTransfer && e.dataTransfer.files.length) { e.preventDefault(); paAddFiles([...e.dataTransfer.files]); } };
   paAppend(box,
-    c.status ? paEl('div', { class: 'pa-cstatus ' + c.kind, role: 'status', text: c.status }) : null,
+    st ? paEl('div', { class: 'pa-cstatus ' + st.kind, role: 'status', text: st.text }) : null,
     attBox,
     paEl('div', { class: 'pa-cbox' },
       paEl('button', { type: 'button', class: 'pa-cattach', title: '添加图片或文件', 'aria-label': '添加图片或文件', disabled: off ? true : null, html: paSvg('plus'), onclick: () => picker.click() }),
@@ -1021,7 +1043,7 @@ async function paAddFiles(files) {
       paCmpStatus('添加附件失败：' + (f.name || '') + '（' + ((e && e.message) || e) + '）', 'error');
     }
   }
-  c.status = '';
+  paCmpSetStatus(paCmpKey(), '');
   paRenderComposer();
 }
 
@@ -1039,9 +1061,10 @@ async function paSendNote() {
   const links = boardAttachmentLinks(c.att, main.id);
   const baseline = task ? boardReplyKeys(task) : [];
   const body = text || '（见附件）';
+  // 发送期间用户可能切卡：状态 / 草稿都记在发起时那张卡上，别写到当前卡。
   const key = paCmpKey();
   c.busy = true;
-  paCmpStatus('发送中…', 'queued');
+  paCmpStatus('发送中…', 'queued', key);
   try {
     await paPost('/api/sessions/' + paEnc(main.id) + '/messages', {
       text: task ? boardTaskContext(task) + '\n' + body : body, images, files, board_task_id: task ? task.id : undefined,
@@ -1053,31 +1076,45 @@ async function paSendNote() {
     const cur = $('#pa-cnote');
     if (cur && box.dataset.card === key) cur.value = '';
     if (typeof bumpSessionActivity === 'function') bumpSessionActivity(main.id);
-    if (task) { c.wait = { taskId: task.id, baseline }; c.busy = false; paCmpStatus('已发送 · 回复中…', 'queued'); }
-    else { c.busy = false; paCmpStatus('已发送给 ' + paMainName(main), 'ok'); }
+    if (task) {
+      if (!c.wait || typeof c.wait !== 'object') c.wait = {};
+      c.wait[task.id] = { baseline };
+      c.busy = false;
+      paCmpStatus('已发送 · 回复中…', 'queued', key);
+    } else { c.busy = false; paCmpStatus('已发送给 ' + paMainName(main), 'ok', key); }
   } catch (e) {
-    c.wait = null;
+    // 只清这一条提示，不动这张卡之前仍在等待的那一轮回复。
     c.busy = false;
-    paCmpStatus('发送失败：' + ((e && e.message) || e), 'error');
+    paCmpStatus('发送失败：' + ((e && e.message) || e), 'error', key);
   }
 }
 
 // 看板快照刷新后看有没有出现新的「主 Agent 回复」：服务端在 board 来源的 turn 结束后自动回写。
+// 等待状态按 taskId 分开查——两张卡可以同时在等，不能只认最后发送的那张。
 function paCheckReply() {
-  const w = pa.cmp.wait;
-  if (!w) return;
-  const task = paTaskById(w.taskId);
-  if (!task) return;
-  const fresh = boardReplyKeys(task).find((k) => !w.baseline.includes(k));
-  if (!fresh) return;
-  pa.cmp.wait = null;
-  pa.cmp.status = '已回复 · 最新回复见「动态」';
-  pa.cmp.kind = 'ok';
-  if (pa.ui.card === task.id) { pa.ui.tab = 'feed'; pa.ui.tf = 'all'; pa.ui.tfId = task.id; agentRenderAside(true); }
-  paRenderComposer();
+  const waits = pa.cmp.wait && typeof pa.cmp.wait === 'object' ? pa.cmp.wait : {};
+  const fresh = [];
+  Object.keys(waits).forEach((taskId) => {
+    const task = paTaskById(taskId);
+    if (!task) return;
+    const replyKey = boardReplyKeys(task).find((k) => !waits[taskId].baseline.includes(k));
+    if (!replyKey) return;
+    delete waits[taskId];
+    fresh.push({ task: task, replyKey: replyKey });
+  });
+  if (!fresh.length) return;
+  fresh.forEach((x) => paCmpSetStatus(x.task.id, '已回复 · 最新回复见「动态」', 'ok'));
+  // 只有正在看这张卡时才切「动态」并高亮；在别的卡上不打断当前视图，
+  // 那条「已回复」留到切回这张卡时再显示。
+  const cur = fresh.find((x) => pa.ui.card === x.task.id);
+  if (!cur) return;
+  pa.ui.tab = 'feed';
+  pa.ui.tf = 'all';
+  pa.ui.tfId = cur.task.id;
+  agentRenderAside(true);
   // 和抽屉的 boardReplyReveal 一样：定位到这条新回复并闪一下
   const rows = [...document.querySelectorAll('#agent-aside .board-drawer-event[data-kind="主 Agent 回复"]')];
-  const row = rows.find((r) => r.dataset.replyKey === fresh) || rows[rows.length - 1];
+  const row = rows.find((r) => r.dataset.replyKey === cur.replyKey) || rows[rows.length - 1];
   if (row) { row.classList.add('board-event-fresh'); if (row.scrollIntoView) row.scrollIntoView({ block: 'nearest' }); }
 }
 
