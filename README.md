@@ -6,11 +6,9 @@
 
 AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流式对话、工具调用可视化、回滚、群聊编排和移动化体验整合到一个轻量级服务里——你只需把它跑在远程机器上，手机或电脑打开浏览器即可开始工作。
 
-> 项目内部标识仍是 `cc-webui`（Go module、`CC_WEBUI_*` 环境变量、`ccgw_token` Cookie、`~/.config/cc-webui`）；对外可执行文件和 Release asset 已改名为 `agentdeck`，旧的 `cc-webui` 二进制名仍可继续使用。
+![Personal Agent 工作台](docs/images/readme/readme-pa-overview.png)
 
-![Personal Agent 工作台](docs/screenshots/readme-pa-overview.png)
-
-*Personal Agent 工作台：左栏是主 Agent 与运行中的 worker；中栏是主 Agent 会话，worker 回报和看板操作按轮折叠；右栏是卡片详情——权限门、提问、验收都能就地处理。*
+*Personal Agent 工作台（示例界面）：左栏是主 Agent 与运行中的 worker；中栏是主 Agent 会话，worker 回报和看板操作按轮折叠；右栏是卡片详情——权限门、提问、验收都能就地处理。*
 
 ---
 
@@ -37,19 +35,7 @@ AgentDeck 是五个编码 CLI 的统一 Web 控制台。它把会话管理、流
 - **作答**：权限/提问直达 worker；拍板/验收先送达 worker，再记时间线和更新看板，失败保留条目可重试；A2A 使用操作级幂等键，不会因重试吞掉第二次决定。
 - **真实数据**：`/api/needs-you`、`/api/agent-board(+events)`、`/api/sessions/{id}/permissions/pending`、`/api/a2a/send`、`/api/agent-board/tasks/{id}/events` 等，没有前端 mock。
 
-**需要你队列与权限审批**
-
-![需要你队列](docs/screenshots/readme-pa-needs-you.png)
-
-*权限门、提问、待人工、待验收合成一条按紧急度排序的队列；右栏直接允许本次 / 本会话允许 / 拒绝，倒计时和超时回执都是真实状态。*
-
-**看板任务与卡片详情**
-
-![看板任务](docs/screenshots/readme-pa-board.png)
-
-*看板按状态分列；点开卡片在右栏看概览、动态和产物，验收 / 打回也都落在这张卡上。*
-
-设计细节见 [AGENTS.md §17](AGENTS.md) 与 [docs/needs-you-rd.md](docs/needs-you-rd.md)。
+需要你队列、看板与任务详情的界面见下方「界面」章节；设计细节见 [AGENTS.md §17](AGENTS.md) 与 [docs/needs-you-rd.md](docs/needs-you-rd.md)。
 
 ## 多 CLI 与跨引擎 A2A
 
@@ -81,11 +67,7 @@ flowchart TB
   MAIN -->|"权限门 / 提问"| QUEUE
 ```
 
-![主 Agent 会话中的 A2A 收发](docs/screenshots/readme-pa-a2a.png)
-
-*主 Agent 会话：连续 worker 回报按轮折叠；`send_message` 的派工卡片与 worker 的 peer 气泡同屏出现，不需要轮询或共享剪贴板。*
-
-详见 [a2a-rd.md](a2a-rd.md)、[docs/main-agent-best-practices.md](docs/main-agent-best-practices.md) 和 [AGENTS.md §17](AGENTS.md)。
+主 Agent 会话中的 A2A 界面见下方「界面」章节。详见 [a2a-rd.md](a2a-rd.md)、[docs/main-agent-best-practices.md](docs/main-agent-best-practices.md) 和 [AGENTS.md §17](AGENTS.md)。
 
 ## 核心特性
 
@@ -105,10 +87,10 @@ flowchart TB
 | 常驻与跨会话消息 | A2A 总线对所有引擎可用；claude 还可选择常驻（streaming-input 进程跨轮次保持在线）并兼容 claude 原生 `SendMessage`。入站 A2A 以紫色 peer 气泡显示，详情见下方「多 CLI 与跨引擎 A2A」。 |
 | 自动续跑目标 | 给会话挂一条达成条件，每轮干净结束后模型自评，未达标就自动再跑一轮，直到达标或触发轮数/时限熔断。条件可随时停止或清除；rewind 会清空目标。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块、子代理折叠卡片。 |
-| HTML / Mermaid 可视化 | 模型输出的 `html` 围栏可在消息里点「渲染」成沙箱 iframe——完整页面、图表、交互都行；`mermaid` 围栏可点「渲染」画成图，并跟随深浅主题切换。iframe 不给 `allow-same-origin`，页面完全自包含。服务端每轮向模型注入「把可视化输出成 HTML 围栏而不是写文件」的约定（config 里可关）。 |
+| HTML / Mermaid 可视化 | 模型输出的 `html` 围栏可在消息里点「渲染」成沙箱 iframe——小型图表、交互都行；`mermaid` 围栏可点「渲染」画成图，并跟随深浅主题切换。iframe 不给 `allow-same-origin`，页面完全自包含。完整报告 / 仪表盘优先发布成会话或看板的 HTML 产物（AgentDeck 用 `artifact_publish`），聊天里只回产物链接 + 3–5 条关键结论；只有单屏能看完的小型可视化才走内联 `html`，没有产物机制时回退内联。服务端每轮向模型注入这套约定（config 里可关）。 |
 | 会话分叉 | claude / qoder 可把当前 transcript 复制成新会话，从同一上下文另开一条分支（不动原会话）。 |
 | 轨迹视图 | 会话内「轨迹」tab 把同一份事件流投影成按轮(turn)分组的台账：折叠/展开轮次、按角色（用户/助手/工具）筛选、关键词搜索，点开单条记录看 summary / preview / raw 三档详情。对话流之外的另一种审阅视角。 |
-| 使用统计 | 统计本机全部会话（Claude Code、opencode、mcode、qoder、codex 五个引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/当前连续/最长连续/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。opencode 走它的 CLI 官方面（`session list` 只看得见当前目录所属的项目桶，故枚举全部项目额外走一条只读 `opencode db` 查询，实测只读不写，失败自动退回按桶列举）；mcode 读它自己的 `messages.jsonl` transcript（mcode 没有 `session list`/`export` 这类 CLI 面）；qoder 与 Claude Code 同构，读 `~/.qoder-cn/projects` 的 jsonl；codex 读 `$CODEX_HOME/sessions` 的 rollout（ducx 为 `~/.baidu-cx`）。增量缓存——首次全量扫描较慢，之后秒回。注意 qoder 的 `usage` 不上报 token 数（计费走 `credits`），所以对 qoder 会话而言消息数/工具数/活跃天数都准，token 类指标对它无意义。 |
+| 使用统计 | 统计本机全部会话（Claude Code、opencode、mcode、qoder、codex 五个引擎合并计数，页面上标出各自贡献的会话数）：8 个指标（会话/消息/总 tokens/活跃天数/当前连续/最长连续/峰值时段/常用模型）+ GitHub 式热力图，按日按模型看 tokens 构成。opencode 走它的 CLI 官方面（`session list` 只看得见当前目录所属的项目桶，故枚举全部项目额外走一条只读 `opencode db` 查询，实测只读不写，失败自动退回按桶列举）；mcode 读它自己的 `messages.jsonl` transcript（mcode 没有 `session list`/`export` 这类 CLI 面）；qoder 与 Claude Code 同构，读 `~/.qoder-cn/projects` 的 jsonl；codex 读 `$CODEX_HOME/sessions` 的 rollout。增量缓存——首次全量扫描较慢，之后秒回。注意 qoder 的 `usage` 不上报 token 数（计费走 `credits`），所以对 qoder 会话而言消息数/工具数/活跃天数都准，token 类指标对它无意义。 |
 | 本地文件与图片预览 | 点击消息中的本地文件链接（如 `/path/to/file.md:12`）**直接开右侧工作区面板**预览该文件并定位到那一行（工作区外的文件退回旧的预览浮层）。模型回复里 `![](/abs/path.png)` 这类本地图片经 `/api/image` 代理显示，同样限制在会话工作区内。 |
 | 工作区面板 | 聊天区右侧可展开一个文件区（照 Codex 桌面端的布局做）：右边是工作区文件树（懒加载、可筛选、可只看有改动的文件），左边是文件预览——Markdown 渲染、代码高亮、图片直看，带面包屑与「显示更改 / 查看源代码 / 刷新 / 用系统默认程序打开」。改动视图走 `git diff`，被改过的文件在树上带 M/新 标记。全部路径严格限制在**当前会话的工作区**内，`..`、绝对路径与符号链接逃逸一律拒绝。 |
 | 全局待办备忘 | 与单个会话无关的 checklist，存在服务端 `data/notes.json`，换设备/重启都不丢。 |
@@ -117,36 +99,33 @@ flowchart TB
 | 移动优先 PWA | 抽屉导航、底部操作面板、响应式布局、深浅主题切换，iOS 独立 PWA 会避开状态栏安全区。 |
 | 安全网关 | 单一 `gateway_token` 鉴权；文件与图片预览严格限制在会话工作区内。 |
 
-## 界面一览
+## 界面
+
+以下为 Personal Agent 的主要界面（示例界面）。
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/readme-workspace.png" alt="工作区面板"></td>
-    <td width="50%"><img src="docs/screenshots/readme-trajectory.png" alt="轨迹视图"></td>
+    <td width="50%"><img src="docs/images/readme/readme-created-mainagent.png" alt="创建主 Agent 后的对话"></td>
+    <td width="50%"><img src="docs/images/readme/readme-pa-a2a.png" alt="主 Agent 会话中的 A2A"></td>
   </tr>
   <tr>
-    <td align="center"><sub>工作区面板：文件树 + 预览 + git 状态，路径锁定在当前会话 cwd</sub></td>
-    <td align="center"><sub>轨迹视图：同一份事件流按轮投影成台账，可按角色筛选、搜索</sub></td>
+    <td align="center"><sub>创建主 Agent 后（示例主 Agent 名为「示例助理」）：左栏出现主 Agent 与会话，中栏直接提需求</sub></td>
+    <td align="center"><sub>A2A：派工卡片与 worker 回报按轮折叠</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/readme-stats.png" alt="使用统计"></td>
-    <td align="center"><img src="docs/screenshots/readme-mobile.png" width="300" alt="移动端"></td>
+    <td><img src="docs/images/readme/readme-pa-board.png" alt="看板任务"></td>
+    <td><img src="docs/images/readme/readme-pa-needs-you.png" alt="需要你队列"></td>
   </tr>
   <tr>
-    <td align="center"><sub>使用统计：五引擎合并计数 + GitHub 式热力图（演示数据）</sub></td>
-    <td align="center"><sub>移动端：响应式布局 + 底部「需要你 / 对话 / 看板」切换</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/screenshots/readme-a2a-chat.png" alt="跨会话消息"></td>
-    <td><img src="docs/screenshots/readme-ask-banner.png" alt="提问卡片"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>跨会话消息：SendMessage 发件卡片，正文与收件人都在卡上</sub></td>
-    <td align="center"><sub>提问强提示：55 秒倒计时 + 顶部横幅，跨会话也能看见</sub></td>
+    <td align="center"><sub>看板：按状态分列，点卡片在右栏看详情</sub></td>
+    <td align="center"><sub>需要你：权限门、提问、阻塞和待验收汇到一条队列</sub></td>
   </tr>
 </table>
 
-> 以上截图来自隔离演示实例，会话、看板与统计均为演示数据。
+<p align="center">
+  <img src="docs/images/readme/readme-created-mainagent-mobile.png" width="300" alt="手机端创建完成后的对话"><br>
+  <sub>手机端：单栏对话，底部切换「需要你 / 对话 / 看板」</sub>
+</p>
 
 > **浏览器 PoC（实验分支）**：设置页可开启本地 Chrome，Claude 通过 MCP 使用 `browser_*` 工具，Web 面板可看实时画面并人工接管。默认关闭；Claude/Qoder/Codex/OpenCode 已接，mcode 受项目 .mcp.json 限制未接；能力边界、配置和未完成项见 [docs/browser-poc.md](docs/browser-poc.md)。
 
@@ -169,7 +148,7 @@ go build -o agentdeck .
 # 配置
 cp config.example.yaml config.yaml
 # 编辑 config.yaml：设置 gateway_token、你的 clis 与 providers
-# 百度内部只用 ducc / ducx（模型清单由 CLI 自己提供，无需声明）：
+# 只用 ducc / ducx（模型清单由 CLI 自己提供，无需声明）：
 #   cp du_int.config.example.yaml config.yaml
 
 # 运行
@@ -184,7 +163,7 @@ cp config.example.yaml config.yaml
 也支持环境变量覆盖：
 
 ```bash
-GATEWAY_TOKEN=xxx CC_WEBUI_LISTEN=0.0.0.0:8321 ./agentdeck
+GATEWAY_TOKEN=xxx ./agentdeck -listen 0.0.0.0:8321
 ```
 
 命令行参数：`-config <path>`、`-listen <addr>`。
@@ -215,7 +194,7 @@ clis:
 
   - name: "ducc"
     kind: "claude"
-    path: "/home/you/.baidu-cc/baidu-cc/bin/ducc"
+    path: "ducc"
     permission_mode: "default"
     args: []
     env: {}
@@ -277,7 +256,7 @@ providers:
     models: []                   # 留空：来自 `codex debug models --bundled`
 ```
 
-完整字段请参考 `config.example.yaml`（只保留 ducc / ducx 的百度内部精简版见 `du_int.config.example.yaml`）。`html_render_hint: false` 可关闭每轮向模型注入的 HTML/Mermaid 输出约定。
+完整字段请参考 `config.example.yaml`（只保留 ducc / ducx 的精简版见 `du_int.config.example.yaml`）。`html_render_hint: false` 可关闭每轮向模型注入的报告/可视化（HTML/Mermaid）输出约定。
 
 ### 热加载
 
@@ -312,9 +291,9 @@ flowchart LR
 | `opencode` | 共享长驻 `opencode serve`：HTTP 建会话 / 发 prompt，`/event` SSE 取事件（**不是** `opencode run`） | `ses_…` | `opencode export <sid>` |
 | `mcode` | `mcode exec --output-format stream-json [--session <mvs_…>] [--model <p/m>] [--effort <l>]` | `mvs_…` | `~/.minimax/v2/sessions/**/messages.jsonl` |
 | `qoder` | `qoderclicn -p --output-format stream-json [--resume <sid>] [--model <m>] [--reasoning-effort <l>]`（没有 `--verbose`） | uuid | `~/.qoder-cn/projects/**/<sid>.jsonl` |
-| `codex` | `codex exec --json [resume <sid>] [-m <m>] [-c model_reasoning_effort=<l>]`，prompt 走 stdin | thread uuid | `$CODEX_HOME/sessions/**/rollout-*-<sid>.jsonl`（ducx 为 `~/.baidu-cx`） |
+| `codex` | `codex exec --json [resume <sid>] [-m <m>] [-c model_reasoning_effort=<l>]`，prompt 走 stdin | thread uuid | `$CODEX_HOME/sessions/**/rollout-*-<sid>.jsonl` |
 
-五个引擎的内部事件格式不完全相同，但都经各自的适配层转成同一套 canonical 事件再渲染，所以工具卡片、轨迹视图、回放/实时一致性在前端是共用一套逻辑的。`qoder`（Qoder CLI CN）是 Claude Code 的 fork，事件格式与 transcript 布局都与 `claude` 同构，只是没有 `--verbose`、档位 flag 叫 `--reasoning-effort`、权限模式用下划线拼写，历史放在 `~/.qoder-cn` 下——因此它复用 `internal/claudehist`，不需要单独适配层。`opencode` 与 `mcode` 各有一套独立协议和适配层；`codex`（及百度二次封装的 `ducx`）又一套独立协议：`exec --json` 的 JSONL 事件 + rollout 文件回放，由 `internal/codexhist` 适配；模型目录来自 `codex debug models --bundled`。
+五个引擎的事件格式不完全相同，但都经各自的适配层转成同一套 canonical 事件再渲染，所以工具卡片、轨迹视图、回放/实时一致性在前端是共用一套逻辑的。`qoder`（Qoder CLI CN）是 Claude Code 的 fork，事件格式与 transcript 布局都与 `claude` 同构，只是没有 `--verbose`、档位 flag 叫 `--reasoning-effort`、权限模式用下划线拼写，历史放在 `~/.qoder-cn` 下——因此它与 Claude 共用适配层，不需要单独实现。`opencode` 与 `mcode` 各有一套独立协议和适配层；`codex` / `ducx` 又一套独立协议：`exec --json` 的 JSONL 事件 + rollout 文件回放，由 Codex 适配层处理；模型目录来自 `codex debug models --bundled`。
 
 - **持久化边界**：AgentDeck 自己只落盘 `user`、`status`、`rewind` 三类事件；assistant / tool / thinking 等 stream 事件不落盘，每次 SSE 连接时从各引擎自己的 transcript 现场解析后合并回放。所以历史只有一份权威副本（在 CLI 那边），服务重启不丢，也不会出现两份互相打架的记录。
 - **续接**：claude/qoder 首轮从 `system/init` 捕获 `session_id`，后续 `--resume`；opencode 建会话时拿到 `ses_…` 并每轮在 v1 prompt body 里带上当前 model/variant；mcode 用 `--session`；codex 用 `exec resume`。因此**在同一引擎内切换 CLI / Provider / Model / 权限模式不会丢失上下文**（会话不跨引擎迁移）。
@@ -325,9 +304,9 @@ flowchart LR
 
 ### 可视化输出（HTML / Mermaid）
 
-模型回复里的 `html` 围栏会被 `md()` 升级成带「渲染」按钮的 artifact 壳：默认显示源码，点一下才挂 `sandbox="allow-scripts"` 的 srcdoc iframe。iframe **不给 `allow-same-origin`**，页面碰不到 app 的 localStorage / DOM / 带 cookie 的同源接口；高度跟随内容，外层封顶 640px（可全屏，全屏是搬节点不重建 iframe，页面脚本状态不丢）。宿主还向 iframe 注入主题 CSS 变量（`--background`/`--foreground`/`--accent` 等），页面跟随深浅色。`mermaid` 围栏走同一套壳，点「渲染」才动态加载 `/vendor/mermaid.min.js` 并画成 SVG（`securityLevel:'strict'`，产出再过一遍 DOMPurify），切主题会重画。轨迹视图不渲染 frame，只看代码。
+模型回复里的 `html` 围栏会被 `md()` 升级成带「渲染」按钮的 artifact 壳：默认显示源码，点一下才挂 `sandbox="allow-scripts"` 的 srcdoc iframe。iframe **不给 `allow-same-origin`**，页面碰不到 app 的 localStorage / DOM / 带凭据的同源接口；高度跟随内容，外层封顶 640px（可全屏，全屏是搬节点不重建 iframe，页面脚本状态不丢）。宿主还向 iframe 注入主题 CSS 变量（`--background`/`--foreground`/`--accent` 等），页面跟随深浅色。`mermaid` 围栏走同一套壳，点「渲染」才动态加载 `/vendor/mermaid.min.js` 并画成 SVG（`securityLevel:'strict'`，产出再过一遍 DOMPurify），切主题会重画。轨迹视图不渲染 frame，只看代码。
 
-为了让模型知道这个能力，服务端每轮向 system prompt 注入一段约定（图表/仪表盘直接输出 HTML 围栏，不要写 `.html` 文件）。注入路径按引擎而异：claude/qoder/mcode 走 `--append-system-prompt`，codex 走 `-c instructions=<TOML 字符串>`，opencode 走它自己的 `instructions` 配置（AgentDeck 维护隔离的 `~/.config/cc-webui/opencode/`，不碰用户全局规则）。`html_render_hint: false` 可整体关闭。
+为了让模型知道这个能力，服务端每轮向 system prompt 注入一段约定：完整报告 / 仪表盘优先发布成会话或看板的 HTML 产物（AgentDeck 用 `artifact_publish`），聊天里只回产物链接和 3–5 条关键结论；只有单屏能看完的小型图表 / 示意图才直接输出 `html` 围栏，流程图 / 时序图等结构化示意图仍用 `mermaid` 围栏；没有产物机制时回退到内联 HTML。注入路径按引擎而异：claude/qoder/mcode 走 `--append-system-prompt`，codex 走 `-c instructions=<TOML 字符串>`，opencode 走它自己的 `instructions` 配置（AgentDeck 维护隔离的 OpenCode 配置目录，不碰用户全局规则）。`html_render_hint: false` 可整体关闭。
 
 ### 自动续跑目标（Session Goals）
 
@@ -355,11 +334,11 @@ Claude Code 的 `~/.claude/settings.json` 里的 `env` 段会覆盖进程继承�
 
 ## 安全说明
 
-- **鉴权**：所有 API 与 SSE 接口都需要 `gateway_token`。支持 Cookie `ccgw_token`、`Authorization: Bearer <token>` 或 `?token=` 查询参数。
+- **鉴权**：所有 API 与 SSE 接口都需要 `gateway_token`。支持 `Authorization: Bearer <token>` 或 `?token=` 查询参数。
 - **文件预览白名单**：`/api/files` 仅允许读取**位于任一会话工作区（cwd）内**的文件，并会 `EvalSymlinks` 解析真实路径，防止通过软链接或 `..` 穿越到 `/etc/passwd`、`~/.ssh` 等敏感目录。
 - **只读 + 截断**：文件预览为只读，上限 2 MiB；检测到二进制内容（NUL 字节）会拒绝返回。
 - **图片接口**：`/api/image` 是 `/api/files` 的孪生口子，同样限制在会话工作区内，额外要求扩展名属于图片白名单（不含 svg）、体积 ≤10 MiB，并带 `nosniff`。
-- **HTML 沙箱**：渲染的 iframe 不带 `allow-same-origin`，页面无法访问宿主 DOM、localStorage 或带 cookie 的同源接口。
+- **HTML 沙箱**：渲染的 iframe 不带 `allow-same-origin`，页面无法访问宿主 DOM、localStorage 或带凭据的同源接口。
 - **settings 文件**：`data/settings/*.json` 含端点凭据，权限 0600，env 值不会下发前端。
 - **提醒**：请把 `gateway_token` 设置为强随机字符串，并避免在公网直接暴露端口。建议通过反向代理或 VPN 使用。
 
@@ -384,7 +363,7 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./agentdeck'
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/login` / `/api/logout` | `{token}` 登录并写入 Cookie / 退出 |
+| POST | `/api/login` / `/api/logout` | `{token}` 登录 / 退出 |
 | GET | `/api/me` | 当前登录信息 |
 | GET | `/api/clis` / `/api/providers` / `/api/profiles` / `/api/config` | 下拉与运行时配置（env 值不下发） |
 | GET / POST | `/api/sessions` | 会话列表（含状态、待回答提问、resume 命令）/ 创建 |
@@ -399,7 +378,7 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./agentdeck'
 | PUT / DELETE | `/api/sessions/{id}/goal` | 设置自动续跑目标 / 清除 |
 | POST | `/api/sessions/{id}/fork` | 分叉会话（claude / qoder） |
 | POST | `/api/sessions/{id}/rewind` | 回滚到某条用户消息 `{checkpoint}`（claude / opencode） |
-| POST | `/api/sessions/{id}/permissions/request` | 审批 helper 上报工具调用（阻塞等决策，内部用） |
+| POST | `/api/sessions/{id}/permissions/request` | 审批 helper 上报工具调用（阻塞等决策） |
 | POST | `/api/sessions/{id}/permissions/{pid}` | 审批决策 `{behavior: allow\|allow_tool_session\|deny, message?}` |
 | GET | `/api/sessions/{id}/permissions/pending` | 未决审批列表（重连补卡） |
 | GET | `/api/sessions/{id}/events` | SSE：历史回放 + 实时事件 |
