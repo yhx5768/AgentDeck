@@ -5718,3 +5718,228 @@ html.pa-mode-pending body { visibility: hidden; }
   .pa-setup-grid { grid-template-columns: 1fr; }
   .pa-setup-field.wide { grid-column: auto; }
 }
+
+/* =============================================================
+   worker 会话右侧：绑定卡片面板
+   #chat-shell 把聊天区和面板并排；面板只在非主 Agent 会话显示，
+   默认收起成 38px 窄轨，展开 340px。窄屏（≤900px）改成右侧覆盖层，
+   不挤压聊天区。类名一律 wc- 前缀。
+   ============================================================= */
+#chat-shell { flex: 1; display: flex; min-width: 0; min-height: 0; }
+/* chat-view 隐藏时整个壳一起消失，别让空壳占掉 flex 高度 */
+#chat-shell:has(#chat-view.hidden) { display: none; }
+#chat-view { min-width: 0; }
+
+#worker-cards {
+  flex: 0 0 auto;
+  width: 340px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  transition: width 180ms var(--ease), border-color 180ms var(--ease);
+}
+#worker-cards.wc-collapsed { width: 38px; }
+
+/* ---- 收起态：一条窄轨（整条可点） ---- */
+.wc-rail {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4) 0;
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-4));
+  border: none;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.wc-rail:hover { background: var(--bg2); color: var(--fg); }
+.wc-rail:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wc-rail-icon { display: inline-flex; }
+.wc-rail-icon svg { width: 16px; height: 16px; }
+.wc-rail-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.6;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.wc-rail-count.zero { background: var(--bg3); color: var(--dim); }
+.wc-rail-label {
+  writing-mode: vertical-rl;
+  letter-spacing: .18em;
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  user-select: none;
+}
+
+/* ---- 展开态：头部 + 手风琴列表 ---- */
+.wc-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--sp-2));
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.wc-head-title {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--fg);
+}
+.wc-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.7;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.wc-collapse { flex: none; }
+.wc-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.wc-card {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  overflow: hidden;
+}
+.wc-card.wc-open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
+.wc-card-head {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 9px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wc-card-head:hover { background: var(--bg2); }
+.wc-card-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wc-caret { flex: none; display: inline-flex; margin-top: 1px; color: var(--dim); }
+.wc-caret svg { width: 14px; height: 14px; }
+.wc-card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.wc-card-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.wc-status {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg2);
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.wc-st-active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-dim); }
+.wc-st-warn { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, transparent); background: color-mix(in srgb, var(--orange) 12%, transparent); }
+.wc-st-done { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.wc-st-muted { opacity: .65; }
+.wc-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.wc-card-last {
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  line-height: 1.45;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.wc-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px 9px 29px;
+  border-top: 1px dashed var(--border);
+}
+.wc-row { display: flex; gap: 6px; font-size: var(--fs-xs); line-height: 1.5; }
+.wc-row-key { flex: none; width: 52px; color: var(--dim); }
+.wc-row-val { flex: 1; min-width: 0; color: var(--fg); word-break: break-word; }
+.wc-row-val.mono { font-family: var(--font-mono); font-size: 10.5px; }
+.wc-tags .wc-row-val { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.wc-empty {
+  padding: var(--sp-7) var(--sp-4);
+  text-align: center;
+  color: var(--dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+.wc-empty-title { color: var(--fg); font-weight: 600; margin-bottom: var(--sp-1); }
+.wc-empty-hint { color: var(--dim); font-size: var(--fs-xs); }
+
+/* 遮罩默认不占位：只有窄屏 + 面板展开时才出现 */
+.wc-mask { display: none; }
+
+@media (max-width: 900px) {
+  /* 窄屏改成覆盖层：不挤压聊天区，点遮罩收起 */
+  #worker-cards {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(360px, 92vw);
+    z-index: 120;
+    box-shadow: var(--shadow-lg);
+  }
+  #worker-cards.wc-collapsed { width: 38px; box-shadow: none; }
+  .wc-mask:not(.hidden) {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 110;
+    background: rgba(0, 0, 0, .35);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #worker-cards { transition: none; }
+}

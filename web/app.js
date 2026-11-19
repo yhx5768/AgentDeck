@@ -593,6 +593,9 @@ const state = {
   boardSelectedId: null,   // 抽屉里展示的任务 id
   boardCollapsed: new Set(), // 已折叠的状态列
   boardEs: null,           // /api/agent-board/events SSE
+  // worker 会话右侧「绑定卡片」面板（见 wc* 段）：抽屉式 SSE 只在面板展开时连。
+  workerCardsEs: null,     // /api/agent-board/events（worker 面板专用连接）
+  workerCardsSid: null,    // 上面这条 SSE 属于哪个会话
   drafts: {},         // sessionId -> {text, attachments}
   attached: [],       // 待发送附件：[{kind:'image',media_type,data} | {kind:'file',name,size,path}]
   nsAttached: [],     // images staged in the new-session composer
@@ -2165,6 +2168,7 @@ async function archiveSession(s) {
     });
     if (state.current && state.current.id === s.id) {
       state.current = null;
+      if (typeof wcDisconnect === 'function') wcDisconnect();
       $('#chat-view').classList.add('hidden');
       $('#empty-state').classList.remove('hidden');
     }
@@ -2657,6 +2661,7 @@ async function openSession(id) {
   const s = await api(`/api/sessions/${id}`);
   state.current = s;
   syncMainAgentTabs(s);
+  if (typeof wcOnSession === 'function') wcOnSession(s);
   // 待发送消息按会话留在 pendingBySid 里，切换不清空；下面随视图重建恢复显示。
   state.seenSeq = new Set();
   state.toolBlocks = {};
@@ -2784,6 +2789,355 @@ function syncMainAgentTabs(s) {
   tab.classList.toggle('hidden', !visible);
   if (!visible && tab.classList.contains('active')) switchChatTab('chat');
 }
+
+// ---------- worker 会话右侧：绑定卡片面板 ----------
+// 只在 worker 会话（有 current、且不是 main_agent）显示；主 Agent 与看板页不受影响。
+// 收起时是右侧一条窄轨（展开图标 + 卡片数 + 竖排标题），展开后是 340px 宽的手风琴：
+// 默认只展开最近更新的一张，同一时间最多一张，点别的卡即切换。
+// 卡片来自已有的 GET /api/agent-board 快照，按「看板卡的 session == 当前会话 id」或
+// 「看板卡的 worker == 当前会话 peer_name / name」匹配。展开状态与选中卡片按会话存
+// localStorage；展开时跟随 /api/agent-board/events 自动刷新。
+const WC_OPEN_PREFIX = 'cc-webui:wc-open:';
+const WC_CARD_PREFIX = 'cc-webui:wc-card:';
+const WC_CARD_NONE = '-'; // 手风琴显式全部收起（区别于「还没选过 → 默认第一张」）
+
+function wcStorageGet(prefix, sid, fallback) {
+  try {
+    const value = localStorage.getItem(prefix + sid);
+    return value === null ? fallback : value;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function wcStorageSet(prefix, sid, value) {
+  try { localStorage.setItem(prefix + sid, value); } catch (_) {}
+}
+
+function wcIsOpen(s) {
+  return !!(s && wcStorageGet(WC_OPEN_PREFIX, s.id, '') === '1');
+}
+
+function wcSetOpen(s, open) {
+  if (!s || !s.id) return;
+  wcStorageSet(WC_OPEN_PREFIX, s.id, open ? '1' : '0');
+}
+
+// 当前会话绑定的看板卡片（最近更新的在前）。
+function wcBoundTasks(s) {
+  const tasks = state.agentBoard && Array.isArray(state.agentBoard.tasks) ? state.agentBoard.tasks : [];
+  if (!s || s.main_agent || !tasks.length) return [];
+  const keys = [s.id, s.peer_name, s.name].filter(Boolean).map((k) => String(k));
+  if (!keys.length) return [];
+  const hit = (v) => v && keys.includes(String(v));
+  return tasks
+    .filter((t) => hit(t.session) || hit(t.worker))
+    .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+}
+
+// 手风琴当前展开的卡片：存的值有效就用它；从没选过 → 最近更新的一张；
+// 显式收起（'-'）→ 一张都不展开。
+function wcSelectedTaskId(s, tasks) {
+  if (!s || !tasks || !tasks.length) return '';
+  const stored = wcStorageGet(WC_CARD_PREFIX, s.id, null);
+  if (stored === WC_CARD_NONE) return '';
+  if (stored && tasks.some((t) => String(t.id || '') === stored)) return stored;
+  return String(tasks[0].id || '');
+}
+
+function wcSetSelectedTaskId(s, taskId) {
+  if (!s || !s.id) return;
+  wcStorageSet(WC_CARD_PREFIX, s.id, taskId || WC_CARD_NONE);
+}
+
+function wcStatusClass(status) {
+  switch (status) {
+    case '进行中': return 'active';
+    case '待人工':
+    case '待验收': return 'warn';
+    case '已完成': return 'done';
+    case '已取消': return 'muted';
+    case '新建': return 'new';
+    default: return 'plain';
+  }
+}
+
+function wcCountPill(n, cls) {
+  const el = document.createElement('span');
+  el.className = cls;
+  el.textContent = String(n);
+  el.title = `${n} 张绑定卡片`;
+  return el;
+}
+
+// 收起态：整条窄轨就是一个按钮。
+function wcRail(s, tasks) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'wc-rail';
+  btn.title = `绑定卡片 ${tasks.length} 张（点击展开）`;
+  btn.setAttribute('aria-label', `展开绑定卡片面板，共 ${tasks.length} 张`);
+  btn.setAttribute('aria-expanded', 'false');
+  const icon = document.createElement('i');
+  icon.className = 'wc-rail-icon';
+  icon.dataset.lucide = 'panel-right-open';
+  const count = wcCountPill(tasks.length, 'wc-rail-count');
+  if (!tasks.length) count.classList.add('zero');
+  const label = document.createElement('span');
+  label.className = 'wc-rail-label';
+  label.textContent = '绑定卡片';
+  btn.append(icon, count, label);
+  btn.onclick = () => {
+    wcSetOpen(s, true);
+    wcRender(s);
+    wcConnect(s);
+  };
+  return btn;
+}
+
+function wcHead(s, tasks) {
+  const head = document.createElement('div');
+  head.className = 'wc-head';
+  const title = document.createElement('div');
+  title.className = 'wc-head-title';
+  const text = document.createElement('span');
+  text.textContent = '绑定卡片';
+  title.append(text, wcCountPill(tasks.length, 'wc-count'));
+  const collapse = document.createElement('button');
+  collapse.type = 'button';
+  collapse.className = 'icon-btn wc-collapse';
+  collapse.title = '收起面板';
+  collapse.setAttribute('aria-label', '收起绑定卡片面板');
+  collapse.setAttribute('aria-expanded', 'true');
+  const icon = document.createElement('i');
+  icon.dataset.lucide = 'panel-right-close';
+  collapse.append(icon);
+  collapse.onclick = () => {
+    wcSetOpen(s, false);
+    wcDisconnect();
+    wcRender(s);
+  };
+  head.append(title, collapse);
+  return head;
+}
+
+function wcEmpty(s, loading) {
+  const box = document.createElement('div');
+  box.className = 'wc-empty';
+  const title = document.createElement('div');
+  title.className = 'wc-empty-title';
+  title.textContent = loading ? '正在读取看板…' : '暂无绑定卡片';
+  const hint = document.createElement('div');
+  hint.className = 'wc-empty-hint';
+  if (!loading) {
+    const who = s.peer_name || s.name || s.id || '';
+    hint.textContent = `主 Agent 在看板上把任务绑定到「${who}」后，会显示在这里。`;
+  }
+  box.append(title);
+  if (hint.textContent) box.append(hint);
+  return box;
+}
+
+function wcRow(label, value, mono) {
+  const row = document.createElement('div');
+  row.className = 'wc-row';
+  const key = document.createElement('span');
+  key.className = 'wc-row-key';
+  key.textContent = label;
+  const val = document.createElement('span');
+  val.className = 'wc-row-val' + (mono ? ' mono' : '');
+  val.textContent = value || '—';
+  val.title = value || '';
+  row.append(key, val);
+  return row;
+}
+
+// 展开态的内联详情：任务 ID、状态、progress、最近事件、标签。
+function wcTaskDetail(task) {
+  const body = document.createElement('div');
+  body.className = 'wc-card-body';
+  body.append(
+    wcRow('任务 ID', task.id, true),
+    wcRow('状态', task.status),
+    wcRow('进度', task.progress),
+    wcRow('最近事件', task.last_event),
+    wcRow('更新时间', task.updated_at),
+  );
+  const tagRow = document.createElement('div');
+  tagRow.className = 'wc-row wc-tags';
+  const key = document.createElement('span');
+  key.className = 'wc-row-key';
+  key.textContent = '标签';
+  const val = document.createElement('span');
+  val.className = 'wc-row-val';
+  const tags = Array.isArray(task.tags) ? task.tags.filter(Boolean) : [];
+  if (tags.length) {
+    tags.forEach((tag) => {
+      const chip = document.createElement('span');
+      chip.className = 'board-tag';
+      chip.textContent = tag;
+      val.append(chip);
+    });
+  } else {
+    val.textContent = '—';
+  }
+  tagRow.append(key, val);
+  body.append(tagRow);
+  return body;
+}
+
+function wcTaskItem(s, task, selectedId) {
+  const taskId = String(task.id || '');
+  const open = !!taskId && selectedId === taskId;
+  const item = document.createElement('article');
+  item.className = 'wc-card' + (open ? ' wc-open' : '');
+  item.dataset.taskId = taskId;
+
+  const head = document.createElement('button');
+  head.type = 'button';
+  head.className = 'wc-card-head';
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  const caret = document.createElement('i');
+  caret.className = 'wc-caret';
+  caret.dataset.lucide = open ? 'chevron-down' : 'chevron-right';
+
+  const main = document.createElement('span');
+  main.className = 'wc-card-main';
+  const line = document.createElement('span');
+  line.className = 'wc-card-line';
+  const status = document.createElement('span');
+  status.className = 'wc-status wc-st-' + wcStatusClass(task.status);
+  status.textContent = task.status || '未知';
+  const title = document.createElement('span');
+  title.className = 'wc-card-title';
+  title.textContent = task.title || task.full_title || '（无标题）';
+  title.title = task.full_title || task.title || '';
+  line.append(status, title);
+  const last = document.createElement('span');
+  last.className = 'wc-card-last';
+  last.textContent = task.last_event || task.progress || '暂无最近事件';
+  last.title = last.textContent;
+  main.append(line, last);
+  head.append(caret, main);
+  head.onclick = () => {
+    wcSetSelectedTaskId(s, open ? '' : taskId);
+    wcRender(s);
+  };
+  item.append(head);
+  if (open) item.append(wcTaskDetail(task));
+  return item;
+}
+
+// 渲染当前会话的面板（幂等，可反复调用）。不负责 SSE 连接，连接见 wcOnSession。
+function wcRender(s) {
+  const panel = $('#worker-cards');
+  const mask = $('#worker-cards-mask');
+  if (!panel) return;
+  const visible = !!(s && s.id && !s.main_agent);
+  panel.classList.toggle('hidden', !visible);
+  if (!visible) {
+    panel.innerHTML = '';
+    panel.classList.remove('wc-collapsed');
+    panel.dataset.sid = '';
+    if (mask) mask.classList.add('hidden');
+    return;
+  }
+  panel.dataset.sid = s.id;
+  const tasks = wcBoundTasks(s);
+  const open = wcIsOpen(s);
+  panel.classList.toggle('wc-collapsed', !open);
+  panel.innerHTML = '';
+  if (!open) {
+    panel.append(wcRail(s, tasks));
+    if (mask) mask.classList.add('hidden');
+  } else {
+    panel.append(wcHead(s, tasks));
+    const body = document.createElement('div');
+    body.className = 'wc-body';
+    if (!tasks.length) {
+      body.append(wcEmpty(s, !state.agentBoard));
+    } else {
+      const selected = wcSelectedTaskId(s, tasks);
+      tasks.forEach((task) => body.append(wcTaskItem(s, task, selected)));
+    }
+    panel.append(body);
+    // 遮罩只在窄屏生效（CSS 媒体查询控制 display），宽屏留着也无害。
+    if (mask) mask.classList.remove('hidden');
+  }
+  renderIcons(panel);
+}
+
+function wcDisconnect() {
+  if (state.workerCardsEs) state.workerCardsEs.close();
+  state.workerCardsEs = null;
+  state.workerCardsSid = null;
+}
+
+// 面板展开时订阅看板变化；同会话重复调用不会叠出第二条连接。
+function wcConnect(s) {
+  if (!s || !s.id || s.main_agent) return;
+  if (state.workerCardsEs && state.workerCardsSid === s.id) return;
+  wcDisconnect();
+  const es = new EventSource('/api/agent-board/events');
+  const refresh = () => wcRefresh(s.id);
+  es.addEventListener('ready', refresh);
+  es.addEventListener('board', refresh);
+  state.workerCardsEs = es;
+  state.workerCardsSid = s.id;
+}
+
+async function wcRefresh(sid) {
+  if (!state.current || state.current.id !== sid || state.current.main_agent) return;
+  if (state.agentBoardLoading) return;
+  state.agentBoardLoading = true;
+  try {
+    state.agentBoard = await api('/api/agent-board');
+    state.mainAgentBoardAt = Date.now();
+  } catch (_) {
+    // 看板接口失败时保留旧快照，面板不闪空；记时间戳避免每次会话刷新都重试。
+    state.mainAgentBoardAt = Date.now();
+  } finally {
+    state.agentBoardLoading = false;
+  }
+  // 拉取期间可能已经切了会话：快照是全局的，给当前 worker 会话重绘即可；
+  // 它若开着面板但连接属于上一个会话，顺手换一条 SSE。
+  const cur = state.current;
+  if (cur && !cur.main_agent) {
+    wcRender(cur);
+    if (wcIsOpen(cur) && (!state.workerCardsEs || state.workerCardsSid !== cur.id)) wcConnect(cur);
+  }
+}
+
+// 打开会话 / 会话元数据变化时的统一入口：渲染 + 按需拉快照 + 管理 SSE。
+function wcOnSession(s) {
+  if (!s || s.main_agent) {
+    wcDisconnect();
+    wcRender(null);
+    return;
+  }
+  wcRender(s);
+  if (wcIsOpen(s)) wcConnect(s);
+  else wcDisconnect();
+  const fresh = state.agentBoard && Date.now() - (state.mainAgentBoardAt || 0) < 10000;
+  if (!fresh) wcRefresh(s.id);
+}
+
+// 窄屏遮罩点击 / Esc：收起面板（宽屏没有遮罩，Esc 也照常生效）。
+function wcCollapse() {
+  const s = state.current;
+  if (!s || !wcIsOpen(s)) return;
+  wcSetOpen(s, false);
+  wcDisconnect();
+  wcRender(s);
+}
+
+(() => {
+  const mask = $('#worker-cards-mask');
+  if (mask) mask.onclick = wcCollapse;
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.current && wcIsOpen(state.current)) wcCollapse();
+  });
+})();
 
 function boardTaskTags(task) {
   const tags = Array.isArray(task.tags) ? task.tags.filter(Boolean) : [];
@@ -9069,6 +9423,7 @@ $('#btn-delete').onclick = async () => {
   await api(`/api/sessions/${state.current.id}`, { method: 'DELETE' });
   if (state.es) state.es.close();
   state.current = null;
+  if (typeof wcDisconnect === 'function') wcDisconnect();
   $('#chat-view').classList.add('hidden');
   $('#empty-state').classList.remove('hidden');
   loadSessions();
@@ -10640,6 +10995,7 @@ function appendGroupItem(box, g) {
 }
 function hideAllViews() {
   if (typeof agentHideNeedsView === 'function') agentHideNeedsView();
+  if (typeof wcDisconnect === 'function') wcDisconnect();
   $('#empty-state').classList.add('hidden');
   $('#chat-view').classList.add('hidden');
   $('#new-session-view').classList.add('hidden');
@@ -11362,6 +11718,11 @@ function applySession(sess) {
   if (i >= 0) state.sessions[i] = sess;
   if (state.current && state.current.id === sess.id) state.current = sess;
   renderGoalBar();
+  // main_agent / peer_name / name 可能在这里变化（PATCH 回读、goal 轮次），
+  // 绑定卡片面板的可见性与匹配键都要跟着刷新。
+  if (typeof wcOnSession === 'function' && state.current && state.current.id === sess.id) {
+    wcOnSession(state.current);
+  }
 }
 
 // 弹窗接线（goal 代码块在文件末尾，这里补事件绑定）
