@@ -279,6 +279,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /s/{token}", s.handleArtifactShare)
 	s.mux.Handle("POST /api/agent-board/artifacts/{id}/shares", s.auth(s.handleAgentBoardCreateShare))
 	s.mux.Handle("GET /api/agent-board/shares", s.auth(s.handleAgentBoardListShares))
+	s.mux.Handle("POST /api/agent-board/shares/{id}/renew", s.auth(s.handleAgentBoardRenewShare))
 	s.mux.Handle("DELETE /api/agent-board/shares/{id}", s.auth(s.handleAgentBoardRevokeShare))
 	s.mux.Handle("POST /api/agent-board/tasks", s.auth(s.handleAgentBoardCreateTask))
 	s.mux.Handle("PATCH /api/agent-board/tasks/{id}", s.auth(s.handleAgentBoardUpdateTask))

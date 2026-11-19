@@ -3786,6 +3786,13 @@ function sharesAdminRow(share) {
     anchor.textContent = share.url;
     anchor.title = share.url;
     link.append(anchor);
+  } else if (share.status === 'expired' && share.url) {
+    // 过期但未取消：URL 仍由 share id 重建，续期后原链接立即恢复（不是新链接）。
+    const dead = document.createElement('span');
+    dead.className = 'shares-url shares-url-dead';
+    dead.textContent = share.url;
+    dead.title = '链接已过期，续期后原链接立即恢复';
+    link.append(dead);
   } else {
     const dead = document.createElement('span');
     dead.className = 'shares-url shares-url-dead';
@@ -3818,6 +3825,29 @@ function sharesAdminRow(share) {
     copy.textContent = '复制链接';
     copy.onclick = () => boardCopyShareURL(share.url, copy);
     actions.append(copy);
+  }
+  // 续期：过期（或仍有效）但未取消的链接保留原 URL，续期只挪 expires_at。
+  // 永久链接没有到期时间可延，不显示续期（把永久改成有限期反而是缩短）。
+  if (share.renewable && share.expires_at) {
+    const renew = document.createElement('span');
+    renew.className = 'shares-renew';
+    const days = document.createElement('select');
+    days.className = 'shares-renew-days';
+    days.title = '续期时长';
+    [['1', '1 天'], ['3', '3 天'], ['7', '7 天'], ['0', '永久']].forEach(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      days.append(option);
+    });
+    days.value = '7';
+    const renewBtn = document.createElement('button');
+    renewBtn.type = 'button';
+    renewBtn.className = 'board-artifact-action board-share-renew';
+    renewBtn.textContent = '续期';
+    renewBtn.onclick = () => boardRenewShare(share, renewBtn);
+    renew.append(days, renewBtn);
+    actions.append(renew);
   }
   if (share.status !== 'revoked') {
     const revoke = document.createElement('button');
@@ -3901,6 +3931,42 @@ async function boardRevokeShare(share, button) {
     }
     boardShareShowError('#shares-error',
       '取消分享失败：' + (err && err.message ? err.message : err));
+  }
+}
+
+// 续期：服务端只把 expires_at 往后挪，share id 不变 → 原 URL、PV/UV 全部保留。
+// 已取消的链接服务端拒绝续期（409），错误显示在页面顶部。
+async function boardRenewShare(share, button) {
+  if (!share || !share.id) return;
+  const row = button && typeof button.closest === 'function' ? button.closest('.shares-row') : null;
+  const select = row ? row.querySelector('.shares-renew-days') : null;
+  const days = select ? Number(select.value) : 7;
+  boardShareShowError('#shares-error', '');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '续期中…';
+  }
+  try {
+    const out = await api('/api/agent-board/shares/' + encodeURIComponent(share.id) + '/renew', {
+      method: 'POST',
+      body: JSON.stringify({ expiry_days: Number.isFinite(days) ? days : 7 }),
+    });
+    const updated = out && out.share;
+    const index = sharesAdminItems.findIndex((item) => item.id === share.id);
+    if (updated && index >= 0) {
+      // 合并响应而不是整行替换：产物/任务标签只来自列表接口。
+      sharesAdminItems[index] = Object.assign({}, sharesAdminItems[index], updated);
+      sharesAdminRender();
+    } else {
+      await sharesAdminRefresh();
+    }
+  } catch (err) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '续期';
+    }
+    boardShareShowError('#shares-error',
+      '续期失败：' + (err && err.message ? err.message : err));
   }
 }
 

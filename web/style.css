@@ -5120,6 +5120,9 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .shares-url-dead { color: var(--dim); }
 .shares-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .shares-actions .board-artifact-action { white-space: nowrap; }
+.shares-renew { display: inline-flex; align-items: center; gap: 4px; }
+.shares-renew-days { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 2px 4px; font-size: 10px; }
+.shares-renew-days:focus { outline: none; border-color: var(--accent); }
 .shares-empty { padding: 28px 12px; text-align: center; color: var(--dim); font-size: var(--fs-xs); }
 @media (max-width: 900px) {
   #shares-header { padding-left: var(--sp-4); padding-right: var(--sp-4); }

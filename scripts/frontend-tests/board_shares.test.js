@@ -1,7 +1,8 @@
 // 看板产物公开分享前端回归：
 // - 产物行「分享」入口 + 创建弹窗（1/3/7/永久）/复制，不破坏 legacy 行；
 // - 设置页「分享管理」入口 → 独立页面（不是弹窗/抽屉），跨任务列表；
-// - 搜索/状态/任务项目/类型筛选、排序、计数、复制、撤销、空态、hash 路由。
+// - 搜索/状态/任务项目/类型筛选、排序、计数、复制、撤销、续期（原 URL 保留）、
+//   空态、hash 路由。
 //
 // 局限：jsdom 不做布局/剪贴板；copyText 用 stub 记录调用。
 const fs = require('fs');
@@ -163,6 +164,7 @@ ${grabFn('sharesAdminRow')}
 ${grabFn('sharesAdminRender')}
 ${grabFn('sharesAdminRefresh')}
 ${grabFn('boardRevokeShare')}
+${grabFn('boardRenewShare')}
 sharesAdminBindControls();
 window.__artifactItem = boardArtifactItem;
 window.__openShare = boardOpenShareDialog;
@@ -176,6 +178,7 @@ window.__closeShares = closeSharesAdmin;
 window.__settingsEntry = sharesAdminOpenFromSettings;
 window.__refreshShares = sharesAdminRefresh;
 window.__renderShares = sharesAdminRender;
+window.__renewShare = boardRenewShare;
 `);
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -192,6 +195,7 @@ function makeShare(extra) {
     artifact_filename: 'report.html', task_id: 'T-1', task_title: '任务A', project: '项目A',
     status: 'active', active: true, url: 'https://deck.example/s/T1',
     created_at: '2026-11-11 12:00:00', expires_at: '', created_by: 'local', pv: 12, uv: 3,
+    renewable: true,
   }, extra || {});
 }
 
@@ -201,7 +205,7 @@ function sharesFixture() {
     makeShare({
       id: 'S-2', artifact_id: 'A-2', artifact_title: '旧报告', artifact_kind: 'markdown',
       artifact_filename: 'old.md', task_id: 'T-2', task_title: '任务B', project: '项目B',
-      status: 'expired', active: false, url: undefined, pv: 4, uv: 2,
+      status: 'expired', active: false, url: 'https://deck.example/s/T2', pv: 4, uv: 2,
       created_at: '2026-11-10 12:00:00', expires_at: '2026-11-11 12:00:00',
     }),
     makeShare({
@@ -209,6 +213,7 @@ function sharesFixture() {
       artifact_filename: 'revoked.html', task_id: 'T-3', task_title: '任务C', project: '项目A',
       status: 'revoked', active: false, url: undefined, revoked_at: '2026-11-09 13:00:00',
       created_at: '2026-11-09 12:00:00', expires_at: '2026-11-12 12:00:00', pv: 1, uv: 1,
+      renewable: false,
     }),
     makeShare({
       id: 'S-4', artifact_id: 'A-4', artifact_title: '数据包', artifact_kind: 'file',
@@ -292,6 +297,7 @@ async function main() {
   // 3. 设置页入口 → 独立页面（不是弹窗），并加载跨任务列表
   let sharesData = sharesFixture();
   const deleted = [];
+  const renewed = [];
   w.__apiHandler = (reqPath, opts) => {
     if (reqPath === '/api/agent-board/shares' && (!opts.method || opts.method === 'GET')) {
       return { ok: true, shares: sharesData };
@@ -302,6 +308,17 @@ async function main() {
         ? Object.assign({}, s, { status: 'revoked', active: false, url: undefined, revoked_at: 'now' })
         : s));
       return { ok: true };
+    }
+    if (/^\/api\/agent-board\/shares\/[^/]+\/renew$/.test(reqPath) && opts.method === 'POST') {
+      const id = reqPath.split('/').slice(-2)[0];
+      renewed.push({ id, body: JSON.parse(opts.body) });
+      sharesData = sharesData.map((s) => (s.id === id
+        ? Object.assign({}, s, {
+          status: 'active', active: true, renewable: true,
+          expires_at: '2026-11-26 12:00:00',
+        })
+        : s));
+      return { ok: true, share: sharesData.find((s) => s.id === id) };
     }
     throw new Error('unexpected api ' + reqPath);
   };
@@ -422,6 +439,42 @@ async function main() {
     [...doc.querySelectorAll('#shares-summary .shares-count-chip')]
       .map((el) => el.textContent).join(',') === '全部 4,有效 1,已过期 1,已取消 2,PV 17 · UV 6');
 
+  // 11.5 续期：过期行保留原 URL，续期后原地恢复有效且 URL/PV/UV 不变
+  const expiredRow = doc.querySelector('#shares-list .shares-row[data-share-id="S-2"]');
+  check('过期行仍显示原 URL（不是「不可找回」）',
+    expiredRow.querySelector('.shares-url').textContent === 'https://deck.example/s/T2'
+    && expiredRow.querySelector('.shares-url').tagName !== 'A');
+  const renewSelect = expiredRow.querySelector('.shares-renew-days');
+  check('过期行有续期时长 1/3/7/永久',
+    !!renewSelect && [...renewSelect.options].map((o) => o.value).join(',') === '1,3,7,0');
+  const renewBtn = expiredRow.querySelector('.board-share-renew');
+  check('过期行有「续期」按钮', !!renewBtn && renewBtn.textContent === '续期');
+  check('永久链接没有续期控件（避免把永久改成有限期）',
+    !doc.querySelector('#shares-list .shares-row[data-share-id="S-1"] .board-share-renew'));
+  check('已取消链接没有续期按钮/不显示 URL',
+    !doc.querySelector('#shares-list .shares-row[data-share-id="S-3"] .board-share-renew')
+    && doc.querySelector('#shares-list .shares-row[data-share-id="S-3"] .shares-url')
+      .textContent.includes('不可找回'));
+
+  renewSelect.value = '3';
+  renewBtn.click();
+  await settle();
+  check('续期请求 POST /shares/S-2/renew 且 expiry_days=3',
+    renewed.length === 1 && renewed[0].id === 'S-2' && renewed[0].body.expiry_days === 3,
+    JSON.stringify(renewed));
+  const renewedRow = doc.querySelector('#shares-list .shares-row[data-share-id="S-2"]');
+  check('续期后原地变有效',
+    renewedRow.querySelector('.board-share-status').textContent === '有效'
+    && renewedRow.dataset.status === 'active');
+  check('续期后 URL 不变且可点击',
+    renewedRow.querySelector('.shares-link .shares-url').tagName === 'A'
+    && renewedRow.querySelector('.shares-link .shares-url').getAttribute('href') === 'https://deck.example/s/T2');
+  check('续期后 PV/UV 保留',
+    renewedRow.querySelector('.shares-pvuv').textContent === 'PV 4 · UV 2');
+  check('续期后计数更新',
+    [...doc.querySelectorAll('#shares-summary .shares-count-chip')]
+      .map((el) => el.textContent).join(',') === '全部 4,有效 2,已过期 0,已取消 2,PV 17 · UV 6');
+
   // 12. 空态
   w.__setShares([]);
   check('无分享时显示引导空态',
@@ -464,6 +517,9 @@ async function main() {
     && /\.shares-count-chip\.revoked/.test(css));
   check('CSS: 旧的抽屉内分享列表样式已移除',
     !/\.board-shares-list\s*\{/.test(css));
+  check('CSS: 续期控件内联排布',
+    /\.shares-renew\s*\{[^}]*display:\s*inline-flex/s.test(css)
+    && /\.shares-renew-days\s*\{/.test(css));
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);
