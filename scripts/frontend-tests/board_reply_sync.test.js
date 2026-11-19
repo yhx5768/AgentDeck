@@ -48,9 +48,10 @@ let boardReplyWaits = {};
 let boardTimelineFilter = 'all';
 const statuses = [];
 const panes = [];
+let pending = [];
 function boardComposerStatus(text, kind = '') { statuses.push({ text, kind }); }
 function boardShowPane(name) { panes.push(name); }
-function pendingItems() { return []; }
+function pendingItems() { return pending; }
 function boardMuted(text) { const el = document.createElement('div'); el.textContent = text; return el; }
 function md(text) { return text; }
 ${grabFn('boardTaskEvents')}
@@ -76,9 +77,11 @@ window.__x = {
     boardTimelineFilter = 'all';
     statuses.length = 0;
     panes.length = 0;
+    pending = [];
     state.boardSelectedId = 'T-1';
     document.querySelector('#board-drawer-timeline').innerHTML = '';
   },
+  setPending(n) { pending = Array.from({ length: n }, (_, i) => ({ id: 'p' + i })); },
 };
 `);
 
@@ -150,6 +153,15 @@ test('多张卡的等待状态互不干扰', () => {
   assert.strictEqual(x.boardReplySync(b), true);
   assert.strictEqual(x.boardReplySync(a), false, 'A 仍在等待');
   assert.ok(x.waits['T-A'], 'A 的等待状态保留');
+});
+
+test('还有排队消息时不把「已排队」提示盖成「回复中」', () => {
+  x.reset();
+  const task = { id: 'T-1', timeline: [] };
+  x.boardReplyMarkWait('T-1', []);
+  x.setPending(2);
+  assert.strictEqual(x.boardReplySync(task), false);
+  assert.strictEqual(x.statuses.length, 0, '排队提示不能被等待回复覆盖');
 });
 
 test('没有等待状态时不改 composer 状态；取消等待后也不再提示', () => {

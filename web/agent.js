@@ -40,7 +40,9 @@ const pa = {
   drafts: {},           // 条目 id -> 作答表单草稿（选项 / 文本 / 拒绝理由），轮询重绘不丢
   busy: {},             // 条目 id -> 正在提交
   err: {},              // 条目 id -> 上次提交的错误
-  cmp: { att: [], busy: false, status: '', kind: '', drafts: {}, wait: null },
+  // 留言框按卡片隔离：status 是 卡片 key -> {text,kind}，wait 是 taskId -> {baseline}。
+  // 切换卡片 / 在两张卡上分别留言时互不覆盖（'_' = 没选卡片的普通留言）。
+  cmp: { att: [], busy: false, status: {}, drafts: {}, wait: {} },
   setup: { cli: '', provider: '', model: '', cwd: '', name: '主 Agent', busy: false, err: '' },
   boardErr: '',
   asideOpen: true,
