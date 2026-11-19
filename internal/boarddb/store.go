@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1061,6 +1062,39 @@ func (s *Store) ListShares() ([]map[string]any, error) {
 		out = append(out, share.toMap())
 	}
 	return out, rows.Err()
+}
+
+// ErrShareRevoked is returned when renewing a link that was explicitly
+// cancelled. Revocation is final: its token stays dead, so the caller must
+// create a new share instead of resurrecting the old one.
+var ErrShareRevoked = errors.New("share revoked")
+
+// RenewShare moves a share's expiry without touching its identity: the share id
+// (and therefore the public URL token derived from it), token hash, creation
+// metadata and PV/UV history are all preserved, so an expired-but-not-revoked
+// link becomes usable again under its original URL. Revoked links cannot be
+// renewed — revocation is final.
+func (s *Store) RenewShare(id, expiresAt string) (map[string]any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, err := scanShare(s.db.QueryRow(shareSelect+" WHERE id=?", id))
+	if err != nil {
+		return nil, err
+	}
+	if share.RevokedAt != "" {
+		return nil, fmt.Errorf("%w: %s", ErrShareRevoked, id)
+	}
+	if _, err := s.db.Exec(`UPDATE artifact_shares SET expires_at=? WHERE id=?`, expiresAt, id); err != nil {
+		return nil, err
+	}
+	share.ExpiresAt = expiresAt
+	// Renewing must never reset the visit counters; read them back so the
+	// response matches what the management list will show.
+	if err := s.db.QueryRow(`SELECT COALESCE(SUM(hits),0), COUNT(DISTINCT visitor_hash)
+		FROM artifact_share_visitors WHERE share_id=?`, id).Scan(&share.PV, &share.UV); err != nil {
+		return nil, err
+	}
+	return share.toMap(), nil
 }
 
 // RevokeShare cancels a link immediately. Revoking an already-revoked share is

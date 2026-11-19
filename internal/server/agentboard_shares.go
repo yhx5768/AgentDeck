@@ -329,9 +329,34 @@ func (s *Server) handleAgentBoardCreateShare(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "share": share})
 }
 
+// decorateShare fills the management-view fields for one share: normalized
+// status, whether it can be renewed, and — for every share that has not been
+// revoked — the rebuilt public URL. Expired links keep their URL because the
+// token is derived from the share id: renewing only moves expires_at, so the
+// original link starts working again unchanged.
+func (s *Server) decorateShare(r *http.Request, share map[string]any, now time.Time) {
+	status := artifactShareStatus(stringArg(share, "expires_at"), stringArg(share, "revoked_at"), now)
+	share["status"] = status
+	share["active"] = status == "active"
+	share["renewable"] = status != "revoked"
+	if status == "revoked" {
+		return
+	}
+	id, _ := share["id"].(string)
+	token, err := s.artifactShareToken(id)
+	if err != nil {
+		return
+	}
+	if link, source := s.artifactShareURL(r, token); link != "" {
+		share["url"] = link
+		share["url_source"] = source
+		share["url_local_only"] = source == "listen"
+	}
+}
+
 // handleAgentBoardListShares lists every share (including revoked/expired, so
 // management can show what happened to each link) with a rebuilt public URL
-// for links that are still active.
+// for links that are still renewable (active or expired, never revoked).
 func (s *Server) handleAgentBoardListShares(w http.ResponseWriter, r *http.Request) {
 	st, ok := s.boardDBStore(w)
 	if !ok {
@@ -344,24 +369,52 @@ func (s *Server) handleAgentBoardListShares(w http.ResponseWriter, r *http.Reque
 	}
 	now := time.Now()
 	for _, share := range shares {
-		status := artifactShareStatus(stringArg(share, "expires_at"), stringArg(share, "revoked_at"), now)
-		share["status"] = status
-		share["active"] = status == "active"
-		if status != "active" {
-			continue
-		}
-		id, _ := share["id"].(string)
-		token, err := s.artifactShareToken(id)
-		if err != nil {
-			continue
-		}
-		if link, source := s.artifactShareURL(r, token); link != "" {
-			share["url"] = link
-			share["url_source"] = source
-			share["url_local_only"] = source == "listen"
-		}
+		s.decorateShare(r, share, now)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "shares": shares})
+}
+
+// handleAgentBoardRenewShare moves an existing share's expiry forward without
+// minting a new link: the share id (and thus its token/URL) is untouched, so an
+// expired link starts working again under its original URL with its PV/UV
+// history intact. A revoked link cannot be renewed (409).
+func (s *Server) handleAgentBoardRenewShare(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.boardDBStore(w)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	var body struct {
+		ExpiryDays *int `json:"expiry_days"`
+	}
+	if err := decode(r, &body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "请求体不是合法 JSON")
+		return
+	}
+	days := 0
+	if body.ExpiryDays != nil {
+		days = *body.ExpiryDays
+	}
+	expiresAt, valid := shareExpiryTimestamp(days)
+	if !valid {
+		writeErr(w, http.StatusBadRequest, "expiry_days 只支持 1 / 3 / 7 / null（永久）")
+		return
+	}
+	share, err := st.RenewShare(id, expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "分享不存在: "+id)
+		return
+	}
+	if errors.Is(err, boarddb.ErrShareRevoked) {
+		writeErr(w, http.StatusConflict, "分享已取消，不能续期；请重新创建分享")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "续期失败: "+err.Error())
+		return
+	}
+	s.decorateShare(r, share, time.Now())
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "share": share})
 }
 
 func (s *Server) handleAgentBoardRevokeShare(w http.ResponseWriter, r *http.Request) {

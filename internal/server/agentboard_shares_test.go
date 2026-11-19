@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func publishShareTestArtifact(t *testing.T, s *Server, taskID string, payload map[string]any) map[string]any {
@@ -292,6 +293,12 @@ func TestPublicShareRouteBypassesAuth(t *testing.T) {
 	s.mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("protected shares list = %d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "http://deck.local/api/agent-board/shares/abc/renew", strings.NewReader(`{}`))
+	rec = httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("protected share renew = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -645,5 +652,205 @@ func TestArtifactShareVisitPVUV(t *testing.T) {
 	}
 	if leftovers != 0 {
 		t.Fatalf("visitor rows survived share delete: %d", leftovers)
+	}
+}
+
+func renewShareTestRequest(s *Server, id string, body []byte) *httptest.ResponseRecorder {
+	req := artifactReq(http.MethodPost,
+		"http://deck.local/api/agent-board/shares/"+url.PathEscape(id)+"/renew", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	s.handleAgentBoardRenewShare(rec, req)
+	return rec
+}
+
+func decodeRenewedShare(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var out struct {
+		Share map[string]any `json:"share"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode renewed share: %v (%s)", err, rec.Body.String())
+	}
+	return out.Share
+}
+
+// TestArtifactShareRenewKeepsURLAndStats covers the renewal contract: moving
+// expires_at must revive the very same URL (share id/token hash untouched)
+// while keeping PV/UV, the list must already hand out the URL for expired rows
+// so the UI can offer 续期, and revocation stays final.
+func TestArtifactShareRenewKeepsURLAndStats(t *testing.T) {
+	s, _ := boardMCPServer(t)
+	createArtifactTestTask(t, s)
+	artifact := publishShareTestArtifact(t, s, "T-1", map[string]any{
+		"title": "续期报告", "kind": "html", "filename": "renew.html",
+		"content": "<!doctype html><html><body><h1>renewed</h1></body></html>",
+	})
+	artifactID, _ := artifact["id"].(string)
+
+	// Seed an expired-but-not-revoked share with two known visitors (2 + 1
+	// opens), so a renewal that cleared the counters would be visible.
+	id, _ := newArtifactShareID()
+	token, err := s.artifactShareToken(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.boardDB.CreateShare(map[string]any{
+		"id": id, "artifact_id": artifactID, "token_hash": artifactShareTokenHash(token),
+		"expires_at": "2020-01-01 00:00:00", "created_by": "tester",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	visitorA, _ := newShareVisitorID()
+	visitorB, _ := newShareVisitorID()
+	hashA, err := s.artifactShareVisitorHash(id, "cookie\x00"+visitorA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashB, err := s.artifactShareVisitorHash(id, "cookie\x00"+visitorB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hash := range []string{hashA, hashA, hashB} {
+		if err := s.boardDB.RecordShareVisit(id, hash); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Expired rows are already listed with their rebuilt URL and renewable=true
+	// — that is what lets the management UI offer 续期 without minting a link.
+	before := listedShare(t, s, id)
+	if before["status"] != "expired" || before["active"] != false || before["renewable"] != true {
+		t.Fatalf("expired share before renew = %+v", before)
+	}
+	beforeURL, _ := before["url"].(string)
+	if beforeURL == "" {
+		t.Fatalf("expired share has no rebuilt url: %+v", before)
+	}
+	if got := shareTokenFromURL(t, beforeURL); got != token {
+		t.Fatalf("rebuilt token = %q, want %q", got, token)
+	}
+	if pv, uv := sharePVUV(t, before); pv != 3 || uv != 2 {
+		t.Fatalf("seeded pv/uv = %d/%d, want 3/2", pv, uv)
+	}
+	rec := httptest.NewRecorder()
+	s.handleArtifactShare(rec, publicShareRequest(token))
+	if rec.Code != http.StatusGone {
+		t.Fatalf("expired public share = %d", rec.Code)
+	}
+	original, err := s.boardDB.GetShare(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Renew 7 days: same id/token/URL, counters intact, link active again.
+	rec = renewShareTestRequest(s, id, []byte(`{"expiry_days":7}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("renew = %d %s", rec.Code, rec.Body.String())
+	}
+	renewedShare := decodeRenewedShare(t, rec)
+	if renewedShare["id"] != id {
+		t.Fatalf("renewed id = %v, want %v", renewedShare["id"], id)
+	}
+	if renewedShare["status"] != "active" || renewedShare["active"] != true || renewedShare["renewable"] != true {
+		t.Fatalf("renewed share = %+v", renewedShare)
+	}
+	if renewedShare["url"] != beforeURL {
+		t.Fatalf("renewed url = %v, want unchanged %v", renewedShare["url"], beforeURL)
+	}
+	if pv, uv := sharePVUV(t, renewedShare); pv != 3 || uv != 2 {
+		t.Fatalf("renew reset pv/uv to %d/%d, want 3/2", pv, uv)
+	}
+	expiresAt, err := time.ParseInLocation("2006-01-02 15:04:05", stringArg(renewedShare, "expires_at"), time.Local)
+	if err != nil || !expiresAt.After(time.Now().Add(6*24*time.Hour)) {
+		t.Fatalf("renewed expires_at = %v (err=%v)", renewedShare["expires_at"], err)
+	}
+	renewedRow, err := s.boardDB.GetShare(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewedRow.TokenHash != original.TokenHash || renewedRow.ArtifactID != original.ArtifactID ||
+		renewedRow.CreatedBy != original.CreatedBy || renewedRow.CreatedAt != original.CreatedAt ||
+		renewedRow.RevokedAt != "" {
+		t.Fatalf("renew changed share identity: before=%+v after=%+v", original, renewedRow)
+	}
+	after := listedShare(t, s, id)
+	if after["status"] != "active" || after["expires_at"] != renewedShare["expires_at"] ||
+		after["url"] != beforeURL {
+		t.Fatalf("listed after renew = %+v", after)
+	}
+
+	// The original URL works again and keeps accumulating stats. Using
+	// visitorA's cookie hits the seeded hash: PV grows, UV stays 2.
+	rec = httptest.NewRecorder()
+	openReq := publicShareRequest(token)
+	openReq.AddCookie(&http.Cookie{Name: shareVisitorCookie, Value: visitorA})
+	s.handleArtifactShare(rec, openReq)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<h1>renewed</h1>") {
+		t.Fatalf("renewed public share = %d %q", rec.Code, rec.Body.String())
+	}
+	wantSharePVUV(t, s, id, 4, 2)
+
+	// Active shares can be renewed too — including to permanent.
+	active := createShareTestLink(t, s, artifactID, 1, http.StatusCreated)
+	activeID, _ := active["id"].(string)
+	activeURL, _ := active["url"].(string)
+	rec = renewShareTestRequest(s, activeID, []byte(`{"expiry_days":null}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("renew active to permanent = %d %s", rec.Code, rec.Body.String())
+	}
+	permanentShare := decodeRenewedShare(t, rec)
+	if permanentShare["status"] != "active" || permanentShare["active"] != true {
+		t.Fatalf("permanent renewed share = %+v", permanentShare)
+	}
+	if exp, _ := permanentShare["expires_at"].(string); exp != "" {
+		t.Fatalf("permanent renewed expires_at = %q", exp)
+	}
+	if permanentShare["url"] != activeURL {
+		t.Fatalf("permanent renewed url = %v, want %v", permanentShare["url"], activeURL)
+	}
+
+	// Invalid expiry values are rejected before touching the row.
+	for _, body := range []string{`{"expiry_days":2}`, `{"expiry_days":-1}`, `not json`} {
+		rec = renewShareTestRequest(s, id, []byte(body))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("renew with %s = %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	if got := listedShare(t, s, id); got["status"] != "active" || got["url"] != beforeURL {
+		t.Fatalf("invalid renew changed the share: %+v", got)
+	}
+
+	// Revocation is final: no URL in the list, renewal rejected with a clear
+	// error, and the public route stays 410.
+	revoked := createShareTestLink(t, s, artifactID, nil, http.StatusCreated)
+	revokedID, _ := revoked["id"].(string)
+	revokedToken := shareTokenFromURL(t, revoked["url"].(string))
+	req := artifactReq(http.MethodDelete, "http://deck.local/api/agent-board/shares/"+revokedID, nil)
+	req.SetPathValue("id", revokedID)
+	rec = httptest.NewRecorder()
+	s.handleAgentBoardRevokeShare(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d %s", rec.Code, rec.Body.String())
+	}
+	rec = renewShareTestRequest(s, revokedID, []byte(`{"expiry_days":7}`))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "已取消") {
+		t.Fatalf("renew revoked = %d %s", rec.Code, rec.Body.String())
+	}
+	revokedRow := listedShare(t, s, revokedID)
+	if revokedRow["status"] != "revoked" || revokedRow["renewable"] != false || revokedRow["url"] != nil {
+		t.Fatalf("revoked row after renew attempt = %+v", revokedRow)
+	}
+	rec = httptest.NewRecorder()
+	s.handleArtifactShare(rec, publicShareRequest(revokedToken))
+	if rec.Code != http.StatusGone {
+		t.Fatalf("revoked public share = %d", rec.Code)
+	}
+
+	// Unknown ids are a 404, not a silent success.
+	rec = renewShareTestRequest(s, "nope", []byte(`{"expiry_days":7}`))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("renew unknown = %d %s", rec.Code, rec.Body.String())
 	}
 }
