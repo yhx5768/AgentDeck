@@ -73,6 +73,6 @@ func (s *Server) onBoardTurnFinal(t runner.TurnFinal) {
 		return
 	}
 	if created {
-		s.broadcastAgentBoard()
+		s.broadcastAgentBoard(boardChange{TaskID: taskID, Kind: "reply"})
 	}
 }

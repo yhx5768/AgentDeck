@@ -102,7 +102,7 @@ func (s *Server) handleAgentBoardCreateTask(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.decorateTaskArtifacts(r, task)
-	s.broadcastAgentBoard()
+	s.broadcastAgentBoard(boardChange{TaskID: boardField(task, "id"), Kind: "create", Status: boardField(task, "status")})
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "task": task})
 }
 
@@ -130,7 +130,14 @@ func (s *Server) handleAgentBoardUpdateTask(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.decorateTaskArtifacts(r, task)
-	s.broadcastAgentBoard()
+	archived := false
+	if v, ok := patch["archived"].(bool); ok {
+		archived = v
+	}
+	s.broadcastAgentBoard(boardChange{
+		TaskID: r.PathValue("id"), Kind: "update",
+		Status: boardField(task, "status"), Archived: archived,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task": task})
 }
 
@@ -164,7 +171,7 @@ func (s *Server) handleAgentBoardBindWorker(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.decorateTaskArtifacts(r, task)
-	s.broadcastAgentBoard()
+	s.broadcastAgentBoard(boardChange{TaskID: taskID, Kind: "bind", Status: boardField(task, "status")})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task": task})
 }
 
@@ -251,15 +258,23 @@ func (s *Server) handleAgentBoardAppendEventDB(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if created {
-		s.broadcastAgentBoard()
+		s.broadcastAgentBoard(boardChange{TaskID: taskID, Kind: "event"})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "task_id": taskID, "at": body.At, "duplicate": !created,
 	})
 }
 
-func (s *Server) broadcastAgentBoard() {
+// broadcastAgentBoard publishes a lightweight delta. Callers pass the affected
+// task id whenever possible; an empty TaskID asks every client to resync the
+// full snapshot.
+func (s *Server) broadcastAgentBoard(ev boardChange) {
 	if s.boardHub != nil {
-		s.boardHub.broadcast()
+		s.boardHub.broadcast(ev)
 	}
+}
+
+func boardField(m map[string]any, key string) string {
+	value, _ := m[key].(string)
+	return value
 }

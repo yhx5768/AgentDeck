@@ -228,7 +228,7 @@ func (s *Server) handleAgentBoardCreateArtifact(w http.ResponseWriter, r *http.R
 		writeErr(w, status, err.Error())
 		return
 	}
-	s.broadcastAgentBoard()
+	s.broadcastAgentBoard(boardChange{TaskID: r.PathValue("id"), Kind: "artifact"})
 	writeJSON(w, status, map[string]any{"ok": true, "task_id": r.PathValue("id"), "artifact": artifact})
 }
 
@@ -446,7 +446,7 @@ func (s *Server) agentdeckPublishArtifact(sessionID string, args map[string]any)
 			"set public_base_url (or browser.trusted_origins) for remote access",
 			artifact["url"])
 	}
-	s.broadcastAgentBoard()
+	s.broadcastAgentBoard(boardChange{TaskID: strings.TrimSpace(taskID), Kind: "artifact"})
 	raw, err := json.MarshalIndent(map[string]any{
 		"ok": true, "task_id": strings.TrimSpace(taskID), "artifact": artifact,
 	}, "", "  ")
