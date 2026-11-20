@@ -3128,7 +3128,80 @@ function wcRow(label, value, mono) {
   return row;
 }
 
-// 展开态的内联详情：任务 ID、状态、progress、最近事件、标签。
+// 窄面板里省掉年份和秒（完整时间放 title）。非标准格式原样返回。
+function wcArtifactTime(value) {
+  const raw = String(value || '').trim();
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/);
+  return m ? `${m[2]}-${m[3]} ${m[4]}` : raw;
+}
+
+// 详情里的一条产物：类型徽标 + 标题 + 类型/大小/时间，有 URL 的整条可点开。
+// kind=url 用产物自己的分享链接；html/file 走 boardArtifactViewURL 换同源视图
+// 地址（跨 origin 的托管链接在新标签里没有登录 cookie，会被 401/CORS 拦掉）。
+// legacy report_file 没有 url，只展示路径信息。
+function wcArtifactItem(artifact) {
+  const a = artifact || {};
+  const href = a.legacy ? '' : (a.kind === 'url' ? (a.url || '') : boardArtifactViewURL(a));
+  const item = document.createElement(href ? 'a' : 'span');
+  item.className = 'wc-artifact' + (href ? ' wc-artifact-link' : '');
+  item.dataset.kind = a.kind || '';
+  if (href) {
+    item.href = href;
+    item.target = '_blank';
+    item.rel = 'noopener';
+    item.title = href;
+    item.setAttribute('aria-label', `打开产物：${a.title || a.filename || '未命名产物'}`);
+  }
+  const kind = document.createElement('span');
+  kind.className = 'wc-artifact-kind';
+  kind.textContent = boardArtifactKindLabel(a);
+  const main = document.createElement('span');
+  main.className = 'wc-artifact-main';
+  const title = document.createElement('span');
+  title.className = 'wc-artifact-title';
+  title.textContent = a.title || a.filename || '未命名产物';
+  title.title = title.textContent;
+  const meta = document.createElement('span');
+  meta.className = 'wc-artifact-meta';
+  const bits = [boardArtifactKindLabel(a)];
+  const size = boardArtifactSize(a.size);
+  if (size) bits.push(size);
+  if (a.created_at) bits.push(wcArtifactTime(a.created_at));
+  if (a.legacy) bits.push('未托管路径');
+  meta.textContent = bits.join(' · ');
+  meta.title = [a.filename, a.created_at].filter(Boolean).join(' · ');
+  main.append(title, meta);
+  item.append(kind, main);
+  if (href) {
+    const go = document.createElement('span');
+    go.className = 'wc-artifact-go';
+    go.textContent = '↗';
+    go.setAttribute('aria-hidden', 'true');
+    item.append(go);
+  }
+  return item;
+}
+
+// 详情里的「产物」行：0 个显示「—」，每个产物一条可点开的链接（最多列出全部）。
+function wcArtifactsRow(task) {
+  const row = document.createElement('div');
+  row.className = 'wc-row wc-artifacts';
+  const key = document.createElement('span');
+  key.className = 'wc-row-key';
+  key.textContent = '产物';
+  const val = document.createElement('span');
+  val.className = 'wc-row-val';
+  const artifacts = Array.isArray(task.artifacts) ? task.artifacts.filter(Boolean) : [];
+  if (artifacts.length) {
+    artifacts.forEach((artifact) => val.append(wcArtifactItem(artifact)));
+  } else {
+    val.textContent = '—';
+  }
+  row.append(key, val);
+  return row;
+}
+
+// 展开态的内联详情：任务 ID、状态、progress、最近事件、标签、产物。
 function wcTaskDetail(task) {
   const body = document.createElement('div');
   body.className = 'wc-card-body';
@@ -3158,7 +3231,7 @@ function wcTaskDetail(task) {
     val.textContent = '—';
   }
   tagRow.append(key, val);
-  body.append(tagRow);
+  body.append(tagRow, wcArtifactsRow(task));
   return body;
 }
 

@@ -6010,6 +6010,56 @@ html.pa-mode-pending body { visibility: hidden; }
 .wc-row-val.mono { font-family: var(--font-mono); font-size: 10.5px; }
 .wc-tags .wc-row-val { display: flex; flex-wrap: wrap; gap: 4px; }
 
+/* 产物：每条两行（标题 / 类型·大小·时间），有 URL 的整条可点开。窄面板内
+   标题和 meta 都单行省略，不撑破 340px 宽度。 */
+.wc-artifacts .wc-row-val { display: flex; flex-direction: column; gap: 4px; }
+.wc-artifact {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  text-decoration: none;
+}
+.wc-artifact-link { cursor: pointer; }
+.wc-artifact-link:hover { border-color: var(--accent); background: var(--accent-dim); }
+.wc-artifact-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wc-artifact-kind {
+  flex: none;
+  margin-top: 1px;
+  min-width: 16px;
+  padding: 0 3px;
+  border-radius: var(--r-sm);
+  background: var(--bg3);
+  color: var(--dim);
+  font-size: 9px;
+  line-height: 1.5;
+  text-align: center;
+}
+.wc-artifact-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.wc-artifact-title {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wc-artifact-meta {
+  color: var(--dim);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wc-artifact-go { flex: none; margin-top: 1px; color: var(--dim); font-size: 10px; }
+.wc-artifact-link:hover .wc-artifact-title,
+.wc-artifact-link:hover .wc-artifact-go { color: var(--accent); }
+
 .wc-empty {
   padding: var(--sp-7) var(--sp-4);
   text-align: center;

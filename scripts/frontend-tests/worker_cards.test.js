@@ -4,10 +4,12 @@
 //   ① 默认收起成窄轨（图标 + 卡片数 + 竖排标题），点开展开为面板；
 //   ② 只显示绑定到当前会话的看板卡（task.session / task.worker 两种匹配）；
 //   ③ 多张卡走手风琴：默认只展开最近更新的一张，同一时间最多一张；
-//   ④ 展开态内联显示任务 ID / 状态 / progress / last_event / 标签；
-//   ⑤ 展开状态与选中卡片按会话存 localStorage，切换会话互不影响；
-//   ⑥ 展开时订阅 /api/agent-board/events，收起/主 Agent 会话断开；
-//   ⑦ 零张卡显示空状态；主 Agent 会话整块隐藏。
+//   ④ 展开态内联显示任务 ID / 状态 / progress / last_event / 标签 / 产物；
+//   ⑤ 产物显示标题 + 类型/大小/时间，有 URL 的可点开（html 换同源视图地址，
+//      url 保持分享链接），legacy report_file 不可点，0 个产物显示「—」；
+//   ⑥ 展开状态与选中卡片按会话存 localStorage，切换会话互不影响；
+//   ⑦ 展开时订阅 /api/agent-board/events，收起/主 Agent 会话断开；
+//   ⑧ 零张卡显示空状态；主 Agent 会话整块隐藏。
 //
 // 局限：jsdom 不做布局。340px 宽度、窄屏覆盖层、遮罩、过渡手感验不了，
 // 这里钉的只有 DOM 契约、匹配规则和「什么时候连 SSE / 什么时候不连」。
@@ -110,6 +112,12 @@ ${grabFn('wcRail')}
 ${grabFn('wcHead')}
 ${grabFn('wcEmpty')}
 ${grabFn('wcRow')}
+${grabFn('boardArtifactSize')}
+${grabFn('boardArtifactKindLabel')}
+${grabFn('boardArtifactViewURL')}
+${grabFn('wcArtifactTime')}
+${grabFn('wcArtifactItem')}
+${grabFn('wcArtifactsRow')}
 ${grabFn('wcTaskDetail')}
 ${grabFn('wcTaskItem')}
 ${grabFn('wcRender')}
@@ -138,7 +146,13 @@ function check(name, cond, extra) {
 
 const TASKS = [
   { id: 'T-1', session: 's1', worker: 'w1', title: '实现面板', status: '进行中', progress: '60%', last_event: '刚更新了 CSS', updated_at: '2026-11-17 10:00', tags: ['前端', '面板'] },
-  { id: 'T-2', session: '', worker: 'w1', title: '补测试', status: '待人工', progress: '30%', last_event: '等待确认', updated_at: '2026-11-17 11:00', tags: ['测试'] },
+  { id: 'T-2', session: '', worker: 'w1', title: '补测试', status: '待人工', progress: '30%', last_event: '等待确认', updated_at: '2026-11-17 11:00', tags: ['测试'],
+    artifacts: [
+      { id: 'A-1', kind: 'html', title: '排查报告', filename: 'report.html', size: 19624, created_at: '2026-11-17 10:30:00', url: 'http://localhost/api/agent-board/artifacts/A-1' },
+      { id: 'A-2', kind: 'url', title: '分享链接', filename: 'share.url', size: 0, created_at: '2026-11-17 10:40:00', url: 'https://example.com/s/abc' },
+      { id: 'A-3', kind: 'html', title: '跨域报告', filename: 'cross.html', size: 2048, created_at: '2026-11-17 10:35:00', url: 'http://127.0.0.1:8321/api/agent-board/artifacts/A-3' },
+      { id: 'legacy-report', kind: 'file', title: '旧报告', filename: 'report.md', legacy: true, url: '', storage_path: '/tmp/report.md', created_at: '2026-11-16 09:00:00' },
+    ] },
   { id: 'T-3', session: 's2', worker: 'other', title: '别的任务', status: '新建', updated_at: '2026-11-17 12:00' },
   { id: 'T-4', session: '', worker: 'alice', title: '按名字绑定', status: '已完成', updated_at: '2026-11-17 09:00' },
 ];
@@ -209,6 +223,34 @@ async function main() {
   check('展开卡显示最近事件', detailText.includes('等待确认'));
   check('展开卡显示标签', [...openCard.querySelectorAll('.wc-card-body .board-tag')].map((t) => t.textContent).join(',') === '测试');
 
+  // ---- 产物：标题 / 类型 / 大小 / 时间，有 URL 的可点开 ----
+  check('详情里有产物行', openCard.querySelectorAll('.wc-card-body .wc-artifacts').length === 1);
+  const artifactItems = [...openCard.querySelectorAll('.wc-artifact')];
+  check('列出全部产物', artifactItems.length === 4, String(artifactItems.length));
+  const htmlArt = artifactItems.find((el) => el.textContent.includes('排查报告'));
+  check('HTML 产物显示标题 + 类型/大小/时间',
+    htmlArt && htmlArt.querySelector('.wc-artifact-title').textContent === '排查报告' &&
+    htmlArt.querySelector('.wc-artifact-meta').textContent === 'HTML · 19.2 KB · 11-17 10:30',
+    htmlArt && htmlArt.querySelector('.wc-artifact-meta').textContent);
+  check('HTML 产物可点开（同源视图地址）',
+    htmlArt && htmlArt.tagName === 'A' &&
+    htmlArt.getAttribute('href') === 'http://localhost/api/agent-board/artifacts/A-1');
+  check('新标签打开且断 opener',
+    htmlArt && htmlArt.target === '_blank' && htmlArt.rel === 'noopener');
+  const crossArt = artifactItems.find((el) => el.textContent.includes('跨域报告'));
+  check('托管产物跨 origin 时换成当前页面 origin',
+    crossArt && crossArt.getAttribute('href') === 'http://localhost/api/agent-board/artifacts/A-3',
+    crossArt && crossArt.getAttribute('href'));
+  const urlArt = artifactItems.find((el) => el.dataset.kind === 'url');
+  check('url 产物保持分享链接', urlArt && urlArt.tagName === 'A' &&
+    urlArt.getAttribute('href') === 'https://example.com/s/abc');
+  check('url 产物类型显示为链接',
+    urlArt && urlArt.querySelector('.wc-artifact-kind').textContent === '链接');
+  const legacyArt = artifactItems.find((el) => el.textContent.includes('旧报告'));
+  check('legacy 产物不可点', legacyArt && legacyArt.tagName === 'SPAN' && !legacyArt.hasAttribute('href'));
+  check('legacy 产物标注未托管路径',
+    legacyArt && legacyArt.querySelector('.wc-artifact-meta').textContent.includes('未托管路径'));
+
   // ---- 手风琴：点另一张切换，同一时间只有一张 ----
   cards.find((c) => c.dataset.taskId === 'T-1').querySelector('.wc-card-head').click();
   cards = [...panel().querySelectorAll('.wc-card')];
@@ -217,6 +259,9 @@ async function main() {
   check('选中卡片按会话存 localStorage', w.localStorage.getItem('cc-webui:wc-card:s1') === 'T-1');
   check('切卡后详情跟着换', opens[0].querySelector('.wc-card-body').textContent.includes('实现面板') === false &&
     opens[0].querySelector('.wc-card-body').textContent.includes('60%'));
+  const emptyArtifactRow = opens[0].querySelector('.wc-card-body .wc-artifacts');
+  check('无产物显示「—」', !!emptyArtifactRow &&
+    emptyArtifactRow.querySelector('.wc-row-val').textContent === '—');
 
   // 点当前展开的卡 → 全部收起（存哨兵值，刷新后不会又自动展开第一张）
   opens[0].querySelector('.wc-card-head').click();
@@ -265,7 +310,8 @@ async function main() {
   w.__nextBoard = {
     tasks: [
       { id: 'T-2', session: 's1', worker: 'w1', title: '补测试（新）', status: '已完成', updated_at: '2026-11-17 13:00' },
-      { id: 'T-9', session: 's1', worker: 'w1', title: '新绑定的卡', status: '新建', updated_at: '2026-11-17 14:00' },
+      { id: 'T-9', session: 's1', worker: 'w1', title: '新绑定的卡', status: '新建', updated_at: '2026-11-17 14:00',
+        artifacts: [{ id: 'A-9', kind: 'html', title: '刷新后的产物', size: 10, created_at: '2026-11-17 14:00:00', url: 'http://localhost/api/agent-board/artifacts/A-9' }] },
     ],
   };
   w.__apiCalls = [];
@@ -274,6 +320,8 @@ async function main() {
   check('看板 SSE 触发重新拉取快照', w.__apiCalls.includes('/api/agent-board'));
   check('刷新后卡片列表更新', [...panel().querySelectorAll('.wc-card')].map((c) => c.dataset.taskId).join(',') === 'T-9,T-2');
   check('刷新后默认展开最新那张', panel().querySelector('.wc-card.wc-open').dataset.taskId === 'T-9');
+  check('刷新后产物跟着更新',
+    panel().querySelector('.wc-card.wc-open .wc-artifact-title').textContent === '刷新后的产物');
 
   // ---- 收起面板断开 SSE ----
   const liveEs = state.workerCardsEs;
