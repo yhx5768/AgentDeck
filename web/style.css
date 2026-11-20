@@ -1919,6 +1919,110 @@ body.html-fs-open { overflow: hidden; }
   max-height: 200px;
 }
 
+/* ---------- Code Mode（opencode execute）：结构化步骤卡 ----------
+   execute 的 JS 源码收进卡尾折叠块，正文只列「建卡 / 建会话 / 发送」这些
+   人话步骤；含 send_message 时沿用 .tool-peer-send 的紫色描边与 A2A 折叠。 */
+.code-mode-body { font-family: var(--font-sans); white-space: normal; }
+.cm-head { flex-wrap: wrap; }
+.cm-badge {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg3);
+}
+.cm-steps {
+  list-style: none;
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+}
+.cm-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+.cm-step + .cm-step { border-top: 1px dashed color-mix(in srgb, var(--border) 65%, transparent); }
+.cm-step-idx {
+  flex: none;
+  width: 1.6em;
+  padding-top: 2px;
+  text-align: right;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.cm-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.cm-t-board .cm-dot { background: var(--accent); }
+.cm-t-session .cm-dot { background: var(--green); }
+.cm-t-send .cm-dot { background: var(--thinking); }
+.cm-step-main { min-width: 0; }
+.cm-step-label { color: var(--fg); }
+.cm-t-board .cm-step-label { color: var(--accent); }
+.cm-t-session .cm-step-label { color: var(--green); }
+.cm-t-send .cm-step-label { color: var(--thinking); }
+.cm-step-detail {
+  margin-left: var(--sp-1);
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.cm-raw {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--border);
+}
+.cm-raw > summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--dim);
+  font-size: var(--fs-xs);
+  user-select: none;
+}
+.cm-raw > summary::-webkit-details-marker { display: none; }
+.cm-raw > summary:hover { color: var(--fg); }
+.cm-raw[open] > summary { margin-bottom: var(--sp-2); }
+.cm-raw pre.cm-code {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  white-space: pre;
+}
+.peer-send-note { color: var(--dim); font-size: var(--fs-sm); font-style: italic; }
+.cm-msg-wrap { margin-bottom: var(--sp-2); }
+.peer-send-msg.clip {
+  max-height: 7.5em;
+  overflow: hidden;
+}
+.cm-msg-toggle {
+  margin-top: var(--sp-1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.cm-msg-toggle:hover { text-decoration: underline; }
+
 /* ---------- partial streaming（--include-partial-messages 的增量气泡） ---------- */
 @keyframes stream-blink { 50% { opacity: 0; } }
 .msg-assistant .bubble.streaming::after,

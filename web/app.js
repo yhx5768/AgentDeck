@@ -6972,6 +6972,13 @@ function toolSummary(input) {
   if (input.pattern) return input.pattern;
   if (input.url) return input.url;
   if (input.prompt) return String(input.prompt).slice(0, 120);
+  // opencode Code Mode：真正的工具调用埋在 input.code 里。摘要给「N 步 · 建卡
+  // → 建会话 → 发送」，别把整段 JS 塞进折叠行（派工卡由 a2aSendInfo 另行覆盖）。
+  if (typeof input.code === 'string') {
+    const cm = codeModeOf('execute', input);
+    if (cm) return codeModeSummary(cm.calls);
+    return `Code Mode · ${input.code.split('\n').length} 行`;
+  }
   // SendMessage（常驻会话间通信）：收件人 + 正文预览。summary 是模型给的
   // 5-10 词预览，优先于自己截断正文；轨迹视图也复用这条摘要。
   if (typeof input.to === 'string' && typeof input.message === 'string') {
@@ -7003,7 +7010,7 @@ function renderToolUse(block, box, ts, raw) {
   // a2aSendInfo 能认出来；摘要统一成「⇢ 收件人 · 预览」。
   const a2aSend = a2aSendInfo(bn, block.input);
   summary.querySelector('.tool-summary-text').textContent = a2aSend
-    ? `⇢ ${a2aSend.to || '…'}${a2aSend.message ? ' · ' + a2aSend.message.trim().replace(/\s+/g, ' ').slice(0, 80) : ''}`
+    ? `⇢ ${a2aSend.to || '…'}${a2aSend.message ? ' · ' + cmDisplayText(a2aSend.message).trim().replace(/\s+/g, ' ').slice(0, 80) : ''}`
     : toolSummary(block.input);
   const body = document.createElement('div');
   body.className = 'tool-body';
@@ -7065,6 +7072,15 @@ function buildToolView(block, details, body) {
     body.appendChild(buildTaskToolView(input || {}));
     return true;
   }
+  // opencode Code Mode：execute 的 input.code 里可能包着好几种 agentdeck 调用
+  //（派工就是 board_list / board_create / new_session / bind / comment / update /
+  // send_message 一大串）。整段 JS 摊在对话流里又长又难读，所以渲染成结构化
+  // 步骤卡，原始代码收进卡尾的折叠块。单条纯 send_message 仍走下面的发件卡，
+  // 保持与 claude 原生 SendMessage 一致的紫色样式和 Personal Agent 折叠规则。
+  const cm = codeModeOf(name, input);
+  if (cm && !(cm.calls.length === 1 && isA2ASendCall(cm.calls[0]))) {
+    return buildCodeModeView(cm, details, body);
+  }
   // 出站 A2A：claude 原生 SendMessage、agentdeck MCP 的 send_message
   //（mcp__agentdeck__send_message / agentdeck.send_message），或 opencode Code
   // Mode 里包在 execute 代码里的调用——都渲染成同一张「发件」卡片。
@@ -7098,6 +7114,142 @@ function buildToolView(block, details, body) {
   return false;
 }
 
+// 收件人 chip：是本控制台托管的会话时可点击跳过去看对方怎么处理。
+function buildPeerChip(to) {
+  const chip = document.createElement('span');
+  chip.className = 'peer-send-to';
+  chip.textContent = to;
+  const peer = findPeerSession(to);
+  if (peer) {
+    chip.classList.add('peer-send-to-link');
+    chip.title = `打开会话「${peer.name}」`;
+    chip.onclick = () => openSession(peer.id);
+  } else {
+    chip.title = `地址名 ${to}`;
+  }
+  return chip;
+}
+
+// 原始代码折叠块：Code Mode 的 JS 永远保留可查，但默认收起——直接摊开一大段
+// `const taskCwd...` 正是用户反馈「发任务很丑」的来源。
+function buildRawCodeDetails(code, label) {
+  const raw = document.createElement('details');
+  raw.className = 'cm-raw';
+  const summary = document.createElement('summary');
+  const lines = String(code || '').split('\n').length;
+  summary.textContent = `${label || '查看代码'} · ${lines} 行`;
+  const pre = document.createElement('pre');
+  pre.className = 'cm-code';
+  pre.textContent = String(code || '');
+  raw.append(summary, pre);
+  return raw;
+}
+
+// 派工单正文默认只露前几行：真实派工消息常带任务说明 + 路由信息 + Worker
+// 规则，整段铺开会把真正的「发给谁 / 做了哪几步」压下去。点一下展开全文。
+function buildCodeModeMessage(message) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cm-msg-wrap';
+  const msg = document.createElement('div');
+  msg.className = 'peer-send-msg';
+  // 先按可读形态渲染：解不出的 ${taskId} 显示成 …，等工具回执回来再由
+  // cmApplyResult 用原始模板重新渲染成真实卡号。绝不让字面量 ${taskId}
+  // 出现在正文里（用户反馈的就是这个）。
+  msg.innerHTML = md(cmDisplayText(message));
+  wrap.appendChild(msg);
+  const lines = String(message || '').split('\n').length;
+  if (String(message || '').length > 420 || lines > 6) {
+    msg.classList.add('clip');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'cm-msg-toggle';
+    btn.textContent = `展开派工单（${lines} 行）`;
+    btn.addEventListener('click', () => {
+      const clipped = msg.classList.toggle('clip');
+      btn.textContent = clipped ? `展开派工单（${lines} 行）` : '收起派工单';
+    });
+    wrap.appendChild(btn);
+  }
+  return wrap;
+}
+
+// opencode Code Mode 的 execute 卡：把 input.code 里的每一步 agentdeck 调用
+// 摊成「看板 · 建卡 / 新建会话 / 发送消息…」的人话列表。含 send_message 时
+// 保留发件卡语义（tool-peer-send + 收件人 / 正文），Personal Agent 仍会把它
+// 归进 A2A 发送组；原始 JS 收进卡尾折叠块。
+function buildCodeModeView(cm, details, body) {
+  const calls = (cm && cm.calls) || [];
+  if (!calls.length) return false;
+  const send = [...calls].reverse().find(isA2ASendCall);
+  const to = send ? cmArgText(send.args.to) : '';
+  const message = send ? cmArgText(send.args.message) : '';
+  const sendRef = send ? (cmArgText(send.args.send_id) || cmArgText(send.args.task_id)) : '';
+  details.classList.add('tool-code-mode');
+  body.classList.add('code-mode-body');
+  // 这条 execute 里包含 A2A 发送：沿用发件卡的 class / data 字段，让
+  // Personal Agent 的 A2A 发送组（agent-fold.js）仍能识别、汇总、折叠。
+  if (send) {
+    details.classList.add('tool-peer-send');
+    details.dataset.peerSendTo = to;
+    if (sendRef) details.dataset.peerSendId = sendRef;
+    body.classList.add('peer-send-body');
+    details.__cmMessage = message;
+  }
+  const head = document.createElement('div');
+  head.className = 'peer-send-head cm-head';
+  if (to) {
+    const arrow = document.createElement('span');
+    arrow.className = 'peer-send-arrow';
+    arrow.textContent = '⇢';
+    head.append(arrow, buildPeerChip(to));
+  }
+  const badge = document.createElement('span');
+  badge.className = 'cm-badge';
+  badge.textContent = `${calls.length} 步工具调用`;
+  head.appendChild(badge);
+  body.appendChild(head);
+  if (message) {
+    body.appendChild(buildCodeModeMessage(message));
+  } else if (send) {
+    const note = document.createElement('div');
+    note.className = 'peer-send-note';
+    note.textContent = '消息正文是运行时变量，没能静态解析出来；可展开下方代码查看。';
+    body.appendChild(note);
+  }
+  const list = document.createElement('ol');
+  list.className = 'cm-steps';
+  calls.forEach((call, idx) => {
+    const info = codeModeStepInfo(call);
+    const li = document.createElement('li');
+    li.className = 'cm-step cm-t-' + info.type;
+    const n = document.createElement('span');
+    n.className = 'cm-step-idx';
+    n.textContent = String(idx + 1);
+    const dot = document.createElement('span');
+    dot.className = 'cm-dot';
+    const main = document.createElement('span');
+    main.className = 'cm-step-main';
+    const label = document.createElement('span');
+    label.className = 'cm-step-label';
+    label.textContent = info.label;
+    main.appendChild(label);
+    if (info.detail) {
+      const detail = document.createElement('span');
+      detail.className = 'cm-step-detail';
+      detail.textContent = info.detail;
+      main.appendChild(detail);
+    }
+    li.append(n, dot, main);
+    list.appendChild(li);
+  });
+  body.appendChild(list);
+  body.appendChild(buildRawCodeDetails(cm.code, '查看 JS 代码'));
+  // 派工 / 多步链路默认展开（要看的是步骤，不是代码）；单条只读操作保持折叠，
+  // 折叠行摘要已经写清楚做了什么。
+  details.open = Boolean(send) || calls.length > 1;
+  return true;
+}
+
 // SendMessage（常驻会话间通信）：把一次调用渲染成"发件"卡片，与入站 msg-peer
 // 气泡同一紫色系，进出两向在对话流里成对可读。折叠行只留收件人 + 预览
 // （toolSummary 那条），展开是收件人 + 正文 markdown；投递结果由
@@ -7116,35 +7268,70 @@ function buildPeerSendView(input, details, body) {
     const arrow = document.createElement('span');
     arrow.className = 'peer-send-arrow';
     arrow.textContent = '⇢';
-    const chip = document.createElement('span');
-    chip.className = 'peer-send-to';
-    chip.textContent = to;
-    // 收件人是本控制台托管的会话时，点地址名直接跳过去看对方怎么处理
-    const peer = findPeerSession(to);
-    if (peer) {
-      chip.classList.add('peer-send-to-link');
-      chip.title = `打开会话「${peer.name}」`;
-      chip.onclick = () => openSession(peer.id);
-    } else {
-      chip.title = `地址名 ${to}`;
-    }
-    head.append(arrow, chip);
+    head.append(arrow, buildPeerChip(to));
     body.appendChild(head);
   }
   const msg = document.createElement('div');
   msg.className = 'peer-send-msg';
-  if (!input.native && input.code && input.message === input.code) {
-    // opencode 的 execute 包装：没能从代码里抽出正文（多行 / 带转义），原样
-    // 显示代码，别当 markdown 渲染。
-    const pre = document.createElement('pre');
-    pre.textContent = input.code;
-    msg.appendChild(pre);
-  } else {
-    msg.innerHTML = md(input.message || '');
+  // 代码里抽不出正文时（运行时变量 / 被截断的代码）不把整段 JS 当 message
+  // 渲染——这正是旧实现在派工卡里摊开 `const taskCwd...` 的原因。
+  const hasMessage = Boolean(input.message && input.message !== input.code);
+  if (hasMessage) {
+    // 同 buildCodeModeView：先隐藏未求值的模板占位符，回执到了再填真实值。
+    msg.innerHTML = md(cmDisplayText(input.message));
+  } else if (!input.native && input.code) {
+    const note = document.createElement('div');
+    note.className = 'peer-send-note';
+    note.textContent = '消息正文是运行时变量，没能静态解析出来；可展开下方代码查看。';
+    msg.appendChild(note);
   }
   body.appendChild(msg);
+  if (!input.native && input.code && !hasMessage) {
+    body.appendChild(buildRawCodeDetails(input.code, '查看 JS 代码'));
+  }
+  details.__cmMessage = hasMessage ? input.message : '';
   details.open = true;
   return true;
+}
+
+// execute 返回的 JSON 里常带 card_id / worker / session：消息正文里的
+// ${taskId} 这类占位符在工具完成时补成真实值，收件人 / 任务 id 也一并补上。
+// 解析失败（不是 JSON）静默跳过，不影响正常结果展示。
+function cmApplyResult(target, text) {
+  if (!target || typeof text !== 'string') return;
+  let obj;
+  try { obj = JSON.parse(text.trim()); } catch (_) { return; }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+  const cardId = String(obj.card_id || obj.task_id || obj.taskId || '');
+  const worker = String(obj.worker || obj.worker_peer || obj.to || '');
+  const session = String(obj.session || obj.session_id || obj.sessionId || '');
+  if (worker) {
+    if (!target.dataset.peerSendTo) target.dataset.peerSendTo = worker;
+    const chip = target.querySelector('.peer-send-head .peer-send-to');
+    if (chip && !chip.textContent.trim()) chip.textContent = worker;
+  }
+  if (cardId) {
+    const cur = String(target.dataset.peerSendId || '');
+    target.dataset.peerSendId = cur ? cur.replace(/\$\{taskId\}/g, cardId) : cardId;
+  }
+  const tpl = target.__cmMessage;
+  let filled = '';
+  if (typeof tpl === 'string' && /\$\{/.test(tpl) && (cardId || worker || session)) {
+    filled = tpl
+      .replace(/\$\{taskId\}/g, cardId)
+      .replace(/\$\{workerPeer\}/g, worker)
+      .replace(/\$\{workerSession\}/g, session);
+    const msg = target.querySelector('.peer-send-msg');
+    if (msg) msg.innerHTML = md(filled);
+  }
+  // 折叠行摘要也补上真实卡号（之前只显示「【派工】…」）。
+  if (filled) {
+    const sum = target.querySelector(':scope > summary .tool-summary-text');
+    if (sum) {
+      const line = filled.trim().replace(/\s+/g, ' ').slice(0, 80);
+      sum.textContent = `⇢ ${target.dataset.peerSendTo || '…'} · ${line}`;
+    }
+  }
 }
 
 // 按地址名找本控制台托管的会话：`name [ref]` 的 ref 只在同名多活时消歧，
@@ -7411,6 +7598,12 @@ function renderToolResult(block, box, raw) {
   };
   const target = block.tool_use_id && state.toolBlocks[block.tool_use_id];
   if (target) {
+    // Code Mode 的 execute 回执是 JSON（card_id / worker / session）：先把消息
+    // 正文里的 ${taskId} 之类补成真实值，再按普通工具结果追加。单条
+    // send_message 的 execute 卡同理（native SendMessage 的回执不是 JSON，会静默跳过）。
+    if (target.classList.contains('tool-code-mode') || target.classList.contains('tool-peer-send')) {
+      cmApplyResult(target, text);
+    }
     // TodoWrite 的结果固定是 "Todos have been modified…"，无信息量，不展示
     if (target.classList.contains('tool-todo')) { finalizeTool(target, !!block.is_error); return; }
     // Task* 的成功结果同理（"Task #N created successfully"），面板已反映状态；

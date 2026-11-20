@@ -62,12 +62,438 @@ function isA2ASendTool(name) {
   return n.includes('agentdeck') && n.includes('send_message');
 }
 
+// ---------- Code Mode ----------
+// opencode 的 Code Mode 把所有工具调用都记成一条 execute，真正的调用埋在
+// input.code 里（await tools.agentdeck.board_create({...})）。直接摊开这段 JS
+// 又长又难读，所以这里做一层轻量解析：认出每一处
+// tools.<server>.<tool>({...})，并把字面量 / 简单 const 变量还原成参数值。
+// 目标只是「让人读得懂这次调用做了什么」，不是完整的 JS 求值器——解析不出的
+// 表达式（运行时变量、成员访问、函数调用）一律留空，由渲染层降级。
+//
+// 之所以放在 trajectory.js：轨迹视图与对话流都要用同一套判定，且它在 app.js
+// 之前加载，两个脚本共享顶层作用域。
+
+// 跳过一段引号包住的文本（含模板字符串里的 ${...}），返回收尾引号之后的下标。
+function cmSkipQuoted(src, i) {
+  const q = src[i];
+  i++;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '\\') { i += 2; continue; }
+    if (q === '`' && c === '$' && src[i + 1] === '{') {
+      i = cmSkipBalanced(src, i + 1, '{', '}');
+      continue;
+    }
+    if (c === q) return i + 1;
+    i++;
+  }
+  return i;
+}
+
+// 从开括号（open 字符）起找配对的闭括号，返回闭括号之后的下标。
+// 跳过字符串、模板字符串、行注释与块注释，避免把字符串里的括号算进层级。
+function cmSkipBalanced(src, i, open, close) {
+  let depth = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === '`') { i = cmSkipQuoted(src, i); continue; }
+    if (c === '/' && src[i + 1] === '/') {
+      const e = src.indexOf('\n', i + 2);
+      i = e < 0 ? src.length : e;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2);
+      i = e < 0 ? src.length : e + 2;
+      continue;
+    }
+    if (c === open) depth++;
+    else if (c === close) { depth--; if (depth === 0) return i + 1; }
+    i++;
+  }
+  return i;
+}
+
+// 顶部层级按分隔符切分（逗号、|| 等），跳过字符串与嵌套括号。
+function cmSplitTop(src, token) {
+  const out = [];
+  let start = 0;
+  let i = 0;
+  let depth = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === '`') { i = cmSkipQuoted(src, i); continue; }
+    if (c === '/' && src[i + 1] === '/') {
+      const e = src.indexOf('\n', i + 2);
+      i = e < 0 ? src.length : e;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2);
+      i = e < 0 ? src.length : e + 2;
+      continue;
+    }
+    if (depth === 0 && src.startsWith(token, i)) {
+      out.push(src.slice(start, i));
+      i += token.length;
+      start = i;
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    i++;
+  }
+  if (src.slice(start).trim()) out.push(src.slice(start));
+  return out;
+}
+
+// JS 字符串字面量的常见转义；未知转义原样保留。
+function cmUnescape(s) {
+  return String(s).replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|n|r|t|b|f|v|0|\\|'|"|`|\r?\n)/g,
+    (m, e) => {
+      if (e[0] === 'u' || e[0] === 'x') return String.fromCharCode(parseInt(e.slice(1), 16));
+      const map = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', 0: '\0' };
+      if (Object.prototype.hasOwnProperty.call(map, e)) return map[e];
+      if (e === '\\') return '\\';
+      if (e === "'" || e === '"' || e === '`') return e;
+      return ''; // 行尾续行
+    });
+}
+
+const CM_MAX_VALUE = 4000;
+
+// 尽力求值一个「静态可读」的表达式：字符串 / 模板 / 数字 / 布尔 / 数组 /
+// 标识符（查 const 表）/ 顶层 ||、?? 链。返回 string、number、boolean、
+// string[]，求不出返回 null。
+function cmEvalValue(expr, vars) {
+  let s = String(expr == null ? '' : expr).trim().replace(/;\s*$/, '').trim();
+  if (!s || s.length > 20000) return null;
+  // 顶层 || / ??：opencode 生成代码常用 worker.address || worker.peer_name || workerName
+  // 这种回退链，取第一个能静态解出的分支就够了。
+  for (const op of ['||', '??']) {
+    const parts = cmSplitTop(s, op);
+    if (parts.length > 1) {
+      for (const part of parts) {
+        const v = cmEvalValue(part, vars);
+        if (v != null && v !== '') return v;
+      }
+      return null;
+    }
+  }
+  // 括号表达式
+  if (s[0] === '(' && cmSkipBalanced(s, 0, '(', ')') === s.length) {
+    return cmEvalValue(s.slice(1, -1), vars);
+  }
+  // 引号 / 模板字符串
+  const q = s[0];
+  if (q === '"' || q === "'" || q === '`') {
+    const end = cmSkipQuoted(s, 0);
+    if (end !== s.length) return null;
+    let body = s.slice(1, -1);
+    if (q === '`') {
+      body = body.replace(/\$\{([\s\S]*?)\}/g, (m, ex) => {
+        const v = cmEvalValue(ex, vars);
+        return v == null ? m : String(v); // 解不出的占位符原样保留，渲染时再补
+      });
+    }
+    const out = cmUnescape(body);
+    return out.length > CM_MAX_VALUE ? out.slice(0, CM_MAX_VALUE) + '…' : out;
+  }
+  // 数组：只保留全部元素都能解出的情况（tags / questions 之类够用）
+  if (s[0] === '[') {
+    const end = cmSkipBalanced(s, 0, '[', ']');
+    if (end !== s.length) return null;
+    const items = cmSplitTop(s.slice(1, -1), ',').map((x) => cmEvalValue(x, vars));
+    return items.every((v) => v != null) ? items : null;
+  }
+  if (/^-?\d+(?:\.\d+)?$/.test(s)) return Number(s);
+  if (s === 'true') return true;
+  if (s === 'false') return false;
+  if (s === 'null') return null;
+  // 标识符：查 const 表
+  if (/^[A-Za-z_$][\w$]*$/.test(s)) {
+    return Object.prototype.hasOwnProperty.call(vars, s) ? vars[s] : null;
+  }
+  return null;
+}
+
+// 一条 const/let/var 声明到哪个下标结束（顶层 ; 或换行；跳过字符串/括号）。
+function cmStatementEnd(src, i) {
+  let depth = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === '`') { i = cmSkipQuoted(src, i); continue; }
+    if (c === '/' && src[i + 1] === '/') {
+      const e = src.indexOf('\n', i + 2);
+      i = e < 0 ? src.length : e;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2);
+      i = e < 0 ? src.length : e + 2;
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') { if (depth === 0) return i; depth--; }
+    else if (c === ';' && depth === 0) return i;
+    else if (c === '\n' && depth === 0) {
+      const before = src.slice(0, i).trimEnd();
+      if (!/[=+\-*/%&|?:,.(\[{]$/.test(before)) return i;
+    }
+    i++;
+  }
+  return src.length;
+}
+
+// 扫一遍代码里的 const/let/var 简单声明，按出现顺序求值，供后面的调用参数引用。
+function cmCollectVars(code) {
+  const vars = {};
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i];
+    if (c === '"' || c === "'" || c === '`') { i = cmSkipQuoted(code, i); continue; }
+    if (c === '/' && code[i + 1] === '/') {
+      const e = code.indexOf('\n', i + 2);
+      i = e < 0 ? code.length : e;
+      continue;
+    }
+    if (c === '/' && code[i + 1] === '*') {
+      const e = code.indexOf('*/', i + 2);
+      i = e < 0 ? code.length : e + 2;
+      continue;
+    }
+    if ((c === 'c' || c === 'l' || c === 'v') && (i === 0 || !/[\w$]/.test(code[i - 1]))) {
+      const m = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/.exec(code.slice(i));
+      if (m) {
+        const exprStart = i + m[0].length;
+        const end = cmStatementEnd(code, exprStart);
+        const v = cmEvalValue(code.slice(exprStart, end), vars);
+        if (v == null) delete vars[m[1]];
+        else vars[m[1]] = v;
+        i = end;
+        continue;
+      }
+    }
+    i++;
+  }
+  return vars;
+}
+
+// 解析一个对象实参：{ a: "x", b: 2, tags: ["a"], message }。只收能静态解出的字段。
+function cmParseArgs(src, vars) {
+  const out = {};
+  let t = String(src || '').trim();
+  if (!t) return out;
+  if (t[0] === '(') t = t.slice(1, cmSkipBalanced(t, 0, '(', ')') - 1).trim();
+  let body = t;
+  if (t[0] === '{') {
+    const end = cmSkipBalanced(t, 0, '{', '}');
+    if (end !== t.length) return out;
+    body = t.slice(1, -1);
+  } else {
+    return out;
+  }
+  for (const part of cmSplitTop(body, ',')) {
+    const p = part.trim();
+    if (!p) continue;
+    // 找顶层冒号；没有冒号的是 shorthand（{ message }）。
+    let colon = -1;
+    let depth = 0;
+    let i = 0;
+    while (i < p.length) {
+      const c = p[i];
+      if (c === '"' || c === "'" || c === '`') { i = cmSkipQuoted(p, i); continue; }
+      if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' || c === ']' || c === '}') depth--;
+      else if (c === ':' && depth === 0) { colon = i; break; }
+      i++;
+    }
+    if (colon < 0) {
+      if (/^[A-Za-z_$][\w$]*$/.test(p) && Object.prototype.hasOwnProperty.call(vars, p)) out[p] = vars[p];
+      continue;
+    }
+    const key = p.slice(0, colon).trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(key)) continue;
+    const v = cmEvalValue(p.slice(colon + 1), vars);
+    if (v != null) out[key] = v;
+  }
+  return out;
+}
+
+// 识别代码里的工具调用：tools.<server>.<tool>({...})。返回
+// [{server, tool, args, raw}]，按出现顺序。
+function codeModeCalls(code) {
+  if (typeof code !== 'string' || !code || code.length > 400000) return [];
+  const vars = cmCollectVars(code);
+  const re = /tools\s*\.\s*([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/y;
+  const calls = [];
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i];
+    if (c === '"' || c === "'" || c === '`') { i = cmSkipQuoted(code, i); continue; }
+    if (c === '/' && code[i + 1] === '/') {
+      const e = code.indexOf('\n', i + 2);
+      i = e < 0 ? code.length : e;
+      continue;
+    }
+    if (c === '/' && code[i + 1] === '*') {
+      const e = code.indexOf('*/', i + 2);
+      i = e < 0 ? code.length : e + 2;
+      continue;
+    }
+    if (i > 0 && /[\w$]/.test(code[i - 1])) { i++; continue; }
+    re.lastIndex = i;
+    const m = re.exec(code);
+    if (!m) { i++; continue; }
+    const open = re.lastIndex - 1;
+    const end = cmSkipBalanced(code, open, '(', ')');
+    const args = cmParseArgs(code.slice(open + 1, end - 1), vars);
+    calls.push({ server: m[1], tool: m[2], args, raw: code.slice(i, end) });
+    i = end;
+  }
+  return calls;
+}
+
+// 只有 execute（以及可能用 bash 承载代码的旧形态）的 input.code 才当 Code Mode 解析。
+function codeModeOf(toolName, input) {
+  if (!input || typeof input.code !== 'string') return null;
+  const name = String(toolName || '').toLowerCase();
+  if (name && name !== 'execute' && name !== 'bash' && name !== 'code') return null;
+  const calls = codeModeCalls(input.code);
+  return calls.length ? { code: input.code, calls } : null;
+}
+
+// 把字符串 / 注释的内容替换成空格（保留换行与长度），供「代码里是否真的调用
+// 了某个工具」这类正则判定使用——避免 search({query:"send_message"})、注释里
+// 的示例代码被误判成真实调用。
+function cmMaskCode(src) {
+  const out = String(src || '').split('');
+  let i = 0;
+  while (i < out.length) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === '`') {
+      const end = cmSkipQuoted(src, i);
+      for (let j = i; j < end; j++) if (out[j] !== '\n') out[j] = ' ';
+      i = end;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '/') {
+      let end = src.indexOf('\n', i + 2);
+      if (end < 0) end = src.length;
+      for (let j = i; j < end; j++) out[j] = ' ';
+      i = end;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      let end = src.indexOf('*/', i + 2);
+      end = end < 0 ? src.length : end + 2;
+      for (let j = i; j < end; j++) if (out[j] !== '\n') out[j] = ' ';
+      i = end;
+      continue;
+    }
+    i++;
+  }
+  return out.join('');
+}
+
+function isA2ASendCall(call) {
+  if (!call) return false;
+  const tool = String(call.tool || '').toLowerCase();
+  const server = String(call.server || '').toLowerCase();
+  return tool === 'send_message' && server.includes('agentdeck');
+}
+
+// 参数值的展示形态：数组用顿号连接，对象等解不出的值忽略。
+function cmArgText(v) {
+  if (v == null) return '';
+  if (Array.isArray(v)) return v.map(cmArgText).filter(Boolean).join('、');
+  if (typeof v === 'object') return '';
+  return String(v);
+}
+
+function cmClip(s, max) {
+  const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  return t.length > max ? t.slice(0, max) + '…' : t;
+}
+
+// 摘要 / 步骤行里不展示 ${taskId} 这种未求值的模板占位符（正文里才保留，
+// 等工具回执回来再补真实值）。
+function cmDisplayText(s) {
+  return String(s == null ? '' : s).replace(/\$\{[^}]*\}/g, '…');
+}
+
+// 每一步的人话摘要（对话流卡片与轨迹摘要共用）。type 只用来上色：
+// board / session / send / read / other。
+function codeModeStepInfo(call) {
+  const a = (call && call.args) || {};
+  const t = String((call && call.tool) || '').toLowerCase();
+  const server = String((call && call.server) || '').toLowerCase();
+  const s = (k) => cmArgText(a[k]);
+  if (server.includes('agentdeck')) {
+    switch (t) {
+      case 'board_list':
+        return { type: 'board', label: '看板 · 列出任务', detail: '', short: '看板列表' };
+      case 'board_get':
+        return { type: 'board', label: '看板 · 读取卡', detail: s('id') || s('task_id'), short: '读卡' };
+      case 'board_create':
+        return { type: 'board', label: '看板 · 建卡', short: '建卡',
+          detail: [s('title') && `「${s('title')}」`, s('project'), s('status')].filter(Boolean).join(' · ') };
+      case 'board_update':
+        return { type: 'board', label: '看板 · 更新', short: '更新卡',
+          detail: [s('id') && `#${s('id')}`, s('status') && `→ ${s('status')}`, cmClip(s('progress'), 120)].filter(Boolean).join(' · ') };
+      case 'board_comment':
+        return { type: 'board', label: '看板 · 评论', short: '评论',
+          detail: [s('kind') && `「${s('kind')}」`, cmClip(s('text'), 160)].filter(Boolean).join(' · ') };
+      case 'board_bind_worker':
+        return { type: 'board', label: '看板 · 绑定 worker', detail: s('worker') || s('session'), short: '绑定' };
+      case 'new_session': {
+        const model = [s('provider'), s('model')].filter(Boolean).join('/');
+        return { type: 'session', label: '新建会话', short: '建会话',
+          detail: [s('name') && `「${s('name')}」`, s('cli'), model, s('effort') && `effort ${s('effort')}`, s('cwd')].filter(Boolean).join(' · ') };
+      }
+      case 'list_sessions':
+        return { type: 'read', label: '会话 · 列出', detail: '', short: '列会话' };
+      case 'get_session':
+        return { type: 'read', label: '会话 · 读取', detail: s('session') || s('id') || s('name'), short: '读会话' };
+      case 'stop_session':
+        return { type: 'session', label: '会话 · 停止', detail: s('session') || s('id') || s('name'), short: '停会话' };
+      case 'read_session_messages':
+        return { type: 'read', label: '会话 · 读消息', detail: s('session'), short: '读消息' };
+      case 'search_messages':
+        return { type: 'read', label: '会话 · 搜索消息', detail: s('query') && `「${s('query')}」`, short: '搜消息' };
+      case 'send_message':
+        return { type: 'send', label: '发送消息', short: '发送',
+          detail: [s('to') && `→ ${s('to')}`, cmClip(cmDisplayText(s('message')), 160)].filter(Boolean).join(' · ') };
+      case 'artifact_publish':
+        return { type: 'board', label: '看板 · 发布产物', short: '产物',
+          detail: [s('title'), s('kind')].filter(Boolean).join(' · ') };
+    }
+  }
+  const name = [call && call.server, call && call.tool].filter(Boolean).join('.') || '工具调用';
+  return { type: 'other', label: name, detail: '', short: call && call.tool ? String(call.tool) : '工具' };
+}
+
+// 折叠行摘要：单步给「动作 · 关键参数」，多步给「N 步 · a → b → …」。
+function codeModeSummary(calls) {
+  if (!Array.isArray(calls) || !calls.length) return '';
+  const steps = calls.map(codeModeStepInfo);
+  if (steps.length === 1) {
+    const st = steps[0];
+    return st.label + (st.detail ? ' · ' + cmClip(st.detail, 120) : '');
+  }
+  const words = steps.map((st) => st.short || st.label);
+  const head = words.slice(0, 4).join(' → ') + (words.length > 4 ? ' → …' : '');
+  return `${calls.length} 步 · ${head}`;
+}
+
 // 出站 A2A 的调用信息（{to, message, native}），认不出返回 null。两种来源：
 //   1) 原生 MCP 工具 —— claude/mcode 记成 mcp__agentdeck__send_message，input
 //      里直接是 to/message；
-//   2) opencode 走 Code Mode —— 所有工具都记成 execute/bash，agentdeck 的调用
-//      埋在 input.code 里（tools.agentdeck.send_message({to,message})）。这里
-//      从代码里认出它，尽量抽出 to/message；抽不到就退回展示整段代码。
+//   2) opencode 走 Code Mode —— 所有工具都记成 execute，agentdeck 的调用
+//      埋在 input.code 里。这里复用 Code Mode 解析，能认得
+//      `const workerName = "..."; ... to: workerName` 和 `{ message }` shorthand
+//      （主 Agent 的派工单就是这种写法）；实在抽不到正文时返回空串，由渲染层
+//      折叠展示原始代码，绝不把整段 JS 当 message 摊开。
 // 轨迹视图与对话流渲染共用这一个判定，两处对「是不是 A2A 发」永远一致。
 function a2aSendInfo(toolName, input) {
   if (isA2ASendTool(toolName)) {
@@ -76,14 +502,27 @@ function a2aSendInfo(toolName, input) {
   }
   const code = input && (input.code || input.command);
   if (typeof code !== 'string') return null;
-  // 必须是**真的在调用** agentdeck 的 send_message（名字后面紧跟左括号），
-  // 光是代码里提到这个词不算——否则 search({query:"send_message"})、注释、
-  // 变量名之类的调用会被误判成 A2A 发，整张工具卡被渲染成 message。
-  if (!/agentdeck[._]+send_message\s*\(/i.test(code)) return null;
+  const cm = codeModeOf(toolName, input);
+  const send = cm ? [...cm.calls].reverse().find(isA2ASendCall) : null;
+  if (send) {
+    return {
+      to: cmArgText(send.args.to),
+      message: cmArgText(send.args.message),
+      send_id: cmArgText(send.args.send_id) || cmArgText(send.args.task_id),
+      native: false, code, calls: cm.calls, call: send,
+    };
+  }
+  // 扫描器已经认出代码里的工具调用了：里面没有 send_message 就不是 A2A 发。
+  if (cm) return null;
+  // 扫描器完全认不出（代码被截断 / 用了不支持的写法）时才退回旧的正则。
+  // 判定前先把字符串与注释的内容抹掉——必须是**真的在调用** agentdeck 的
+  // send_message（名字后面紧跟左括号），否则 search({query:"send_message"})、
+  // 注释里的示例代码会被误判成 A2A 发，整张工具卡被渲染成 message。
+  if (!/agentdeck[._]+send_message\s*\(/i.test(cmMaskCode(code))) return null;
   const to = (code.match(/to\s*:\s*["'`]([^"'`]+)["'`]/) || [])[1] || '';
   const msg = (code.match(/message\s*:\s*["'`]([\s\S]*?)["'`]\s*[,}\n)]/) || [])[1] || '';
   const sendId = (code.match(/send_id\s*:\s*["'`]([^"'`]+)["'`]/) || [])[1] || '';
-  return { to, message: msg || code, send_id: sendId, native: false, code };
+  return { to, message: msg, send_id: sendId, native: false, code, calls: [] };
 }
 
 // A2A（会话间消息）方向：in = 收到其他会话的 peer 消息，out = 调用发送工具
