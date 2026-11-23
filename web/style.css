@@ -944,30 +944,17 @@ body.sidebar-collapsed .sidebar-splitter { display: none; }
 }
 /* 名字自己吃掉剩余宽度，末端的「待回答」标签才不会被 ellipsis 挤掉 */
 .session-item .name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 嵌套 worker：挂在派它的主 Agent 行下面（归属按 parent_id，与 cwd 无关）。
-   缩进深度来自行内 --depth；worker 在别的目录时行尾加一个目录小标。 */
-.session-item.session-worker { padding-left: calc(var(--sp-4) + var(--depth, 1) * 16px); }
-.session-item.session-worker::before {
-  content: '';
-  position: absolute;
-  left: calc(var(--sp-4) + (var(--depth, 1) - 1) * 16px + 5px);
-  top: 50%;
-  width: 7px; height: 1px;
-  background: var(--border);
-}
-.worker-cwd {
+/* Worker 标记：由其他 Agent 经 MCP 建出来的会话（parent_id 非空）。按自己的
+   cwd 和普通会话同组，用一枚小机器人图标区分（不占名字宽度、不抢状态点）；
+   来源写在 tooltip 里。紫色沿用 thinking / peer 通道的 --thinking。 */
+.session-item .sess-worker-mark {
   flex: none;
-  margin-left: var(--sp-1);
-  max-width: 110px;
-  padding: 0 5px;
-  font-size: var(--fs-xs);
-  font-weight: 400;
-  color: var(--dim);
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-full);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  color: var(--thinking);
+  opacity: .85;
 }
+.session-item .sess-worker-mark svg { width: 12px; height: 12px; }
 .session-item .meta {
   color: var(--dim);
   font-size: var(--fs-xs);
@@ -2746,6 +2733,37 @@ body.session-running .rewind-btn { opacity: .35 !important; pointer-events: none
   gap: var(--sp-3);
   margin-top: var(--sp-2);
 }
+
+/* 升级说明：老版本升级后首次启动弹一次（app.js maybeShowWhatsNew）。
+   文案只讲「主 Agent 移到顶部 / Worker 按目录 / 机器人图标」，避免用户以为
+   主 Agent 会话丢了。 */
+.whats-new-card { width: 580px; }
+.wn-kicker {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.whats-new-card h3 { margin-top: calc(-1 * var(--sp-2)); }
+.wn-lede {
+  margin: 0;
+  color: var(--dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+.wn-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--fg);
+}
+.wn-list b { font-weight: 600; }
+.wn-list li::marker { color: var(--accent); }
 
 /* 角色提示编辑器：大号 textarea + 字节计数 + 错误行 + 左对齐的「填入默认」 */
 .role-prompt-card { width: 640px; }

@@ -1231,39 +1231,32 @@ function sessionItemHTML(s, opts = {}) {
     </div>`;
 }
 
-// buildSessionRow renders one sidebar row. depth>0 = a nested worker (indented
-// under its parent); parentCwd is the parent's cwd so a worker living in a
-// different directory gets a path badge.
-function buildSessionRow(s, depth, parentCwd) {
+// buildSessionRow renders one sidebar row. opts.worker marks a session spawned
+// by another agent (parent_id non-empty); those are grouped by their own cwd and
+// get a small Worker icon before the name so they are distinguishable from
+// sessions created directly in the directory. opts.parentName feeds the tooltip.
+function buildSessionRow(s, opts = {}) {
   const item = document.createElement('div');
   item.className = 'session-item' + (state.current && state.current.id === s.id ? ' active' : '');
-  if (depth > 0) {
-    item.classList.add('session-worker');
-    item.style.setProperty('--depth', String(Math.min(depth, 6)));
-  }
   item.dataset.sessionId = s.id;
   item.innerHTML = sessionItemHTML(s);
-  if (depth > 0 && s.cwd && parentCwd && s.cwd !== parentCwd) {
-    const badge = document.createElement('span');
-    badge.className = 'worker-cwd';
-    badge.textContent = shortenPath(s.cwd);
-    badge.title = s.cwd;
-    item.querySelector('.name').appendChild(badge);
+  if (opts.worker) {
+    item.classList.add('sess-worker');
+    const mark = document.createElement('span');
+    mark.className = 'sess-worker-mark';
+    mark.title = opts.parentName ? `Worker · 由 ${opts.parentName} 创建` : 'Worker · 由其他会话创建';
+    mark.setAttribute('aria-label', 'Worker');
+    mark.innerHTML = '<i data-lucide="bot"></i>';
+    const nameRow = item.querySelector('.name');
+    // dot → Worker 图标 → 名字（与 Demo S1 一致，不占名字宽度）。
+    nameRow.insertBefore(mark, nameRow.querySelector('.name-text'));
   }
   bindSessionItem(item, s);
-  return item;
-}
-
-// isSessionAncestor reports whether `node` is (transitively) a child of
-// `maybeAncestor` — used to break a parent_id cycle so a bad record cannot make
-// the sidebar loop forever.
-function isSessionAncestor(maybeAncestor, node, byId) {
-  let cur = node;
-  for (let i = 0; i < 64 && cur; i++) {
-    if (cur.id === maybeAncestor.id) return true;
-    cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+  if (opts.worker) {
+    const line = opts.parentName ? `Worker · 由 ${opts.parentName} 创建` : 'Worker · 由其他会话创建';
+    item.title = [item.title, line].filter(Boolean).join('\n');
   }
-  return false;
+  return item;
 }
 // 「待回答」行内标签：提问不进消息流、只停在输入框上方的 dock，人不在这个会话
 // 时侧栏这行是唯一的线索，所以给它一个和状态点同级的常驻标签。
@@ -1806,52 +1799,34 @@ function renderSessionList() {
     });
   }
 
+  // 主 Agent 只在顶部头像条（#main-agents）出现，不再占列表行；点它的头像进入。
+  // worker（parent_id 非空）按自己的 cwd 落进项目分组、与普通会话同级——worker
+  // 内部再起的 subagent 在它自己的消息流里展示，不在侧栏展开层级。
+  const allById = new Map((state.sessions || []).map((s) => [s.id, s]));
+  list = list.filter((s) => !s.main_agent);
+  const sidebarKindOf = (s) => {
+    const parent = s.parent_id ? allById.get(s.parent_id) : null;
+    return { worker: !!s.parent_id, parentName: parent ? (parent.name || '') : '' };
+  };
+
   if (!list.length && !(state.groups || []).length) {
     const empty = document.createElement('div');
     empty.style.cssText = 'padding:24px 12px;color:var(--dim);font-size:12px;text-align:center';
-    empty.textContent = q ? '没有匹配的会话' : '暂无会话';
+    empty.textContent = q
+      ? '没有匹配的会话'
+      : mainAgentSessions().length
+        ? '主 Agent 已在顶部，点开头像进入；Worker 会按工作区出现在这里'
+        : '暂无会话';
     el.appendChild(empty);
     renderIcons(el);
     return;
   }
 
-  // ---- worker forest ----
-  // A session nests under the one that created it (`parent_id` = the main agent
-  // that dispatched it as a worker). The worker's own cwd does NOT move it out
-  // of its parent's workspace — a differing cwd only adds a badge. A session
-  // whose parent is filtered out (search / archived) renders at top level.
-  const byId = new Map(list.map((s) => [s.id, s]));
-  const childMap = new Map();
-  const roots = [];
-  for (const s of list) {
-    const parent = s.parent_id ? byId.get(s.parent_id) : null;
-    if (parent && parent.id !== s.id && !isSessionAncestor(s, parent, byId)) {
-      if (!childMap.has(parent.id)) childMap.set(parent.id, []);
-      childMap.get(parent.id).push(s);
-    } else {
-      roots.push(s);
-    }
-  }
-  // Depth-first rows for one root (nested workers directly under it), guarded
-  // against deep/looping chains.
-  const treeRows = (root) => {
-    const rows = [];
-    const seen = new Set();
-    const walk = (s, depth, parentCwd) => {
-      if (depth > 12 || seen.has(s.id)) return;
-      seen.add(s.id);
-      rows.push({ session: s, depth, parentCwd });
-      for (const k of (childMap.get(s.id) || [])) walk(k, depth + 1, s.cwd);
-    };
-    walk(root, 0, '');
-    return rows;
-  };
-
   if (state.viewGroup === 'none') {
     const flat = document.createElement('div');
     flat.className = 'session-list-flat';
     const mixed = [
-      ...roots.map((s) => ({ ts: new Date(s.updated_at).getTime() || 0, session: s })),
+      ...list.map((s) => ({ ts: new Date(s.updated_at).getTime() || 0, session: s })),
       ...(state.groups || [])
         .filter((g) => !q || (g.name || '').toLowerCase().includes(q))
         .map((g) => ({ ts: new Date(g.updated_at || 0).getTime() || 0, group: g })),
@@ -1861,16 +1836,16 @@ function renderSessionList() {
         appendGroupItem(flat, entry.group);
         continue;
       }
-      for (const row of treeRows(entry.session)) flat.appendChild(buildSessionRow(row.session, row.depth, row.parentCwd));
+      flat.appendChild(buildSessionRow(entry.session, sidebarKindOf(entry.session)));
     }
     el.appendChild(flat);
     renderIcons(el);
     return;
   }
 
-  // group by cwd（单聊＋群聊按各自 cwd 落进同一工作区；worker 跟着主 Agent 走）
+  // group by cwd（单聊＋群聊按各自 cwd 落进同一工作区；worker 按自己的 cwd 走）
   const groups = new Map();
-  for (const s of roots) {
+  for (const s of list) {
     const key = s.cwd || '(无目录)';
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
@@ -1916,20 +1891,15 @@ function renderSessionList() {
     group.appendChild(header);
 
     let count = 0;
-    const wsSessions = []; // 本工作区的会话（含同目录的嵌套 worker），供「迁移」用
+    const wsSessions = []; // 本工作区的会话（worker 也按自己的 cwd 归组，可一起迁移）
     for (const entry of entries) {
       if (entry.__group) {
         appendGroupItem(group, entry);
-        count++;
-        continue;
+      } else {
+        group.appendChild(buildSessionRow(entry, sidebarKindOf(entry)));
+        wsSessions.push(entry);
       }
-      for (const row of treeRows(entry)) {
-        group.appendChild(buildSessionRow(row.session, row.depth, row.parentCwd));
-        // 只迁移实际就在这个目录的会话：异目录的 worker 只是挂靠在主 Agent
-        // 下面，不能跟着主 Agent 的工作区一起搬走。
-        if ((row.session.cwd || '') === (cwd === '(无目录)' ? '' : cwd)) wsSessions.push(row.session);
-        count++;
-      }
+      count++;
     }
     // "settings" button: migrate every session of this workspace to a new path
     header.querySelector('.group-migrate-btn').onclick = (e) => {
@@ -12221,7 +12191,45 @@ window.__ccConfigReady = api('/api/config')
     return {};
   });
 
+// ---------- 升级说明（只弹一次） ----------
+// 老版本升级上来时侧栏的主 Agent 行没了，第一次打开容易以为会话丢了。判定：
+// localStorage 里已有任意其它 cc-webui* 键 = 用过旧版 → 弹一次；全新安装（一个
+// 键都没有）只写标记不打扰；标记值变了才算下一次更新。必须在 boot 的最前面跑，
+// 否则后面的代码（running snapshot 等）会先写进 cc-webui* 键，把新装误判成升级。
+const WHATS_NEW_ID = '2026-11-mainagent-sidebar';
+function maybeShowWhatsNew() {
+  let seen;
+  try { seen = localStorage.getItem('cc-webui:whats-new'); } catch (_) { return; }
+  if (seen === WHATS_NEW_ID) return;
+  let usedBefore = false;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('cc-webui') && k !== 'cc-webui:whats-new') { usedBefore = true; break; }
+    }
+    localStorage.setItem('cc-webui:whats-new', WHATS_NEW_ID);
+  } catch (_) { return; }
+  if (!usedBefore) return;
+  const modal = $('#modal-whats-new');
+  if (modal) modal.classList.remove('hidden');
+}
+function closeWhatsNew() {
+  const modal = $('#modal-whats-new');
+  if (modal) modal.classList.add('hidden');
+}
+if ($('#whats-new-close')) $('#whats-new-close').addEventListener('click', closeWhatsNew);
+if ($('#modal-whats-new')) {
+  $('#modal-whats-new').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeWhatsNew();
+  });
+}
+document.addEventListener('keydown', (e) => {
+  const modal = $('#modal-whats-new');
+  if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) closeWhatsNew();
+});
+
 (async function boot() {
+  maybeShowWhatsNew();
   await api('/api/me'); // redirects to login when unauthorized
   applyTheme(document.documentElement.dataset.theme || 'light', false);
   state.clis = await api('/api/clis');

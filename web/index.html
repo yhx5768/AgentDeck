@@ -653,6 +653,24 @@
   </div>
 </div>
 
+<!-- 升级说明：老版本升级后首次启动弹一次（见 app.js maybeShowWhatsNew） -->
+<div id="modal-whats-new" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
+  <div class="modal-card whats-new-card">
+    <div class="wn-kicker">AgentDeck 更新</div>
+    <h3 id="whats-new-title">侧栏换了个组织方式</h3>
+    <p class="wn-lede">你从旧版本升级过来，左侧栏有几处变化，第一次打开可能有点陌生：</p>
+    <ul class="wn-list">
+      <li><b>主 Agent 移到顶部。</b>列表里不再有它的行，点最上方的头像进入；常驻、运行、未读状态仍然在头像上。</li>
+      <li><b>Worker 按自己的目录归组。</b>由主 Agent 建出来的会话不再挂在它下面缩进，而是落到对应项目的工作区分组里，和普通会话同级。</li>
+      <li><b>Worker 名字前有紫色小机器人。</b>普通会话没有；鼠标悬停能看到它由哪个主 Agent 创建。</li>
+      <li><b>其它不变。</b>项目分组折叠、搜索、未读和「待回答」提示都保持原样。</li>
+    </ul>
+    <div class="modal-actions">
+      <button class="primary-btn" id="whats-new-close" type="button">知道了</button>
+    </div>
+  </div>
+</div>
+
 <!-- session goal dialog -->
 <div id="modal-goal" class="modal hidden">
   <div class="modal-card">
