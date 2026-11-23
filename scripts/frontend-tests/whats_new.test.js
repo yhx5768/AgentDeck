@@ -120,9 +120,9 @@ console.log('index.html / CSS 契约');
 
 check('index.html 有升级弹窗', /id="modal-whats-new"/.test(htmlSrc));
 check('弹窗有 role="dialog"', /id="modal-whats-new"[^>]*role="dialog"/.test(htmlSrc));
-check('文案说明主 Agent 移到顶部', htmlSrc.includes('主 Agent 移到顶部') && htmlSrc.includes('点最上方的头像进入'));
-check('文案提到 Worker 按目录归组', htmlSrc.includes('Worker 按自己的目录归组'));
-check('文案提到机器人图标', htmlSrc.includes('紫色小机器人'));
+check('文案说明主 Agent 移到顶部', htmlSrc.includes('主 Agent 移到顶部了') && htmlSrc.includes('点最上面的头像就能进'));
+check('文案提到 Worker 按目录分组', htmlSrc.includes('Worker 按各自的工作目录分组'));
+check('文案提到机器人图标', htmlSrc.includes('名字前带机器人图标的是 Worker'));
 check('有关闭按钮', /id="whats-new-close"/.test(htmlSrc));
 check('CSS 有弹窗卡片与列表样式',
   /\.whats-new-card\s*\{[^}]*width:\s*580px/.test(cssSrc) && /\.wn-list\s*\{/.test(cssSrc));
