@@ -32,6 +32,21 @@ type Task struct {
 	// LastStatus is "ok" or an error string prefixed with "error: ".
 	LastStatus string     `json:"last_status,omitempty"`
 	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
+	// Source/SourceID record that this task was imported from another system.
+	// Empty source = created in AgentDeck. "harness" = imported from Claude
+	// Code's .claude/scheduled_tasks.json; the file is never modified, so the
+	// import is a copy the user can pause/delete independently.
+	Source   string `json:"source,omitempty"`
+	SourceID string `json:"source_id,omitempty"`
+	// MaxRuns > 0 marks a one-shot task: after RunCount reaches it the task
+	// disables itself and NextRunAt is cleared. 0 means unlimited.
+	MaxRuns  int `json:"max_runs,omitempty"`
+	RunCount int `json:"run_count,omitempty"`
+}
+
+// Exhausted reports whether a one-shot task has used up its runs.
+func (t *Task) Exhausted() bool {
+	return t.MaxRuns > 0 && t.RunCount >= t.MaxRuns
 }
 
 // Store persists tasks in one JSON file (atomic temp+rename). It is safe for
@@ -225,7 +240,7 @@ func (s *Store) ClaimDue(now time.Time) []*Task {
 	var due []*Task
 	changed := false
 	for _, t := range s.tasks {
-		if !t.Enabled || t.NextRunAt == nil || t.NextRunAt.After(now) {
+		if !t.Enabled || t.Exhausted() || t.NextRunAt == nil || t.NextRunAt.After(now) {
 			continue
 		}
 		c, err := ParseCron(t.Cron)
@@ -254,11 +269,17 @@ func (s *Store) ClaimDue(now time.Time) []*Task {
 	return due
 }
 
-// FinishRun records the outcome of one delivery. It only touches bookkeeping,
-// never NextRunAt (the claim already advanced it).
-func (s *Store) FinishRun(id, status string, at time.Time) (*Task, error) {
+// RecordRun records the outcome of one delivery and advances the run counter.
+// A one-shot task (MaxRuns > 0) disables itself once the limit is reached, so a
+// stale NextRunAt can never fire it again.
+func (s *Store) RecordRun(id, status string, at time.Time) (*Task, error) {
 	return s.Update(id, func(t *Task) {
 		t.LastRunAt = &at
 		t.LastStatus = status
+		t.RunCount++
+		if t.Exhausted() {
+			t.Enabled = false
+			t.NextRunAt = nil
+		}
 	})
 }

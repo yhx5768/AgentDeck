@@ -142,9 +142,9 @@ func TestStoreCRUDAndPersist(t *testing.T) {
 	}
 
 	runAt := at(2024, 1, 2, 9, 1)
-	finished, err := st2.FinishRun(task.ID, "ok", runAt)
+	finished, err := st2.RecordRun(task.ID, "ok", runAt)
 	if err != nil {
-		t.Fatalf("FinishRun: %v", err)
+		t.Fatalf("RecordRun: %v", err)
 	}
 	if finished.LastStatus != "ok" || finished.LastRunAt == nil || !finished.LastRunAt.Equal(runAt) {
 		t.Fatalf("finish not applied: %+v", finished)

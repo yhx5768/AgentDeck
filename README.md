@@ -86,6 +86,7 @@ flowchart TB
 | 多 agent 群聊 | 一个群拉多个成员（各引擎通用），`@成员` 定向、`@all`/空群发并行跑；成员是隐藏影子会话（点名直接打开看单独回放），群有独立 transcript 与时间线，审批卡照常弹。 |
 | 常驻与跨会话消息 | A2A 总线对所有引擎可用；claude 还可选择常驻（streaming-input 进程跨轮次保持在线）并兼容 claude 原生 `SendMessage`。入站 A2A 以紫色 peer 气泡显示，详情见下方「多 CLI 与跨引擎 A2A」。 |
 | 自动续跑目标 | 给会话挂一条达成条件，每轮干净结束后模型自评，未达标就自动再跑一轮，直到达标或触发轮数/时限熔断。条件可随时停止或清除；rewind 会清空目标。 |
+| 定时任务 | Personal Agent 左栏「定时任务」：用一句自然语言（如「每个工作日 9 点巡检看板」）或 cron 表达式创建，到点把 prompt 作为 A2A 消息投给指定会话；支持启停、立即执行、编辑、删除、一次性任务，以及只读查看 / 一键导入 Claude Code harness（`.claude/scheduled_tasks.json`）里的任务。调度器是 AgentDeck 进程内置的 Go 实现，**不依赖系统 crontab**，Windows / macOS / Linux 通用。 |
 | 工具调用可视化 | Bash 终端视图、Read/Write/Edit diff、TodoWrite 检查清单、thinking 折叠块、子代理折叠卡片。 |
 | HTML / Mermaid 可视化 | 模型输出的 `html` 围栏可在消息里点「渲染」成沙箱 iframe——小型图表、交互都行；`mermaid` 围栏可点「渲染」画成图，并跟随深浅主题切换。iframe 不给 `allow-same-origin`，页面完全自包含。完整报告 / 仪表盘优先发布成会话或看板的 HTML 产物（AgentDeck 用 `artifact_publish`），聊天里只回产物链接 + 3–5 条关键结论；只有单屏能看完的小型可视化才走内联 `html`，没有产物机制时回退内联。服务端每轮向模型注入这套约定（config 里可关）。 |
 | 会话分叉 | claude / qoder 可把当前 transcript 复制成新会话，从同一上下文另开一条分支（不动原会话）。 |
@@ -312,6 +313,18 @@ flowchart LR
 
 会话说「一直干到这条条件成立为止」：每轮**干净**结束后，runner 向模型注入一轮自评，正文最后一行的 `<!--goal:met-->` / `<!--goal:unmet ... -->` 决定是否达标；未达标就自动再排一轮。判定者是模型自己，所以条件写得越可验证越稳（`go test ./... 全绿` 好过「功能完成」）。熔断是 `max_turns`（默认 20，上限 200）与 `max_hours`（默认 4h，上限 48h）。用户停止 → 终态 `stopped`；rewind → 直接清空（回滚掉的正是目标在追的工作）。目标状态一律回读服务端，UI 只显示。
 
+### 定时任务（schedules）
+
+Personal Agent 左栏「看板任务」下面是「定时任务」：列表、新建/编辑弹窗、启停、立即执行、删除。到点后把 prompt 经 A2A 总线投给目标会话（默认 `mainAgent`），收件方看到的是普通紫色 peer 气泡，发件人显示「定时任务 · <任务名>」。
+
+**调度与存储**：任务存在 `<data_dir>/schedules.json`（原子写），调度器跑在 AgentDeck 服务进程内（15s tick），**不是系统 crontab，也不是 harness 的 CronCreate**——三个系统都是独立机制，这里不调用 `crontab`/`launchd`/计划任务，所以 Windows / macOS / Linux 行为一致。停机期间错过的触发点不补跑；一次触发在投递前就推进 `next_run_at`，不会重复执行。
+
+**自然语言创建**：弹窗默认「自然语言」模式。输入「每天9点进行看板巡检」后点「解析」，服务端内置规则产出 cron、建议名称和下次执行时间；多个具体时间（如「每天9点和18点」）会列成候选让用户选，不会瞎猜。也可切到「cron」模式手写。解析走规则而不是模型：AgentDeck 服务端没有自己的模型客户端（它只负责拉起 CLI），而 cron 必须精确可复现；规则覆盖每天/工作日/每周X/每月X号/每小时/每N分钟 + `9:00`/`上午9点`/`晚上8点半` 等写法，解析结果仍经同一套 cron 校验与 next-run 计算。
+
+**一次性任务**：任务可带 `max_runs`（导入 harness 的一次性任务时自动为 1）。执行一次后自动停用、清空下次执行；点「启用」会重置次数重新排期。
+
+**harness（CLI）任务**：页面下半部分是 Claude Code `.claude/scheduled_tasks.json` 的只读列表，带 `source=harness` 标识。支持「导入到 AgentDeck」——复制成一条 **默认停用** 的 AgentDeck 任务，记录 `source/source_id`，不修改、不删除 harness 文件；一条 harness 任务只能导入一次。文件路径默认从 `CC_WEBUI_HARNESS_TASKS`、进程 cwd、各会话 cwd、`~/.claude` 发现，也可在页面上直接填写（只接受名为 `scheduled_tasks.json` 的文件）。
+
 ### 常驻（claude）与跨引擎 A2A
 
 **A2A 总线对五个引擎都可用**：`POST /api/a2a/send {from,to,message,send_id?}` 按 session id 或地址名找到目标，把消息排成目标的一轮；接收方不需要常驻。入站事件带 `source:"a2a"` / `from` / `body`，前端渲染为 peer 气泡，轨迹视图归入 A2A，回放时与引擎 transcript 的回显去重。主 Agent 和 worker 可以分别使用不同引擎，详见 [a2a-rd.md](a2a-rd.md)。
@@ -401,6 +414,14 @@ ssh user@remote 'GATEWAY_TOKEN=xxx ./agentdeck'
 | POST | `/api/sessions/import` | 导入已有 session（按 cli 的 kind 决定读哪个引擎的历史） |
 | GET | `/api/stats?fresh=1` | 五引擎合并使用统计（默认走增量缓存） |
 | GET / PUT | `/api/notes` | 全局待办备忘（前端全量覆盖写） |
+| GET / POST | `/api/schedules` | 定时任务列表 / 创建 |
+| PUT / DELETE | `/api/schedules/{id}` | 编辑 / 删除定时任务 |
+| POST | `/api/schedules/{id}/enable` | 启停 `{enabled}`（重新启用已完成的一次性任务会重置次数） |
+| POST | `/api/schedules/{id}/run` | 立即执行一次（不移动 cron 排期） |
+| POST | `/api/schedules/preview` | 校验 cron 并返回下次执行时间 `{cron}` |
+| POST | `/api/schedules/parse` | 自然语言 → cron 候选 `{text}` |
+| GET | `/api/schedules/harness?path=` | 只读列出 Claude Code harness 任务（可配置路径） |
+| POST | `/api/schedules/import-harness` | 把一条 harness 任务复制成默认停用的 AgentDeck 任务 `{path,id}` |
 | GET | `/api/files?path=` | 读取本地文件（限会话工作区内） |
 | GET | `/api/image?path=` | 读取本地图片（限会话工作区内，服务模型回复里的本地图片） |
 | GET | `/api/sessions/{id}/workspace/tree?path=` | 工作区面板：列一层目录（`path` 相对会话 cwd） |

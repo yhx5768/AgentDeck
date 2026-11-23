@@ -123,8 +123,8 @@ func (s *Server) rescheduleAll(now time.Time) {
 func (s *Server) runDueSchedules(now time.Time) {
 	for _, task := range s.scheduleStore().ClaimDue(now) {
 		status := s.fireSchedule(task)
-		if _, err := s.scheduleStore().FinishRun(task.ID, status, time.Now()); err != nil {
-			log.Printf("schedule %s: finish run: %v", task.ID, err)
+		if _, err := s.scheduleStore().RecordRun(task.ID, status, time.Now()); err != nil {
+			log.Printf("schedule %s: record run: %v", task.ID, err)
 		}
 	}
 }
@@ -277,6 +277,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		t.Prompt = in.Prompt
 		t.TargetSession = targetID
 		t.Enabled = enabled
+		if enabled && t.MaxRuns > 0 && t.RunCount >= t.MaxRuns {
+			t.RunCount = 0 // explicit re-enable of a finished one-shot
+		}
 		switch {
 		case !enabled:
 			t.NextRunAt = nil
@@ -324,6 +327,11 @@ func (s *Server) handleEnableSchedule(w http.ResponseWriter, r *http.Request) {
 			t.NextRunAt = nil
 			return
 		}
+		// Re-enabling a finished one-shot is an explicit "run it again": reset
+		// the counter so the next occurrence is allowed.
+		if t.MaxRuns > 0 && t.RunCount >= t.MaxRuns {
+			t.RunCount = 0
+		}
 		c, err := schedule.ParseCron(t.Cron)
 		if err != nil {
 			t.NextRunAt = nil
@@ -350,7 +358,7 @@ func (s *Server) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := s.fireSchedule(task)
-	updated, err := s.scheduleStore().FinishRun(id, status, time.Now())
+	updated, err := s.scheduleStore().RecordRun(id, status, time.Now())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

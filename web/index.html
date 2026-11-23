@@ -478,13 +478,30 @@
           <button id="sched-new" class="primary-btn" type="button"><i data-lucide="plus"></i> 新建定时任务</button>
         </div>
         <div class="sched-note">
-          这里管理 AgentDeck 自己的定时任务（<code>data/schedules.json</code>）：到点把 prompt 作为 A2A 消息投给目标会话。
-          Claude Code harness 的 CronCreate 任务（<code>.claude/scheduled_tasks.json</code>）是另一套机制，不会在这里显示，也不会被这里执行。
+          调度由 AgentDeck 服务进程内置的 Go 调度器执行（<code>data/schedules.json</code> + 15s tick），<b>不依赖系统 crontab</b>，Windows / macOS / Linux 通用。
+          Claude Code harness 的 CronCreate（<code>.claude/scheduled_tasks.json</code>）是 CLI 自己的一套机制，也不是 OS cron：这里只读展示、可复制导入，不改它的文件。
         </div>
       </header>
       <div id="sched-body">
         <div id="sched-error" class="sched-error hidden" role="alert"></div>
         <div id="sched-list" class="sched-list"></div>
+
+        <!-- Claude Code harness（CronCreate）只读列表 + 导入 -->
+        <section id="sched-harness" class="sched-harness">
+          <div class="sched-harness-head">
+            <div class="sched-harness-title-row">
+              <span class="sched-harness-title">CLI 定时任务（harness）</span>
+              <span class="sched-source-badge harness">只读</span>
+              <span class="sched-harness-hint">来自 Claude Code 的 <code>scheduled_tasks.json</code>；导入只会在上面复制一条 AgentDeck 任务（默认停用），不会改这个文件。</span>
+            </div>
+            <div class="sched-harness-tools">
+              <input id="sched-harness-path" spellcheck="false" placeholder="scheduled_tasks.json 路径（留空自动发现）">
+              <button id="sched-harness-refresh" class="ghost-btn" type="button">读取</button>
+            </div>
+          </div>
+          <div id="sched-harness-error" class="sched-harness-error hidden" role="alert"></div>
+          <div id="sched-harness-list" class="sched-harness-list"></div>
+        </section>
       </div>
     </div>
   </main>
@@ -718,16 +735,33 @@
 <div id="modal-schedule" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sched-modal-title">
   <div class="modal-card sched-card">
     <h3 id="sched-modal-title">新建定时任务</h3>
+    <div id="sched-mode" class="sched-mode" role="group" aria-label="排期输入方式">
+      <button type="button" data-sched-mode="nl" class="active">自然语言</button>
+      <button type="button" data-sched-mode="cron">cron</button>
+    </div>
+    <div id="sched-nl-block">
+      <label>描述
+        <textarea id="sched-nl-text" rows="3" spellcheck="false" placeholder="例：每天9点进行看板巡检，检查常驻 worker 和运行中卡片是否异常"></textarea>
+      </label>
+      <div class="sched-nl-row">
+        <button class="ghost-btn" id="sched-parse" type="button">解析</button>
+        <span id="sched-parse-note" class="sched-parse-note">由内置规则解析（AgentDeck 服务端不直接调用模型）</span>
+      </div>
+      <div id="sched-parse-error" class="sched-modal-error hidden" role="alert"></div>
+      <div id="sched-candidates" class="sched-candidates hidden"></div>
+    </div>
+    <div id="sched-cron-block" class="hidden">
+      <label>cron（5 段：分 时 日 月 周）
+        <input id="sched-cron" spellcheck="false" autocomplete="off" placeholder="0 9 * * *">
+      </label>
+      <div id="sched-cron-examples" class="sched-examples"></div>
+    </div>
     <label>名称
-      <input id="sched-name" maxlength="80" placeholder="例：每日站会提醒">
+      <input id="sched-name" maxlength="80" placeholder="留空则由描述自动生成">
     </label>
-    <label>cron（5 段：分 时 日 月 周）
-      <input id="sched-cron" spellcheck="false" autocomplete="off" placeholder="0 9 * * *">
-    </label>
-    <div id="sched-cron-examples" class="sched-examples"></div>
     <div id="sched-next-preview" class="sched-next-preview">输入合法 cron 后显示下次执行时间</div>
     <label>prompt
-      <textarea id="sched-prompt" rows="6" spellcheck="false" placeholder="到点后发给目标会话的消息…"></textarea>
+      <textarea id="sched-prompt" rows="6" spellcheck="false" placeholder="到点后发给目标会话的消息；留空则使用上面的描述"></textarea>
     </label>
     <label>目标会话
       <select id="sched-target"></select>

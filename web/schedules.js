@@ -3,8 +3,10 @@
  * 管理 AgentDeck 自己的 cron 任务：<data_dir>/schedules.json，到点通过 A2A 总线
  * 把 prompt 投给目标会话（见 internal/server/schedules.go）。
  *
- * 注意：Claude Code harness 的 CronCreate（.claude/scheduled_tasks.json）是另一套
- * 机制，这里只显示一条只读说明，不导入、不混写、也不会触发它们。
+ * 调度器是 AgentDeck 服务进程内置的 Go 实现（15s tick），不依赖系统 crontab，
+ * Windows / macOS / Linux 通用。Claude Code harness 的 CronCreate
+ * （.claude/scheduled_tasks.json）是 CLI 自己的一套机制，也不是 OS cron：本页
+ * 只读展示它，允许显式导入成 AgentDeck 任务，绝不改那个文件。
  *
  * 命名约定：本模块所有顶层标识以 sched 开头，避免和 app.js / agent*.js 撞名。
  */
@@ -18,15 +20,23 @@ const SCHED_EXAMPLES = [
   { cron: '0 9 * * 1', label: '每周一 09:00' },
 ];
 
+const SCHED_HARNESS_PATH_KEY = 'cc-webui:sched-harness-path';
+
 const sched = {
   tasks: [],
   loaded: false,
   busy: false,
   lastError: '',
   editing: '',      // 正在编辑的任务 id（空 = 新建）
+  mode: 'nl',       // 弹窗排期方式：nl | cron
+  candidates: [],   // 自然语言解析候选
+  selectedCron: '',
+  parsing: false,
   previewSeq: 0,
   pollTimer: 0,
   previewTimer: 0,
+  harness: { path: '', candidates: [], tasks: [], error: '', loaded: false },
+  harnessBusy: false,
 };
 
 function schedErrMsg(e) {
@@ -83,6 +93,13 @@ function schedModalError(msg) {
   el.classList.toggle('hidden', !msg);
 }
 
+function schedParseError(msg) {
+  const el = $('#sched-parse-error');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+}
+
 // ---------- 页面开关 ----------
 function schedulesOpen() {
   const view = $('#schedules-view');
@@ -91,6 +108,10 @@ function schedulesOpen() {
   if (typeof boardDisconnect === 'function') boardDisconnect();
   view.classList.remove('hidden');
   if (typeof renderIcons === 'function') renderIcons();
+  const pathInput = $('#sched-harness-path');
+  if (pathInput && !pathInput.value) {
+    try { pathInput.value = localStorage.getItem(SCHED_HARNESS_PATH_KEY) || ''; } catch (_) { /* 无痕模式 */ }
+  }
   schedulesRefresh();
   schedStartPoll();
   // Personal Agent 模式下让左栏高亮跟着走（agent.js 的 paRenderNav 读 pa.view）。
@@ -144,8 +165,14 @@ function schedStopPoll() {
   sched.pollTimer = 0;
 }
 
-// ---------- 列表 ----------
+// ---------- 数据 ----------
 async function schedulesRefresh() {
+  await Promise.all([schedRefreshTasks(), schedRefreshHarness()]);
+  schedRender();
+  schedRenderHarness();
+}
+
+async function schedRefreshTasks() {
   if (sched.busy) return;
   sched.busy = true;
   try {
@@ -160,13 +187,47 @@ async function schedulesRefresh() {
   } finally {
     sched.busy = false;
   }
-  schedRender();
+}
+
+async function schedRefreshHarness() {
+  if (sched.harnessBusy) return;
+  sched.harnessBusy = true;
+  const input = $('#sched-harness-path');
+  const path = input ? input.value.trim() : '';
+  try {
+    const d = await api('/api/schedules/harness' + (path ? '?path=' + encodeURIComponent(path) : ''));
+    sched.harness = {
+      path: (d && d.path) || '',
+      candidates: (d && Array.isArray(d.candidates)) ? d.candidates : [],
+      tasks: (d && Array.isArray(d.tasks)) ? d.tasks : [],
+      error: (d && d.error) || '',
+      loaded: true,
+    };
+    // 自动发现的路径回填到输入框，用户可以直接改。
+    if (input && !path && sched.harness.path) {
+      input.value = sched.harness.path;
+      try { localStorage.setItem(SCHED_HARNESS_PATH_KEY, sched.harness.path); } catch (_) { /* ignore */ }
+    }
+  } catch (e) {
+    sched.harness.error = '读取失败：' + schedErrMsg(e);
+    sched.harness.loaded = true;
+  } finally {
+    sched.harnessBusy = false;
+  }
 }
 
 function schedCountText() {
   const total = sched.tasks.length;
   const on = sched.tasks.filter((t) => t.enabled).length;
   return total ? total + ' 个任务 · ' + on + ' 个启用' : '';
+}
+
+function schedBadge(text, cls, title) {
+  const b = document.createElement('span');
+  b.className = 'sched-badge' + (cls ? ' ' + cls : '');
+  b.textContent = text;
+  if (title) b.title = title;
+  return b;
 }
 
 function schedAction(label, cls, onClick) {
@@ -198,6 +259,14 @@ function schedRow(task) {
   stateTag.className = 'sched-state ' + (task.enabled ? 'on' : 'off');
   stateTag.textContent = task.enabled ? '启用' : '暂停';
   head.append(name, cron, stateTag);
+  if (task.max_runs > 0) {
+    const done = task.run_count >= task.max_runs;
+    head.append(schedBadge(done ? '一次性 · 已执行' : '一次性', done ? 'once done' : 'once',
+      done ? '这次性任务已经执行完，不会再次触发；点「启用」会重置后重新排期' : '执行一次后自动停用'));
+  }
+  if (task.source === 'harness') {
+    head.append(schedBadge('CLI 导入', 'source', '来源：harness ' + (task.source_id || '')));
+  }
 
   const prompt = document.createElement('div');
   prompt.className = 'sched-row-prompt';
@@ -219,7 +288,10 @@ function schedRow(task) {
   next.className = 'sched-meta-item';
   next.textContent = '下次：' + (task.enabled ? schedFmtTime(task.next_run_at) : '—');
   if (task.next_run_at) next.title = schedFmtFull(task.next_run_at);
-  meta.append(target, last, next);
+  const runCount = document.createElement('span');
+  runCount.className = 'sched-meta-item';
+  runCount.textContent = '已执行：' + (task.run_count || 0) + (task.max_runs > 0 ? ' / ' + task.max_runs : ' 次');
+  meta.append(target, last, next, runCount);
   if (st.cls) {
     const badge = document.createElement('span');
     badge.className = 'sched-status ' + st.cls;
@@ -255,7 +327,7 @@ function schedRender() {
     title.textContent = sched.loaded ? '还没有定时任务' : '正在读取…';
     const desc = document.createElement('p');
     desc.textContent = sched.loaded
-      ? '到点把一段 prompt 发到指定会话。适合每日巡检、定时提醒、周期性跑测试。'
+      ? '用一句自然语言（如「每个工作日 9 点巡检看板」）或 cron 表达式创建。到点把 prompt 发到指定会话。'
       : '';
     empty.append(title, desc);
     if (sched.loaded) {
@@ -272,6 +344,102 @@ function schedRender() {
   const frag = document.createDocumentFragment();
   for (const task of sched.tasks) frag.append(schedRow(task));
   list.append(frag);
+}
+
+// ---------- harness（CLI）只读列表 ----------
+function schedHarnessRow(t) {
+  const row = document.createElement('div');
+  row.className = 'sched-harness-row';
+  row.dataset.id = t.id;
+
+  const main = document.createElement('div');
+  main.className = 'sched-harness-main';
+  const head = document.createElement('div');
+  head.className = 'sched-row-head';
+  const name = document.createElement('span');
+  name.className = 'sched-row-name';
+  name.textContent = t.name || t.id;
+  const cron = document.createElement('code');
+  cron.className = 'sched-cron';
+  cron.textContent = t.cron || '';
+  head.append(name, cron);
+  head.append(schedBadge(t.recurring ? '周期' : '一次性', t.recurring ? 'recurring' : 'once'));
+  head.append(schedBadge('harness', 'source', 'source id：' + t.id));
+  if (!t.valid) head.append(schedBadge('cron 无效', 'bad', t.error || ''));
+  const prompt = document.createElement('div');
+  prompt.className = 'sched-row-prompt';
+  prompt.textContent = schedFirstLine(t.prompt);
+  prompt.title = t.prompt || '';
+  main.append(head, prompt);
+  if (t.error) {
+    const err = document.createElement('div');
+    err.className = 'sched-harness-task-error';
+    err.textContent = t.error;
+    main.append(err);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'sched-row-actions';
+  if (t.imported_id) {
+    actions.append(schedBadge('已导入', 'imported', '已导入为 AgentDeck 任务 ' + t.imported_id));
+  } else {
+    const btn = schedAction('导入到 AgentDeck', 'run', () => schedImportHarness(t, btn));
+    btn.disabled = !t.valid;
+    actions.append(btn);
+  }
+
+  row.append(main, actions);
+  return row;
+}
+
+function schedRenderHarness() {
+  const list = $('#sched-harness-list');
+  if (!list) return;
+  const h = sched.harness;
+  const errEl = $('#sched-harness-error');
+  if (errEl) {
+    let msg = h.error || '';
+    if (!msg && !h.loaded) msg = '正在读取…';
+    errEl.textContent = msg;
+    errEl.classList.toggle('hidden', !msg);
+  }
+  const hint = $('#sched-harness-path-hint');
+  if (hint) hint.textContent = h.path || '';
+  list.textContent = '';
+  if (!h.tasks.length) {
+    const empty = document.createElement('div');
+    empty.className = 'sched-harness-empty';
+    empty.textContent = h.error
+      ? '没有可读取的 harness 任务。可在右上角填写 .claude/scheduled_tasks.json 的绝对路径，或设置环境变量 CC_WEBUI_HARNESS_TASKS。'
+      : (h.loaded ? '这个 harness 文件里没有任务。' : '');
+    list.append(empty);
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const t of h.tasks) frag.append(schedHarnessRow(t));
+  list.append(frag);
+}
+
+async function schedImportHarness(t, btn) {
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '导入中…';
+  try {
+    await api('/api/schedules/import-harness', {
+      method: 'POST',
+      body: JSON.stringify({ path: sched.harness.path, id: t.id }),
+    });
+    await schedulesRefresh();
+  } catch (e) {
+    const errEl = $('#sched-harness-error');
+    if (errEl) {
+      errEl.textContent = '导入失败：' + schedErrMsg(e);
+      errEl.classList.remove('hidden');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
 }
 
 // ---------- 行内动作 ----------
@@ -378,6 +546,119 @@ function schedFillTargets(selected) {
   }
 }
 
+function schedSetMode(mode) {
+  sched.mode = mode === 'cron' ? 'cron' : 'nl';
+  document.querySelectorAll('#sched-mode [data-sched-mode]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.schedMode === sched.mode);
+  });
+  const nl = $('#sched-nl-block');
+  const cron = $('#sched-cron-block');
+  if (nl) nl.classList.toggle('hidden', sched.mode !== 'nl');
+  if (cron) cron.classList.toggle('hidden', sched.mode !== 'cron');
+  if (sched.mode === 'cron') schedPreviewNow();
+  else if (!sched.selectedCron) {
+    const el = $('#sched-next-preview');
+    if (el) {
+      el.textContent = '填写描述并点「解析」，再选择一个候选';
+      el.classList.remove('bad');
+    }
+  }
+}
+
+function schedClearCandidates() {
+  sched.candidates = [];
+  sched.selectedCron = '';
+  schedRenderCandidates();
+}
+
+function schedRenderCandidates() {
+  const box = $('#sched-candidates');
+  if (!box) return;
+  box.textContent = '';
+  if (!sched.candidates.length) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.classList.remove('hidden');
+  for (const c of sched.candidates) {
+    const label = document.createElement('label');
+    label.className = 'sched-candidate' + (sched.selectedCron === c.cron ? ' on' : '');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'sched-candidate';
+    radio.value = c.cron;
+    radio.checked = sched.selectedCron === c.cron;
+    radio.addEventListener('change', () => schedSelectCandidate(c));
+    const body = document.createElement('div');
+    body.className = 'sched-candidate-body';
+    const top = document.createElement('div');
+    top.className = 'sched-candidate-top';
+    const lab = document.createElement('b');
+    lab.textContent = c.label || c.cron;
+    const code = document.createElement('code');
+    code.textContent = c.cron;
+    top.append(lab, code);
+    const next = document.createElement('span');
+    next.className = 'sched-candidate-next';
+    next.textContent = '下次执行：' + (c.next_run_local || c.next_run_at || '—');
+    body.append(top, next);
+    label.append(radio, body);
+    box.append(label);
+  }
+}
+
+function schedSelectCandidate(c) {
+  sched.selectedCron = c.cron;
+  const cron = $('#sched-cron');
+  if (cron) cron.value = c.cron;
+  const name = $('#sched-name');
+  if (name && !name.value.trim() && c.name) name.value = c.name;
+  schedRenderCandidates();
+  // 候选自带服务端算好的 next；再走一次 preview 接口是为了复用同一条校验路径。
+  const el = $('#sched-next-preview');
+  if (el && (c.next_run_local || c.next_run_at)) {
+    el.textContent = '下次执行：' + (c.next_run_local || c.next_run_at);
+    el.classList.remove('bad');
+  }
+  schedPreviewNow();
+}
+
+async function schedParse() {
+  if (sched.parsing) return;
+  const text = ($('#sched-nl-text').value || '').trim();
+  if (!text) {
+    schedParseError('描述不能为空');
+    return;
+  }
+  const btn = $('#sched-parse');
+  const old = btn.textContent;
+  sched.parsing = true;
+  btn.disabled = true;
+  btn.textContent = '解析中…';
+  schedParseError('');
+  try {
+    const d = await api('/api/schedules/parse', { method: 'POST', body: JSON.stringify({ text }) });
+    sched.candidates = Array.isArray(d.candidates) ? d.candidates : [];
+    sched.selectedCron = '';
+    schedRenderCandidates();
+    const note = $('#sched-parse-note');
+    if (note) {
+      const how = d.mode === 'rules' ? '内置规则解析' : '模型解析';
+      note.textContent = how + ' · ' + sched.candidates.length + ' 个候选，选一个后保存';
+    }
+    if (sched.candidates.length === 1) schedSelectCandidate(sched.candidates[0]);
+  } catch (e) {
+    schedClearCandidates();
+    schedParseError(schedErrMsg(e));
+    const note = $('#sched-parse-note');
+    if (note) note.textContent = '解析失败；可补充时间/频率，或切到 cron 模式手写';
+  } finally {
+    sched.parsing = false;
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
 function schedOpenModal(task) {
   sched.editing = task ? task.id : '';
   const title = $('#sched-modal-title');
@@ -385,27 +666,41 @@ function schedOpenModal(task) {
   $('#sched-name').value = task ? (task.name || '') : '';
   $('#sched-cron').value = task ? (task.cron || '') : '0 9 * * *';
   $('#sched-prompt').value = task ? (task.prompt || '') : '';
+  $('#sched-nl-text').value = '';
   $('#sched-enabled').checked = task ? !!task.enabled : true;
+  const parseNote = $('#sched-parse-note');
+  if (parseNote) parseNote.textContent = '由内置规则解析（AgentDeck 服务端不直接调用模型）';
+  schedParseError('');
+  schedClearCandidates();
   schedFillTargets(task ? task.target_session : '');
   schedRenderExamples();
   schedModalError('');
   const preview = $('#sched-next-preview');
   if (preview) {
-    preview.textContent = '输入合法 cron 后显示下次执行时间';
+    preview.textContent = task ? '正在计算下次执行…' : '填写描述并点「解析」，再选择一个候选';
     preview.classList.remove('bad');
   }
+  // 编辑已有任务默认看 cron；新建默认自然语言（用户反馈不要手写 cron）。
+  schedSetMode(task ? 'cron' : 'nl');
   if (typeof openModal === 'function') openModal('#modal-schedule');
   else $('#modal-schedule').classList.remove('hidden');
-  schedPreviewNow();
-  setTimeout(() => { const el = $('#sched-name'); if (el) el.focus(); }, 0);
+  setTimeout(() => {
+    const el = task ? $('#sched-cron') : $('#sched-nl-text');
+    if (el) el.focus();
+  }, 0);
 }
 
 function schedCloseModal() {
   const modal = $('#modal-schedule');
   if (modal) modal.classList.add('hidden');
   sched.editing = '';
+  sched.candidates = [];
+  sched.selectedCron = '';
+  sched.parsing = false;
   clearTimeout(sched.previewTimer);
   sched.previewTimer = 0;
+  schedModalError('');
+  schedParseError('');
 }
 
 function schedPreviewNow() {
@@ -438,14 +733,28 @@ async function schedPreview() {
 }
 
 async function schedSubmit() {
-  const name = ($('#sched-name').value || '').trim();
-  const cron = ($('#sched-cron').value || '').trim();
-  const prompt = ($('#sched-prompt').value || '').trim();
+  const nlText = ($('#sched-nl-text').value || '').trim();
+  let name = ($('#sched-name').value || '').trim();
+  let prompt = ($('#sched-prompt').value || '').trim();
+  let cron = ($('#sched-cron').value || '').trim();
   const target = $('#sched-target').value || '';
   const enabled = !!$('#sched-enabled').checked;
-  if (!name) { schedModalError('名称不能为空'); return; }
+
+  if (sched.mode === 'nl') {
+    if (!sched.selectedCron) {
+      schedModalError('先填写描述并点「解析」，再选择一个候选');
+      return;
+    }
+    cron = sched.selectedCron;
+    if (!prompt) prompt = nlText; // 描述本身可作为 prompt
+    if (!name) {
+      const picked = sched.candidates.find((c) => c.cron === sched.selectedCron);
+      name = (picked && picked.name) || schedFirstLine(nlText);
+    }
+  }
+  if (!name) name = schedFirstLine(nlText) || '定时任务';
   if (!cron) { schedModalError('cron 不能为空'); return; }
-  if (!prompt) { schedModalError('prompt 不能为空'); return; }
+  if (!prompt) { schedModalError('prompt 不能为空（自然语言模式会使用描述）'); return; }
   if (!target) { schedModalError('没有可用的目标会话'); return; }
 
   const btn = $('#sched-save');
@@ -479,10 +788,46 @@ function schedBind() {
   if (refresh) refresh.addEventListener('click', () => schedulesRefresh());
   const create = $('#sched-new');
   if (create) create.addEventListener('click', () => schedOpenModal(null));
+
+  const harnessRefresh = $('#sched-harness-refresh');
+  if (harnessRefresh) harnessRefresh.addEventListener('click', async () => {
+    const input = $('#sched-harness-path');
+    if (input) {
+      try { localStorage.setItem(SCHED_HARNESS_PATH_KEY, input.value.trim()); } catch (_) { /* ignore */ }
+    }
+    await schedRefreshHarness();
+    schedRenderHarness();
+  });
+  const harnessPath = $('#sched-harness-path');
+  if (harnessPath) harnessPath.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      if (harnessRefresh) harnessRefresh.click();
+    }
+  });
+
+  document.querySelectorAll('#sched-mode [data-sched-mode]').forEach((b) => {
+    b.addEventListener('click', () => schedSetMode(b.dataset.schedMode));
+  });
+  const parse = $('#sched-parse');
+  if (parse) parse.addEventListener('click', schedParse);
+  const nlText = $('#sched-nl-text');
+  if (nlText) nlText.addEventListener('input', () => {
+    if (sched.candidates.length || sched.selectedCron) {
+      schedClearCandidates();
+      const note = $('#sched-parse-note');
+      if (note) note.textContent = '描述已修改，请重新解析';
+      const preview = $('#sched-next-preview');
+      if (preview) { preview.textContent = '描述已修改，请重新解析'; preview.classList.remove('bad'); }
+    }
+  });
+
   const cron = $('#sched-cron');
   if (cron) cron.addEventListener('input', () => {
-    clearTimeout(sched.previewTimer);
-    sched.previewTimer = setTimeout(schedPreview, 300);
+    if (sched.mode === 'cron') {
+      clearTimeout(sched.previewTimer);
+      sched.previewTimer = setTimeout(schedPreview, 300);
+    }
   });
   const save = $('#sched-save');
   if (save) save.addEventListener('click', schedSubmit);
