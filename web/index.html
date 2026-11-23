@@ -463,6 +463,30 @@
         <div id="shares-list" class="shares-list"></div>
       </div>
     </div>
+
+    <!-- 定时任务独立页：管理 AgentDeck 自己的 cron 任务（<data_dir>/schedules.json）。
+         入口：Personal Agent 左栏「定时任务」。Claude Code harness 的 CronCreate
+         任务（.claude/scheduled_tasks.json）是另一套机制，这里只做只读提示。 -->
+    <div id="schedules-view" class="hidden">
+      <header id="schedules-header">
+        <div class="sched-title-row">
+          <button id="sched-back" class="icon-btn" title="返回" aria-label="返回"><i data-lucide="arrow-left"></i></button>
+          <span class="sched-title">定时任务</span>
+          <span id="sched-count" class="sched-count"></span>
+          <span class="sched-spacer"></span>
+          <button id="sched-refresh" class="ghost-btn" type="button">刷新</button>
+          <button id="sched-new" class="primary-btn" type="button"><i data-lucide="plus"></i> 新建定时任务</button>
+        </div>
+        <div class="sched-note">
+          这里管理 AgentDeck 自己的定时任务（<code>data/schedules.json</code>）：到点把 prompt 作为 A2A 消息投给目标会话。
+          Claude Code harness 的 CronCreate 任务（<code>.claude/scheduled_tasks.json</code>）是另一套机制，不会在这里显示，也不会被这里执行。
+        </div>
+      </header>
+      <div id="sched-body">
+        <div id="sched-error" class="sched-error hidden" role="alert"></div>
+        <div id="sched-list" class="sched-list"></div>
+      </div>
+    </div>
   </main>
 
   <!-- 工作区面板：Codex app 风格的右侧文件区（文件树 + 文件预览 + 改动视图）。
@@ -686,6 +710,33 @@
       <button class="ghost-btn" data-close>取消</button>
       <button class="ghost-btn" id="goal-clear">清除目标</button>
       <button class="primary-btn" id="goal-submit">开始</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建 / 编辑定时任务（schedules.js） -->
+<div id="modal-schedule" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sched-modal-title">
+  <div class="modal-card sched-card">
+    <h3 id="sched-modal-title">新建定时任务</h3>
+    <label>名称
+      <input id="sched-name" maxlength="80" placeholder="例：每日站会提醒">
+    </label>
+    <label>cron（5 段：分 时 日 月 周）
+      <input id="sched-cron" spellcheck="false" autocomplete="off" placeholder="0 9 * * *">
+    </label>
+    <div id="sched-cron-examples" class="sched-examples"></div>
+    <div id="sched-next-preview" class="sched-next-preview">输入合法 cron 后显示下次执行时间</div>
+    <label>prompt
+      <textarea id="sched-prompt" rows="6" spellcheck="false" placeholder="到点后发给目标会话的消息…"></textarea>
+    </label>
+    <label>目标会话
+      <select id="sched-target"></select>
+    </label>
+    <label class="modal-check"><span>启用</span><input type="checkbox" id="sched-enabled" checked></label>
+    <div id="sched-modal-error" class="sched-modal-error hidden" role="alert"></div>
+    <div class="modal-actions">
+      <button class="ghost-btn" data-close type="button">取消</button>
+      <button class="primary-btn" id="sched-save" type="button">保存</button>
     </div>
   </div>
 </div>
@@ -1005,6 +1056,7 @@
 
 <script src="/trajectory.js"></script>
 <script src="/app.js"></script>
+<script src="/schedules.js"></script>
 <script src="/agent.js"></script>
 <script src="/agent-queue.js"></script>
 <script src="/agent-aside.js"></script>

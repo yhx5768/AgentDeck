@@ -5254,6 +5254,58 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
   .shares-artifact, .shares-task, .shares-link, .shares-actions { grid-column: 1 / -1; }
   .shares-actions { justify-content: flex-start; }
 }
+/* 定时任务独立页（Personal Agent 左栏 → 定时任务） */
+#schedules-view { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+#schedules-header { padding: calc(env(safe-area-inset-top, 0px) + var(--sp-4)) var(--sp-6) var(--sp-3); border-bottom: 1px solid var(--border); background: var(--bg2); }
+.sched-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sched-title { font-size: var(--fs-sm); font-weight: 650; color: var(--fg); }
+.sched-count { font-size: 10px; color: var(--dim); font-family: var(--font-mono); }
+.sched-spacer { flex: 1; }
+.sched-note { margin-top: 10px; font-size: 10.5px; line-height: 1.6; color: var(--dim); }
+.sched-note code { font-family: var(--font-mono); font-size: 9.5px; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+#sched-body { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-4) var(--sp-6) var(--sp-7); }
+.sched-error { font-size: 10.5px; color: var(--red); line-height: 1.5; margin-bottom: 8px; }
+.sched-list { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg2); overflow: hidden; }
+.sched-row { display: flex; align-items: flex-start; gap: 14px; padding: 12px 14px; border-top: 1px solid var(--border); }
+.sched-row:first-child { border-top: 0; }
+.sched-row.off { opacity: 0.72; }
+.sched-row-main { flex: 1; min-width: 0; }
+.sched-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sched-row-name { font-size: var(--fs-xs); font-weight: 650; color: var(--fg); }
+.sched-cron { font-family: var(--font-mono); font-size: 10px; color: var(--accent); background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 0 6px; }
+.sched-state { font-size: 9px; line-height: 1.6; border-radius: 999px; padding: 0 7px; border: 1px solid var(--border); color: var(--dim); }
+.sched-state.on { color: var(--green); border-color: var(--green); }
+.sched-row-prompt { margin-top: 4px; font-size: var(--fs-xs); color: var(--fg); opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched-row-meta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; font-size: 9.5px; color: var(--dim); font-family: var(--font-mono); }
+.sched-meta-item { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched-status { font-size: 9px; line-height: 1.6; border-radius: 999px; padding: 0 6px; border: 1px solid var(--border); }
+.sched-status.ok { color: var(--green); border-color: var(--green); }
+.sched-status.bad { color: var(--red); border-color: var(--red); }
+.sched-row-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex: none; max-width: 280px; }
+.sched-btn { border: 1px solid var(--border); background: var(--bg); color: var(--fg); border-radius: 6px; padding: 4px 9px; font-size: 10px; cursor: pointer; white-space: nowrap; }
+.sched-btn:hover { border-color: var(--accent); color: var(--accent); }
+.sched-btn:disabled { opacity: 0.55; cursor: default; }
+.sched-btn.danger:hover { border-color: var(--red); color: var(--red); }
+.sched-empty { padding: 40px 16px; text-align: center; color: var(--dim); font-size: var(--fs-xs); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.sched-empty b { color: var(--fg); font-size: var(--fs-sm); }
+.sched-empty p { margin: 0; max-width: 460px; line-height: 1.6; }
+.sched-card { width: 520px; }
+.sched-examples { display: flex; gap: 6px; flex-wrap: wrap; margin-top: -6px; }
+.sched-example { border: 1px solid var(--border); background: var(--bg2); color: var(--dim); border-radius: 999px; padding: 2px 9px; font-size: 10px; cursor: pointer; }
+.sched-example:hover { color: var(--accent); border-color: var(--accent); }
+.sched-next-preview { font-size: 10.5px; color: var(--accent); background: var(--bg2); border: 1px dashed var(--border); border-radius: 6px; padding: 6px 9px; line-height: 1.5; }
+.sched-next-preview.bad { color: var(--red); border-color: var(--red); }
+.sched-modal-error { font-size: 10.5px; color: var(--red); line-height: 1.5; }
+@media (max-width: 900px) {
+  #schedules-header { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+  #sched-body { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+  .sched-row { flex-direction: column; }
+  .sched-row-actions { max-width: none; justify-content: flex-start; }
+}
+@media (max-width: 640px) {
+  .sched-row-meta { gap: 6px; }
+  .sched-card { width: 100%; }
+}
 .board-share-status { flex: none; justify-self: start; font-size: 9px; line-height: 1.5; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); }
 .board-share-status.active { color: var(--green); border-color: var(--green); }
 .board-share-status.expired { color: var(--warning-fg); border-color: var(--warning-border); }
@@ -5451,6 +5503,7 @@ body.board-preview-open { overflow: hidden; }
 .pa-nav-item:hover { background: var(--bg3); }
 .pa-nav-item.on { background: color-mix(in srgb, var(--accent) 11%, transparent); }
 .pa-nav-item.on .pa-ic { color: var(--accent); }
+.pa-nav-hint { margin-left: auto; font-size: 9px; font-weight: 500; color: var(--dim); font-family: var(--font-mono); }
 .pa-cnt { margin-left: auto; display: inline-grid; place-items: center; min-width: 20px; height: 18px; padding: 0 6px; border-radius: var(--r-full); background: var(--bg3); color: var(--dim); font-size: 11.5px; font-style: normal; font-weight: 650; font-variant-numeric: tabular-nums; }
 .pa-cnt.hot { background: var(--red); color: #fff; }
 .pa-cnt.warm { background: color-mix(in srgb, var(--orange) 16%, var(--bg)); color: var(--orange); }

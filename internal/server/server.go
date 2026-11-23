@@ -32,6 +32,7 @@ import (
 	"cc-webui/internal/mcodehist"
 	"cc-webui/internal/opencodehist"
 	"cc-webui/internal/runner"
+	"cc-webui/internal/schedule"
 	"cc-webui/internal/store"
 )
 
@@ -195,6 +196,18 @@ type Server struct {
 	// httpSrv is set by Run and used by Shutdown for a graceful stop.
 	httpMu  sync.Mutex
 	httpSrv *http.Server
+
+	// sched* own the scheduled-prompt store (<data_dir>/schedules.json) and the
+	// background tick loop started by Run. The store is lazy because tests build
+	// a Server literal without New.
+	schedMu    sync.Mutex
+	schedStore *schedule.Store
+	schedStop  chan struct{}
+	schedStart sync.Once
+	// schedDeliver is a test seam: production leaves it nil and fireSchedule
+	// uses deliverA2A (the same path as send_message). Tests set it so a
+	// scheduler test does not spawn an engine process per delivery.
+	schedDeliver func(from, to, message string) error
 }
 
 type ocCatalogEntry struct {
@@ -330,6 +343,15 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/stats", s.auth(s.handleStats))
 	s.mux.Handle("GET /api/notes", s.auth(s.handleGetNotes))
 	s.mux.Handle("PUT /api/notes", s.auth(s.handlePutNotes))
+	// Scheduled prompts: stored in <data_dir>/schedules.json, delivered through
+	// the same A2A path as send_message. See schedules.go.
+	s.mux.Handle("GET /api/schedules", s.auth(s.handleListSchedules))
+	s.mux.Handle("POST /api/schedules", s.auth(s.handleCreateSchedule))
+	s.mux.Handle("POST /api/schedules/preview", s.auth(s.handlePreviewSchedule))
+	s.mux.Handle("PUT /api/schedules/{id}", s.auth(s.handleUpdateSchedule))
+	s.mux.Handle("DELETE /api/schedules/{id}", s.auth(s.handleDeleteSchedule))
+	s.mux.Handle("POST /api/schedules/{id}/enable", s.auth(s.handleEnableSchedule))
+	s.mux.Handle("POST /api/schedules/{id}/run", s.auth(s.handleRunSchedule))
 	s.mux.Handle("POST /api/sessions/{id}/fork", s.auth(s.handleFork))
 	s.mux.Handle("POST /api/sessions/{id}/rewind", s.auth(s.handleRewind))
 	s.mux.Handle("POST /api/sessions/{id}/permissions/request", s.auth(s.handlePermissionRequest))
@@ -3188,6 +3210,7 @@ func (s *Server) serveStatic() http.Handler {
 // Run serves until Shutdown is called (or the listener fails).
 func (s *Server) Run() error {
 	log.Printf("agentdeck listening on %s", s.cfg().Listen)
+	s.startScheduler()
 	srv := &http.Server{Addr: s.cfg().Listen, Handler: s.mux}
 	s.setHTTPServer(srv)
 	err := srv.ListenAndServe()
@@ -3200,6 +3223,7 @@ func (s *Server) Run() error {
 // Shutdown stops accepting connections and waits for in-flight requests, so
 // the caller can then close the pooled `opencode serve` children cleanly.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.stopScheduler()
 	defer s.closeAgentBoardDB()
 	srv := s.httpServer()
 	if srv == nil {

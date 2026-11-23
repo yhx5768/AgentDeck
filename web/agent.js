@@ -98,6 +98,7 @@ const PA_ICONS = {
   inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
   bot: '<rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><path d="M8 16h.01M16 16h.01"/>',
   kanban: '<path d="M6 5v11"/><path d="M12 5v6"/><path d="M18 5v14"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   help: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
   pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
@@ -535,7 +536,7 @@ function paRaisePermBanners() {
     if (typeof dropToast === 'function') dropToast(key);
   }
 }
-// ---------- 左栏：三个入口 ----------
+// ---------- 左栏：四个入口 ----------
 function paRenderNav() {
   const nav = $('#pa-nav');
   if (!nav || !agentModeOn()) return;
@@ -558,6 +559,7 @@ function paRenderNav() {
     item('queue', 'inbox', '需要你', hot ? paEl('i', { class: 'pa-live' }) : null, cnt(c.all, hot ? 'hot' : 'warm', '在等你处理的事')),
     item('chat', 'bot', '主 Agent 会话', pa.unseen ? paEl('em', { class: 'pa-cnt', text: '+' + pa.unseen, title: '新回报已折叠，不打扰' }) : null),
     item('board', 'kanban', '看板任务', cnt(boardN, 'warm', '看板任务总数（含新建/已完成）')),
+    item('schedules', 'clock', '定时任务', paEl('span', { class: 'pa-nav-hint', text: 'cron 投递' })),
   );
 }
 
@@ -830,6 +832,15 @@ async function paSubmitMainAgent(btn) {
 function agentShowView(view) {
   if (!agentModeOn()) return false;
   if (view === 'queue') return paShowQueue();
+  if (view === 'schedules') {
+    if (typeof schedulesOpen !== 'function') return false;
+    schedulesOpen();
+    pa.view = 'schedules';
+    paRenderNav();
+    agentRenderCluster();
+    paSyncAside();
+    return true;
+  }
   return paShowMain(view === 'board' ? 'board' : 'chat');
 }
 function paShowQueue() {
@@ -901,7 +912,7 @@ function agentHideNeedsView() {
   // 队列 / 主会话被别的视图（群聊 / 新建 / 分享管理）顶掉：中栏已经不是它了，导航高亮要跟着；
   // 队列被顶掉时记一笔，分享管理关闭时能回来
   if (wasQueue && pa.view === 'queue') pa.resumeQueue = true;
-  if (pa.view === 'queue' || pa.view === 'chat' || pa.view === 'board') {
+  if (pa.view === 'queue' || pa.view === 'chat' || pa.view === 'board' || pa.view === 'schedules') {
     pa.view = 'session';
     paRenderNav();
     agentRenderCluster();

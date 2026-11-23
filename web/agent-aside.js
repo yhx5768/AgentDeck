@@ -14,7 +14,7 @@ function paDocked() { return window.innerWidth >= PA_DOCK_MIN; }
 function paIsMobile() { return window.innerWidth <= 640; }
 // 右栏是看板卡的详情，只跟主 Agent（需要你队列 / 主会话 / 看板）：打开 worker 会话等「别的视图」时整个收起，
 // 不跟着 worker 会话走；回到主 Agent 会话再按用户之前开 / 关的偏好显示。
-function paAsideAllowed() { return agentModeOn() && pa.view !== 'session'; }
+function paAsideAllowed() { return agentModeOn() && pa.view !== 'session' && pa.view !== 'schedules'; }
 function paAsideVisible() {
   if (!paAsideAllowed()) return false;
   return paDocked() ? pa.asideOpen : pa.asideShown;
@@ -119,7 +119,7 @@ function agentRenderTabbar() {
     type: 'button', class: 'pa-tab-i' + (pa.view === view ? ' on' : ''), 'aria-current': pa.view === view ? 'page' : null,
     onclick: () => agentShowView(view),
   }, paEl('span', { class: 'ic', html: paSvg(icon, 'l') + (n ? '<b class="' + (hot ? 'hot' : '') + '">' + (n > 9 ? '9+' : n) + '</b>' : '') }), paEl('span', { text: label }));
-  bar.append(tab('queue', 'inbox', '需要你', c.all, paHasLivePerm()), tab('chat', 'bot', '对话', pa.unseen, false), tab('board', 'kanban', '看板', waiting, false));
+  bar.append(tab('queue', 'inbox', '需要你', c.all, paHasLivePerm()), tab('chat', 'bot', '对话', pa.unseen, false), tab('board', 'kanban', '看板', waiting, false), tab('schedules', 'clock', '定时', 0, false));
 }
 
 // ---------- 对外挂点 ----------
