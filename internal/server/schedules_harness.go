@@ -1,10 +1,12 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -74,98 +76,170 @@ type harnessTaskView struct {
 	ImportedID string `json:"imported_id,omitempty"`
 }
 
-// harnessCwds collects session workspaces so discovery can find the
-// project-local .claude/scheduled_tasks.json.
+type harnessFileView struct {
+	Path      string            `json:"path"`
+	Workspace string            `json:"workspace"`
+	Container string            `json:"container"` // workspace | global
+	Error     string            `json:"error,omitempty"`
+	Empty     bool              `json:"empty"`
+	Tasks     []harnessTaskView `json:"tasks"`
+}
+
+type harnessGroupView struct {
+	Workspace string            `json:"workspace"`
+	Container string            `json:"container"`
+	TaskCount int               `json:"task_count"`
+	Files     []harnessFileView `json:"files"`
+}
+
+type harnessListResp struct {
+	Groups     []harnessGroupView `json:"groups"`
+	Files      []harnessFileView  `json:"files"`
+	Candidates []string           `json:"candidates"`
+	Path       string             `json:"path"`
+	Error      string             `json:"error"`
+	Tasks      []harnessTaskView  `json:"tasks"`
+}
+
+// harnessCwds lists workspaces to scan: the main agent's cwd first, then every
+// non-shadow session cwd, deduplicated. Each yields <cwd>/.claude/scheduled_tasks.json.
 func (s *Server) harnessCwds() []string {
+	var mainCwd string
 	var out []string
+	seen := map[string]bool{}
+	add := func(cwd string) {
+		cwd = strings.TrimSpace(cwd)
+		if cwd == "" || seen[cwd] {
+			return
+		}
+		seen[cwd] = true
+		out = append(out, cwd)
+	}
 	for _, sess := range s.st.List() {
 		if sess.GroupID != "" || strings.TrimSpace(sess.Cwd) == "" {
 			continue
 		}
-		out = append(out, sess.Cwd)
+		if sess.MainAgent && !sess.Archived && mainCwd == "" {
+			mainCwd = sess.Cwd
+		}
+		add(sess.Cwd)
+	}
+	if mainCwd != "" {
+		// mainAgent first: its workspace is the one most users care about.
+		for i, c := range out {
+			if c == mainCwd {
+				copy(out[1:i+1], out[0:i])
+				out[0] = mainCwd
+				break
+			}
+		}
 	}
 	return out
 }
 
-// resolveHarnessPath accepts an explicit path (shown in the UI) or discovers
-// one from env / cwd / session workspaces / ~/.claude. Explicit paths must be
-// named scheduled_tasks.json so this endpoint cannot read arbitrary files.
-func (s *Server) resolveHarnessPath(explicit string) (string, []string, error) {
-	candidates := schedule.DiscoverHarnessPaths(s.harnessCwds())
-	explicit = strings.TrimSpace(explicit)
-	if explicit == "" {
-		if len(candidates) == 0 {
-			return "", candidates, nil
+func (s *Server) harnessStoredPaths() []string {
+	var out []string
+	for _, t := range s.scheduleStore().List() {
+		if t.Source == "harness" && strings.TrimSpace(t.SourcePath) != "" {
+			out = append(out, t.SourcePath)
 		}
-		return candidates[0], candidates, nil
 	}
-	p := explicit
+	return out
+}
+
+func expandHome(p string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", candidates, fmt.Errorf("展开家目录失败：%v", err)
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(p, "~/"))
 		}
-		p = filepath.Join(home, strings.TrimPrefix(p, "~/"))
 	}
-	abs, err := filepath.Abs(p)
+	return p
+}
+
+// validateHarnessPath turns a user-supplied path into an absolute existing file.
+// Only scheduled_tasks.json is accepted so this endpoint cannot read arbitrary
+// files.
+func validateHarnessPath(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("路径为空")
+	}
+	abs, err := filepath.Abs(expandHome(raw))
 	if err != nil {
-		return "", candidates, fmt.Errorf("路径无效：%v", err)
+		return "", fmt.Errorf("路径无效：%v", err)
 	}
 	if filepath.Base(abs) != schedule.HarnessFileName {
-		return "", candidates, fmt.Errorf("只支持读取名为 %s 的文件", schedule.HarnessFileName)
+		return "", fmt.Errorf("只支持读取名为 %s 的文件", schedule.HarnessFileName)
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
-		return "", candidates, fmt.Errorf("读取不到 harness 文件：%v", err)
+		return "", fmt.Errorf("读取不到 harness 文件：%v", err)
 	}
 	if info.IsDir() {
-		return "", candidates, fmt.Errorf("路径是目录，不是 %s", schedule.HarnessFileName)
+		return "", fmt.Errorf("路径是目录，不是 %s", schedule.HarnessFileName)
 	}
-	return abs, candidates, nil
+	return abs, nil
 }
 
-func (s *Server) importedHarnessIDs() map[string]string {
-	out := map[string]string{}
+func harnessContainer(workspace string) string {
+	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(workspace) == filepath.Clean(home) {
+		return "global"
+	}
+	return "workspace"
+}
+
+type importedHarness struct {
+	byPath map[string]string // path \x00 id -> schedule id
+	legacy map[string]string // id -> schedule id (v2 imports without source_path)
+}
+
+func (s *Server) importedHarness() importedHarness {
+	out := importedHarness{byPath: map[string]string{}, legacy: map[string]string{}}
 	for _, t := range s.scheduleStore().List() {
-		if t.Source == "harness" && t.SourceID != "" {
-			out[t.SourceID] = t.ID
+		if t.Source != "harness" || t.SourceID == "" {
+			continue
 		}
+		if t.SourcePath == "" {
+			out.legacy[t.SourceID] = t.ID
+			continue
+		}
+		out.byPath[t.SourcePath+"\x00"+t.SourceID] = t.ID
 	}
 	return out
 }
 
-// handleHarnessTasks lists Claude Code harness tasks (source=harness) without
-// touching the file. Read/discovery problems are reported in the body (200) so
-// the UI can show the path input and a hint instead of a hard error page.
-func (s *Server) handleHarnessTasks(w http.ResponseWriter, r *http.Request) {
-	path, candidates, err := s.resolveHarnessPath(r.URL.Query().Get("path"))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	resp := map[string]any{
-		"path":       path,
-		"candidates": candidates,
-		"tasks":      []harnessTaskView{},
-		"error":      "",
-	}
-	if path == "" {
-		resp["error"] = "未找到 .claude/scheduled_tasks.json；可在页面上填写路径，或设置 CC_WEBUI_HARNESS_TASKS"
-		writeJSON(w, http.StatusOK, resp)
-		return
+func (s *Server) readHarnessFileView(path string, imported importedHarness) harnessFileView {
+	workspace := schedule.WorkspaceRoot(path)
+	f := harnessFileView{
+		Path: path, Workspace: workspace, Container: harnessContainer(workspace),
+		Tasks: []harnessTaskView{},
 	}
 	tasks, err := schedule.ReadHarnessFile(path)
 	if err != nil {
-		resp["error"] = err.Error()
-		writeJSON(w, http.StatusOK, resp)
-		return
+		switch {
+		case errors.Is(err, schedule.ErrHarnessNotExist):
+			f.Error = "文件不存在"
+		case errors.Is(err, schedule.ErrHarnessInvalidJSON):
+			f.Error = "JSON 解析失败：" + err.Error()
+		default:
+			f.Error = err.Error()
+		}
+		return f
 	}
-	imported := s.importedHarnessIDs()
-	views := make([]harnessTaskView, 0, len(tasks))
+	if len(tasks) == 0 {
+		f.Empty = true
+		return f
+	}
 	for _, t := range tasks {
 		v := harnessTaskView{
 			ID: t.ID, Cron: t.Cron, Prompt: t.Prompt, Recurring: t.Recurring,
-			Name: schedule.HarnessName(t), ImportedID: imported[t.ID],
+			Name: schedule.HarnessName(t),
+			// Legacy (v2) imports have no source_path; matching by id is the
+			// best we can do and ids are random 8-char strings.
+			ImportedID: imported.byPath[path+"\x00"+t.ID],
+		}
+		if v.ImportedID == "" {
+			v.ImportedID = imported.legacy[t.ID]
 		}
 		if !t.CreatedAt.IsZero() {
 			v.CreatedAt = t.CreatedAt.UnixMilli()
@@ -175,16 +249,107 @@ func (s *Server) handleHarnessTasks(w http.ResponseWriter, r *http.Request) {
 		} else {
 			v.Valid = true
 		}
-		views = append(views, v)
+		f.Tasks = append(f.Tasks, v)
 	}
-	resp["tasks"] = views
+	return f
+}
+
+// handleHarnessTasks returns every discoverable harness file grouped by
+// workspace. An explicit ?path= restricts the response to that one file.
+// Missing/malformed files are reported per file (200) so one bad project does
+// not hide the rest.
+func (s *Server) handleHarnessTasks(w http.ResponseWriter, r *http.Request) {
+	explicit := strings.TrimSpace(r.URL.Query().Get("path"))
+	var groups []schedule.WorkspacePaths
+	var candidates []string
+	cwds := s.harnessCwds()
+
+	if explicit != "" {
+		abs, err := validateHarnessPath(explicit)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		groups = []schedule.WorkspacePaths{{Workspace: schedule.WorkspaceRoot(abs), Paths: []string{abs}}}
+		candidates = []string{abs}
+	} else {
+		groups = schedule.DiscoverHarnessGroups(cwds, s.harnessStoredPaths())
+		// Stored import paths that no longer exist should still appear (with a
+		// "文件不存在" note) instead of silently vanishing.
+		discovered := map[string]bool{}
+		for _, g := range groups {
+			for _, p := range g.Paths {
+				discovered[p] = true
+			}
+		}
+		for _, p := range s.harnessStoredPaths() {
+			if discovered[p] {
+				continue
+			}
+			ws := schedule.WorkspaceRoot(p)
+			merged := false
+			for i := range groups {
+				if groups[i].Workspace == ws {
+					groups[i].Paths = append(groups[i].Paths, p)
+					merged = true
+					break
+				}
+			}
+			if !merged {
+				groups = append(groups, schedule.WorkspacePaths{Workspace: ws, Paths: []string{p}})
+			}
+			discovered[p] = true
+		}
+		for _, g := range groups {
+			candidates = append(candidates, g.Paths...)
+		}
+	}
+
+	imported := s.importedHarness()
+	resp := harnessListResp{
+		Groups: []harnessGroupView{}, Files: []harnessFileView{}, Candidates: candidates,
+		Tasks: []harnessTaskView{},
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		a, b := groups[i].Workspace, groups[j].Workspace
+		mainCwd := ""
+		if len(cwds) > 0 {
+			mainCwd = cwds[0]
+		}
+		if mainCwd != "" && (a == mainCwd) != (b == mainCwd) {
+			return a == mainCwd
+		}
+		ag, bg := harnessContainer(a) == "global", harnessContainer(b) == "global"
+		if ag != bg {
+			return !ag
+		}
+		return a < b
+	})
+	for _, g := range groups {
+		sort.Strings(g.Paths)
+		gv := harnessGroupView{
+			Workspace: g.Workspace, Container: harnessContainer(g.Workspace),
+			Files: []harnessFileView{},
+		}
+		for _, p := range g.Paths {
+			fv := s.readHarnessFileView(p, imported)
+			gv.Files = append(gv.Files, fv)
+			gv.TaskCount += len(fv.Tasks)
+			resp.Files = append(resp.Files, fv)
+			resp.Tasks = append(resp.Tasks, fv.Tasks...)
+			if resp.Path == "" {
+				resp.Path = p
+			}
+		}
+		resp.Groups = append(resp.Groups, gv)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleImportHarnessTask copies one harness task into AgentDeck. The copy is
-// disabled by default (both would otherwise fire), records source/source_id,
-// and gets MaxRuns=1 when the harness task is one-shot. The source file is
-// never modified.
+// disabled by default (both would otherwise fire), records source/path/id, and
+// gets MaxRuns=1 when the harness task is one-shot. The source file is never
+// modified. Duplicate detection is per (path, id).
 func (s *Server) handleImportHarnessTask(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path          string `json:"path"`
@@ -201,14 +366,21 @@ func (s *Server) handleImportHarnessTask(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "缺少 harness 任务 id")
 		return
 	}
-	path, _, err := s.resolveHarnessPath(body.Path)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if path == "" {
-		writeErr(w, http.StatusBadRequest, "未找到 .claude/scheduled_tasks.json")
-		return
+	var path string
+	if strings.TrimSpace(body.Path) != "" {
+		abs, err := validateHarnessPath(body.Path)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		path = abs
+	} else {
+		paths := schedule.DiscoverHarnessPaths(s.harnessCwds())
+		if len(paths) == 0 {
+			writeErr(w, http.StatusBadRequest, "未发现可导入的 harness 文件，请显式提供 path")
+			return
+		}
+		path = paths[0]
 	}
 	tasks, err := schedule.ReadHarnessFile(path)
 	if err != nil {
@@ -240,7 +412,19 @@ func (s *Server) handleImportHarnessTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	for _, existing := range s.scheduleStore().List() {
-		if existing.Source == "harness" && existing.SourceID == src.ID {
+		if existing.Source != "harness" || existing.SourceID != src.ID {
+			continue
+		}
+		if existing.SourcePath == path {
+			writeErr(w, http.StatusConflict, "该 harness 任务已导入（"+existing.ID+"）")
+			return
+		}
+		if existing.SourcePath == "" {
+			// Migrate a v2 import that predates source_path so future
+			// duplicate checks are exact.
+			_, _ = s.scheduleStore().Update(existing.ID, func(t *schedule.Task) {
+				t.SourcePath = path
+			})
 			writeErr(w, http.StatusConflict, "该 harness 任务已导入（"+existing.ID+"）")
 			return
 		}
@@ -266,6 +450,7 @@ func (s *Server) handleImportHarnessTask(w http.ResponseWriter, r *http.Request)
 		Enabled:       enabled,
 		Source:        "harness",
 		SourceID:      src.ID,
+		SourcePath:    path,
 	}
 	if !src.Recurring {
 		task.MaxRuns = 1

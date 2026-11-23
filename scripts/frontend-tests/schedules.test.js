@@ -37,8 +37,8 @@ const HTML = `<!doctype html><html><body>
             <span class="sched-harness-hint"></span>
           </div>
           <div class="sched-harness-tools">
-            <input id="sched-harness-path">
-            <button id="sched-harness-refresh"></button>
+            <button id="sched-harness-add"></button>
+            <button id="sched-harness-restore" class="hidden"></button>
           </div>
         </div>
         <div id="sched-harness-error" class="hidden"></div>
@@ -67,6 +67,11 @@ const HTML = `<!doctype html><html><body>
       <input id="sched-name">
       <div id="sched-next-preview"></div>
       <textarea id="sched-prompt"></textarea>
+      <div id="sched-prompt-hint" class="hidden"></div>
+      <div class="sched-final-preview">
+        <span class="sched-final-label"></span>
+        <div id="sched-final-text"></div>
+      </div>
       <select id="sched-target"></select>
       <input type="checkbox" id="sched-enabled" checked>
       <div id="sched-modal-error" class="hidden"></div>
@@ -91,7 +96,9 @@ const state = {
   ],
 };
 window.__tasks = [];
-window.__harness = { path: '', candidates: [], tasks: [], error: '' };
+window.__harness = { groups: [], files: [], candidates: [], error: '', path: '' };
+window.__manualPath = '';
+window.__promptPath = '';
 window.__apiCalls = [];
 window.__confirmText = '';
 window.__apiHandler = null;
@@ -107,6 +114,23 @@ function api(path, opts = {}) {
     return Promise.resolve({ tasks: window.__tasks, now: Date.now() });
   }
   if (path.startsWith('/api/schedules/harness') && method === 'GET') {
+    if (path.includes('?path=')) {
+      const q = decodeURIComponent(path.split('?path=')[1]);
+      if (q !== window.__manualPath) {
+        return Promise.reject(new Error('读取不到 harness 文件：' + q));
+      }
+      return Promise.resolve({
+        path: q, candidates: [q],
+        files: [
+          { path: q, workspace: '/ws/manual', container: 'workspace', empty: false,
+            tasks: [{ id: 'm1', cron: '0 8 * * *', prompt: '手动路径任务', recurring: true, name: '手动路径任务', valid: true }] },
+        ],
+        groups: [{ workspace: '/ws/manual', container: 'workspace', task_count: 1, files: [
+          { path: q, workspace: '/ws/manual', container: 'workspace', empty: false,
+            tasks: [{ id: 'm1', cron: '0 8 * * *', prompt: '手动路径任务', recurring: true, name: '手动路径任务', valid: true }] },
+        ] }],
+      });
+    }
     return Promise.resolve(window.__harness);
   }
   if (path === '/api/schedules/parse' && method === 'POST') {
@@ -131,8 +155,13 @@ function api(path, opts = {}) {
     return Promise.resolve({ next_run_local: '2026-11-24 09:00', timezone: 'CST' });
   }
   if (path === '/api/schedules/import-harness' && method === 'POST') {
-    const t = (window.__harness.tasks || []).find((x) => x.id === body.id);
-    if (t) t.imported_id = 'imported-1';
+    for (const g of window.__harness.groups || []) {
+      for (const f of g.files || []) {
+        if (f.path !== body.path) continue;
+        const t = (f.tasks || []).find((x) => x.id === body.id);
+        if (t) t.imported_id = 'imported-' + body.id;
+      }
+    }
     return Promise.resolve({ ok: true });
   }
   return Promise.resolve({ ok: true });
@@ -148,9 +177,12 @@ function switchChatTab() {}
 function agentModeOn() { return false; }
 function agentRestoreView() {}
 function confirm(msg) { window.__confirmText = msg; return true; }
+function prompt(msg) { window.__promptMsg = msg; return window.__promptPath; }
 `;
 
 w.eval(STUBS + '\n' + src + '\nschedBind();');
+// jsdom 自带一个返回 null 的 window.prompt，函数声明覆盖不了它；从 Node 侧重写。
+w.prompt = () => w.__promptPath;
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const settle = async () => { await tick(); await tick(); };
@@ -189,12 +221,27 @@ const candidateCards = () => [...doc.querySelectorAll('#sched-candidates .sched-
     },
   ];
   w.__harness = {
-    path: '/home/u/proj/.claude/scheduled_tasks.json',
-    candidates: ['/home/u/proj/.claude/scheduled_tasks.json'],
+    path: '/ws/main/.claude/scheduled_tasks.json',
+    candidates: ['/ws/main/.claude/scheduled_tasks.json', '/ws/other/.claude/scheduled_tasks.json', '/ws/empty/.claude/scheduled_tasks.json', '/ws/bad/.claude/scheduled_tasks.json'],
     error: '',
-    tasks: [
-      { id: 'h-once', cron: '0 10 24 11 *', prompt: 'M145 稳定性检查\\n细节', recurring: false, name: 'M145 稳定性检查', valid: true },
-      { id: 'h-daily', cron: '7 9 * * 1-5', prompt: '每日看板巡检', recurring: true, name: '每日看板巡检', valid: true },
+    files: [],
+    groups: [
+      { workspace: '/ws/main', container: 'workspace', task_count: 1, files: [
+        { path: '/ws/main/.claude/scheduled_tasks.json', workspace: '/ws/main', container: 'workspace', empty: false, tasks: [
+          { id: 'h-once', cron: '0 10 24 11 *', prompt: 'M145 稳定性检查\\n细节', recurring: false, name: 'M145 稳定性检查', valid: true },
+        ] },
+      ] },
+      { workspace: '/ws/other', container: 'workspace', task_count: 1, files: [
+        { path: '/ws/other/.claude/scheduled_tasks.json', workspace: '/ws/other', container: 'workspace', empty: false, tasks: [
+          { id: 'h-daily', cron: '7 9 * * 1-5', prompt: '每日看板巡检', recurring: true, name: '每日看板巡检', valid: true },
+        ] },
+      ] },
+      { workspace: '/ws/empty', container: 'workspace', task_count: 0, files: [
+        { path: '/ws/empty/.claude/scheduled_tasks.json', workspace: '/ws/empty', container: 'workspace', empty: true, tasks: [] },
+      ] },
+      { workspace: '/ws/bad', container: 'workspace', task_count: 0, files: [
+        { path: '/ws/bad/.claude/scheduled_tasks.json', workspace: '/ws/bad', container: 'workspace', empty: false, error: 'JSON 解析失败：unexpected end', tasks: [] },
+      ] },
     ],
   };
 
@@ -239,18 +286,44 @@ const candidateCards = () => [...doc.querySelectorAll('#sched-candidates .sched-
   check('删除前 confirm 带任务名', w.__confirmText.includes('每日站会'), w.__confirmText);
   check('删除发 DELETE', calls().some((c) => c.path === '/api/schedules/t1' && c.method === 'DELETE'));
 
-  // ---------- harness 只读列表 + 导入 ----------
-  check('harness 列表两行', hrows().length === 2, String(hrows().length));
-  check('harness 路径回填', doc.querySelector('#sched-harness-path').value === '/home/u/proj/.claude/scheduled_tasks.json');
+  // ---------- harness：多 workspace 只读列表 + 导入 ----------
+  const hgroups = () => [...doc.querySelectorAll('#sched-harness-list .sched-harness-group')];
+  const hfiles = () => [...doc.querySelectorAll('#sched-harness-list .sched-harness-file')];
+  check('harness 按 workspace 分 4 组', hgroups().length === 4, String(hgroups().length));
+  check('第一组是 mainAgent workspace', hgroups()[0].querySelector('.sched-harness-workspace').textContent === '/ws/main',
+    hgroups()[0].querySelector('.sched-harness-workspace').textContent);
+  check('组头显示任务数', hgroups()[0].textContent.includes('1 个任务'));
+  check('各组都显示 workspace 路径', hgroups().map((g) => g.querySelector('.sched-harness-workspace').textContent).join(',') ===
+    '/ws/main,/ws/other,/ws/empty,/ws/bad');
+  check('harness 任务行两行', hrows().length === 2, String(hrows().length));
+  check('空文件给空态不报错', hfiles()[2].textContent.includes('这个文件里没有任务') &&
+    !hfiles()[2].classList.contains('sched-harness-task-error'));
+  check('坏 JSON 只标该文件错误', hfiles()[3].textContent.includes('JSON 解析失败'));
   check('harness 一次性标记', hrows()[0].textContent.includes('一次性'));
   check('harness 周期标记', hrows()[1].textContent.includes('周期'));
   check('harness 不显示删除', !rowBtn(hrows()[0], '删除'));
   hrows()[0].querySelector('.sched-btn').click();
   await settle();
   const imp = calls().find((c) => c.path === '/api/schedules/import-harness');
-  check('导入发 POST + 源 id', !!imp && imp.body.id === 'h-once' && imp.body.path.includes('scheduled_tasks.json'),
-    JSON.stringify(imp && imp.body));
+  check('导入发 POST + 源路径/id', !!imp && imp.body.id === 'h-once' &&
+    imp.body.path === '/ws/main/.claude/scheduled_tasks.json', JSON.stringify(imp && imp.body));
   check('导入后标记已导入', hrows()[0].textContent.includes('已导入'), hrows()[0].textContent);
+
+  // 手动移除 / 恢复（只影响显示）。
+  hfiles()[0].querySelector('.sched-harness-remove').click();
+  check('移除后该文件消失', !hfiles().some((f) => f.dataset.path === '/ws/main/.claude/scheduled_tasks.json'));
+  check('恢复按钮出现', !doc.querySelector('#sched-harness-restore').classList.contains('hidden'));
+  doc.querySelector('#sched-harness-restore').click();
+  await settle();
+  check('恢复后文件回来', hfiles().some((f) => f.dataset.path === '/ws/main/.claude/scheduled_tasks.json'));
+
+  // 手动添加路径：走 ?path= 校验后并入分组。
+  w.__promptPath = '/ws/manual/.claude/scheduled_tasks.json';
+  w.__manualPath = w.__promptPath;
+  doc.querySelector('#sched-harness-add').click();
+  await settle();
+  check('手动添加路径后出现新 workspace', hgroups().some((g) => g.querySelector('.sched-harness-workspace').textContent === '/ws/manual'));
+  check('手动路径任务可导入', hrows().length === 3, String(hrows().length));
 
   // ---------- 自然语言新建 ----------
   doc.querySelector('#sched-new').click();
@@ -267,6 +340,24 @@ const candidateCards = () => [...doc.querySelectorAll('#sched-candidates .sched-
   check('候选写入 cron', doc.querySelector('#sched-cron').value === '0 9 * * *');
   check('候选名称填入名称框', doc.querySelector('#sched-name').value === '看板巡检');
   check('候选显示下次执行', candidateCards()[0].textContent.includes('2026-11-24 09:00'));
+  check('解析后 prompt 自动填入描述', doc.querySelector('#sched-prompt').value === nl.value,
+    doc.querySelector('#sched-prompt').value);
+  check('最终 prompt 预览显示描述', doc.querySelector('#sched-final-text').textContent === nl.value,
+    doc.querySelector('#sched-final-text').textContent);
+  check('prompt 有内容时隐藏空提示', doc.querySelector('#sched-prompt-hint').classList.contains('hidden'));
+
+  // 清空 prompt：保留「留空则使用描述」提示，最终预览回退到描述。
+  const promptEl = doc.querySelector('#sched-prompt');
+  promptEl.value = '';
+  promptEl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('清空 prompt 显示回退提示', !doc.querySelector('#sched-prompt-hint').classList.contains('hidden'));
+  check('清空后最终预览回退描述', doc.querySelector('#sched-final-text').textContent === nl.value,
+    doc.querySelector('#sched-final-text').textContent);
+  promptEl.value = '自定义最终 prompt';
+  promptEl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('手写 prompt 后最终预览跟随', doc.querySelector('#sched-final-text').textContent === '自定义最终 prompt');
+  promptEl.value = '';
+  promptEl.dispatchEvent(new w.Event('input', { bubbles: true }));
 
   // 描述兼作 prompt；名称/目标默认即可保存。
   doc.querySelector('#sched-save').click();
@@ -305,6 +396,26 @@ const candidateCards = () => [...doc.querySelectorAll('#sched-candidates .sched-
   await settle();
   check('解析失败显示原因', !doc.querySelector('#sched-parse-error').classList.contains('hidden') &&
     doc.querySelector('#sched-parse-error').textContent.includes('频率'));
+  doc.querySelector('#sched-cancel').click();
+
+  // 描述改了，自动填入的 prompt 跟着更新（手改过的 prompt 不覆盖）。
+  doc.querySelector('#sched-new').click();
+  const autoNl = doc.querySelector('#sched-nl-text');
+  autoNl.value = '每天9点巡检';
+  autoNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  doc.querySelector('#sched-parse').click();
+  await settle();
+  check('解析后 prompt = 描述', doc.querySelector('#sched-prompt').value === '每天9点巡检');
+  autoNl.value = '每天9点巡检看板';
+  autoNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('描述修改后自动 prompt 跟随', doc.querySelector('#sched-prompt').value === '每天9点巡检看板',
+    doc.querySelector('#sched-prompt').value);
+  const autoPrompt = doc.querySelector('#sched-prompt');
+  autoPrompt.value = '我自己的 prompt';
+  autoPrompt.dispatchEvent(new w.Event('input', { bubbles: true }));
+  autoNl.value = '每天9点巡检看板和 worker';
+  autoNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('手改 prompt 后不被描述覆盖', doc.querySelector('#sched-prompt').value === '我自己的 prompt');
   doc.querySelector('#sched-cancel').click();
 
   // ---------- cron 模式 ----------

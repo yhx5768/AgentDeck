@@ -2,11 +2,19 @@ package schedule
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+)
+
+// Sentinel errors let the HTTP layer distinguish an empty file from a missing
+// or malformed one without treating all of them as hard failures.
+var (
+	ErrHarnessNotExist    = errors.New("harness 文件不存在")
+	ErrHarnessInvalidJSON = errors.New("harness 文件不是合法 JSON")
 )
 
 // HarnessTask is one entry in Claude Code's .claude/scheduled_tasks.json
@@ -47,7 +55,7 @@ func ParseHarness(data []byte) ([]HarnessTask, error) {
 	}
 	var arr []harnessJSONTask
 	if err := json.Unmarshal(data, &arr); err != nil {
-		return nil, fmt.Errorf("解析 %s 失败：%w", HarnessFileName, err)
+		return nil, fmt.Errorf("%w：%v", ErrHarnessInvalidJSON, err)
 	}
 	return convertHarness(arr), nil
 }
@@ -76,6 +84,9 @@ func ReadHarnessFile(path string) ([]HarnessTask, error) {
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w：%s", ErrHarnessNotExist, path)
+		}
 		return nil, err
 	}
 	return ParseHarness(raw)
@@ -112,28 +123,47 @@ func HarnessName(t HarnessTask) string {
 	return "Harness 定时任务"
 }
 
-// DiscoverHarnessPaths returns existing scheduled_tasks.json files reachable
-// from this process: the explicit env override, the process cwd, every known
-// session cwd, and ~/.claude. The HTTP layer shows the list so a file in an
-// unrelated project can be selected manually.
-func DiscoverHarnessPaths(sessionCwds []string) []string {
-	var out []string
-	seen := map[string]bool{}
-	add := func(p string) {
+// WorkspacePaths is one project's harness file, grouped by workspace root so
+// the UI can show "this project · N tasks".
+type WorkspacePaths struct {
+	Workspace string   `json:"workspace"`
+	Paths     []string `json:"paths"`
+}
+
+// WorkspaceRoot maps a .claude/scheduled_tasks.json path to the workspace it
+// belongs to (the directory containing .claude).
+func WorkspaceRoot(path string) string {
+	dir := filepath.Dir(path)
+	if filepath.Base(dir) == ".claude" {
+		return filepath.Dir(dir)
+	}
+	return dir
+}
+
+// DiscoverHarnessGroups finds existing harness files reachable from this
+// process: CC_WEBUI_HARNESS_TASKS (a filepath.ListSeparator-separated list),
+// the process cwd, every known session cwd, and ~/.claude. Results are grouped
+// by workspace root, paths deduplicated, and only regular files are returned.
+// Imported tasks' source paths are fed in by the server so their workspace
+// groups survive even when the session cwd is gone.
+func DiscoverHarnessGroups(sessionCwds, storedPaths []string) []WorkspacePaths {
+	var out []WorkspacePaths
+	idx := map[string]int{}   // workspace -> index in out
+	seen := map[string]bool{} // absolute file path
+	add := func(workspace, p string) {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			return
 		}
 		if p == "~" || strings.HasPrefix(p, "~/") {
-			if home, err := os.UserHomeDir(); err == nil {
-				p = filepath.Join(home, strings.TrimPrefix(p, "~/"))
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return
 			}
+			p = filepath.Join(home, strings.TrimPrefix(p, "~/"))
 		}
 		abs, err := filepath.Abs(p)
-		if err != nil {
-			return
-		}
-		if seen[abs] {
+		if err != nil || seen[abs] || filepath.Base(abs) != HarnessFileName {
 			return
 		}
 		info, err := os.Stat(abs)
@@ -141,19 +171,47 @@ func DiscoverHarnessPaths(sessionCwds []string) []string {
 			return
 		}
 		seen[abs] = true
-		out = append(out, abs)
+		if workspace == "" {
+			workspace = WorkspaceRoot(abs)
+		}
+		workspace = filepath.Clean(workspace)
+		i, ok := idx[workspace]
+		if !ok {
+			i = len(out)
+			idx[workspace] = i
+			out = append(out, WorkspacePaths{Workspace: workspace})
+		}
+		out[i].Paths = append(out[i].Paths, abs)
 	}
-	add(os.Getenv("CC_WEBUI_HARNESS_TASKS"))
+	for _, p := range filepath.SplitList(os.Getenv("CC_WEBUI_HARNESS_TASKS")) {
+		add("", p)
+	}
 	if cwd, err := os.Getwd(); err == nil {
-		add(filepath.Join(cwd, ".claude", HarnessFileName))
-		add(filepath.Join(cwd, HarnessFileName))
+		add(cwd, filepath.Join(cwd, ".claude", HarnessFileName))
+		add(cwd, filepath.Join(cwd, HarnessFileName))
 	}
 	for _, cwd := range sessionCwds {
-		add(filepath.Join(cwd, ".claude", HarnessFileName))
-		add(filepath.Join(cwd, HarnessFileName))
+		if strings.TrimSpace(cwd) == "" {
+			continue
+		}
+		add(cwd, filepath.Join(cwd, ".claude", HarnessFileName))
+		add(cwd, filepath.Join(cwd, HarnessFileName))
+	}
+	for _, p := range storedPaths {
+		add("", p)
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".claude", HarnessFileName))
+		add("", filepath.Join(home, ".claude", HarnessFileName))
+	}
+	return out
+}
+
+// DiscoverHarnessPaths flattens groups into a path list (kept for callers that
+// only need the first file).
+func DiscoverHarnessPaths(sessionCwds []string) []string {
+	var out []string
+	for _, g := range DiscoverHarnessGroups(sessionCwds, nil) {
+		out = append(out, g.Paths...)
 	}
 	return out
 }

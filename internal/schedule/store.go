@@ -32,12 +32,14 @@ type Task struct {
 	// LastStatus is "ok" or an error string prefixed with "error: ".
 	LastStatus string     `json:"last_status,omitempty"`
 	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
-	// Source/SourceID record that this task was imported from another system.
-	// Empty source = created in AgentDeck. "harness" = imported from Claude
-	// Code's .claude/scheduled_tasks.json; the file is never modified, so the
-	// import is a copy the user can pause/delete independently.
-	Source   string `json:"source,omitempty"`
-	SourceID string `json:"source_id,omitempty"`
+	// Source/SourceID/SourcePath record that this task was imported from another
+	// system. Empty source = created in AgentDeck. "harness" = imported from
+	// Claude Code's .claude/scheduled_tasks.json; the file is never modified, so
+	// the import is a copy the user can pause/delete independently. Duplicate
+	// detection is per (path, id) because different projects may reuse short ids.
+	Source     string `json:"source,omitempty"`
+	SourceID   string `json:"source_id,omitempty"`
+	SourcePath string `json:"source_path,omitempty"`
 	// MaxRuns > 0 marks a one-shot task: after RunCount reaches it the task
 	// disables itself and NextRunAt is cleared. 0 means unlimited.
 	MaxRuns  int `json:"max_runs,omitempty"`

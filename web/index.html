@@ -486,17 +486,18 @@
         <div id="sched-error" class="sched-error hidden" role="alert"></div>
         <div id="sched-list" class="sched-list"></div>
 
-        <!-- Claude Code harness（CronCreate）只读列表 + 导入 -->
+        <!-- Claude Code harness（CronCreate）只读列表 + 导入。
+             扫描每个 workspace 的 .claude/scheduled_tasks.json，按 workspace 分组。 -->
         <section id="sched-harness" class="sched-harness">
           <div class="sched-harness-head">
             <div class="sched-harness-title-row">
               <span class="sched-harness-title">CLI 定时任务（harness）</span>
               <span class="sched-source-badge harness">只读</span>
-              <span class="sched-harness-hint">来自 Claude Code 的 <code>scheduled_tasks.json</code>；导入只会在上面复制一条 AgentDeck 任务（默认停用），不会改这个文件。</span>
+              <span class="sched-harness-hint">按 workspace 扫描 <code>.claude/scheduled_tasks.json</code>；导入只会在上面复制一条 AgentDeck 任务（默认停用），不会改任何 harness 文件。</span>
             </div>
             <div class="sched-harness-tools">
-              <input id="sched-harness-path" spellcheck="false" placeholder="scheduled_tasks.json 路径（留空自动发现）">
-              <button id="sched-harness-refresh" class="ghost-btn" type="button">读取</button>
+              <button id="sched-harness-add" class="ghost-btn" type="button">手动添加路径</button>
+              <button id="sched-harness-restore" class="ghost-btn hidden" type="button">恢复已移除</button>
             </div>
           </div>
           <div id="sched-harness-error" class="sched-harness-error hidden" role="alert"></div>
@@ -763,6 +764,11 @@
     <label>prompt
       <textarea id="sched-prompt" rows="6" spellcheck="false" placeholder="到点后发给目标会话的消息；留空则使用上面的描述"></textarea>
     </label>
+    <div id="sched-prompt-hint" class="sched-prompt-hint hidden">留空时，到点会发送上面的描述。</div>
+    <div class="sched-final-preview">
+      <span class="sched-final-label">到点实际发送</span>
+      <div id="sched-final-text" class="sched-final-text"></div>
+    </div>
     <label>目标会话
       <select id="sched-target"></select>
     </label>

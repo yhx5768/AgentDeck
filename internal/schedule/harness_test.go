@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -61,6 +62,70 @@ func TestHarnessName(t *testing.T) {
 	}
 	if got := []rune(HarnessName(HarnessTask{Prompt: long})); len(got) != 40 {
 		t.Fatalf("long name len = %d", len(got))
+	}
+}
+
+func TestParseHarnessEmpty(t *testing.T) {
+	tasks, err := ParseHarness([]byte(`{"tasks":[]}`))
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("empty harness = %+v, %v", tasks, err)
+	}
+	if _, err := ParseHarness([]byte(`{"tasks":[]`)); !errors.Is(err, ErrHarnessInvalidJSON) {
+		t.Fatalf("malformed JSON error = %v", err)
+	}
+}
+
+func TestWorkspaceRoot(t *testing.T) {
+	cases := map[string]string{
+		"/a/b/.claude/scheduled_tasks.json":    "/a/b",
+		"/a/b/scheduled_tasks.json":            "/a/b",
+		"/home/u/.claude/scheduled_tasks.json": "/home/u",
+	}
+	for in, want := range cases {
+		if got := WorkspaceRoot(in); got != want {
+			t.Errorf("WorkspaceRoot(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDiscoverHarnessGroups(t *testing.T) {
+	ws1, ws2 := t.TempDir(), t.TempDir()
+	p1 := filepath.Join(ws1, ".claude", HarnessFileName)
+	p2 := filepath.Join(ws2, ".claude", HarnessFileName)
+	for _, p := range []string{p1, p2} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(`{"tasks":[]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CC_WEBUI_HARNESS_TASKS", p1)
+	groups := DiscoverHarnessGroups([]string{ws1, ws2}, nil)
+	byWs := map[string][]string{}
+	for _, g := range groups {
+		byWs[g.Workspace] = append(byWs[g.Workspace], g.Paths...)
+	}
+	if got := byWs[ws1]; len(got) != 1 || got[0] != p1 {
+		t.Fatalf("ws1 group = %v", got)
+	}
+	if got := byWs[ws2]; len(got) != 1 || got[0] != p2 {
+		t.Fatalf("ws2 group = %v", got)
+	}
+	// Duplicates (env + session cwd) collapse to one path.
+	total := 0
+	for _, ps := range byWs {
+		total += len(ps)
+	}
+	if total != 2 {
+		t.Fatalf("discovered %d paths, want 2: %+v", total, groups)
+	}
+}
+
+func TestReadHarnessFileMissing(t *testing.T) {
+	_, err := ReadHarnessFile(filepath.Join(t.TempDir(), HarnessFileName))
+	if !errors.Is(err, ErrHarnessNotExist) {
+		t.Fatalf("missing file error = %v", err)
 	}
 }
 
