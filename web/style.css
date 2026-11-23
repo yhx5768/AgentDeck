@@ -5291,20 +5291,24 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .sched-empty p { margin: 0; max-width: 460px; line-height: 1.6; }
 .sched-card { width: 520px; }
 /* 排期输入方式：自然语言 / cron */
+/* 定时任务弹窗：表单区统一 14px 垂直 rhythm。nl/cron 块内部是普通 div，
+   modal-card 的 gap 管不到，必须单独给它们 flex+gap，否则描述/解析/候选会贴在一起。 */
+#modal-schedule .modal-card { gap: 14px; }
+#sched-nl-block, #sched-cron-block { display: flex; flex-direction: column; gap: 14px; }
 .sched-mode { display: inline-flex; align-self: flex-start; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
 .sched-mode button { border: 0; background: none; color: var(--dim); font-size: 11px; padding: 3px 12px; border-radius: 6px; cursor: pointer; }
 .sched-mode button.active { background: var(--bg); color: var(--fg); box-shadow: 0 0 0 1px var(--border); }
 .sched-nl-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 0; }
-.sched-prompt-hint { margin-top: -8px; font-size: 10px; color: var(--muted); line-height: 1.5; }
+.sched-prompt-hint { margin-top: -4px; font-size: 10px; color: var(--muted); line-height: 1.5; }
 .sched-final-preview { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
 .sched-final-label { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; color: var(--dim); text-transform: uppercase; }
 .sched-final-text { font-size: var(--fs-xs); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow-y: auto; line-height: 1.55; }
 .sched-parse-note { font-size: 10px; color: var(--dim); line-height: 1.5; }
-.sched-candidates { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; }
-.sched-candidate { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg2); cursor: pointer; }
+.sched-candidates { display: flex; flex-direction: column; gap: 10px; max-height: 220px; overflow: auto; }
+.sched-candidate { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--bg2); cursor: pointer; }
 .sched-candidate.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--bg2)); }
 .sched-candidate input { margin-top: 3px; accent-color: var(--accent); }
-.sched-candidate-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sched-candidate-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .sched-candidate-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sched-candidate-top b { font-size: var(--fs-xs); }
 .sched-candidate-next { font-size: 10px; color: var(--dim); font-family: var(--font-mono); }
@@ -5343,7 +5347,7 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 @media (max-width: 900px) {
   .sched-harness-row { flex-direction: column; }
 }
-.sched-examples { display: flex; gap: 6px; flex-wrap: wrap; margin-top: -6px; }
+.sched-examples { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 0; }
 .sched-example { border: 1px solid var(--border); background: var(--bg2); color: var(--dim); border-radius: 999px; padding: 2px 9px; font-size: 10px; cursor: pointer; }
 .sched-example:hover { color: var(--accent); border-color: var(--accent); }
 .sched-next-preview { font-size: 10.5px; color: var(--accent); background: var(--bg2); border: 1px dashed var(--border); border-radius: 6px; padding: 6px 9px; line-height: 1.5; }
@@ -5359,6 +5363,9 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
   .sched-row-name { white-space: normal; overflow-wrap: anywhere; }
 }
 @media (max-width: 640px) {
+  #modal-schedule .modal-card { gap: 12px; }
+  #sched-nl-block, #sched-cron-block { gap: 12px; }
+  .sched-candidate { padding: 12px 10px; }
   .sched-row-meta { gap: 6px; }
   .sched-card { width: 100%; }
 }
