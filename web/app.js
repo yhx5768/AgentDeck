@@ -4275,20 +4275,38 @@ function sharesAdminFiltered() {
   return items;
 }
 
+// 状态统计标签同时是快捷筛选按钮：点击即按该状态过滤列表，并与工具栏里的
+// 状态下拉保持同步（两者读写同一个 sharesAdminFilters.status）。
+function sharesAdminSetStatus(status) {
+  status = status || '';
+  sharesAdminFilters.status = status;
+  const select = $('#shares-status-filter');
+  if (select && select.value !== status) select.value = status;
+  sharesAdminRender();
+}
+
 function sharesAdminRenderSummary(filtered) {
   const summary = $('#shares-summary');
   const count = sharesAdminStatusCounts(sharesAdminItems);
   if (summary) {
     summary.innerHTML = '';
     [
-      ['全部', sharesAdminItems.length, ''],
-      ['有效', count.active, 'active'],
-      ['已过期', count.expired, 'expired'],
-      ['已取消', count.revoked, 'revoked'],
-    ].forEach(([label, value, cls]) => {
-      const chip = document.createElement('span');
-      chip.className = 'shares-count-chip' + (cls ? ' ' + cls : '');
+      ['全部', '', sharesAdminItems.length, ''],
+      ['有效', 'active', count.active, 'active'],
+      ['已过期', 'expired', count.expired, 'expired'],
+      ['已取消', 'revoked', count.revoked, 'revoked'],
+    ].forEach(([label, status, value, cls]) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      const selected = (sharesAdminFilters.status || '') === status;
+      chip.className = 'shares-count-chip shares-status-chip'
+        + (cls ? ' ' + cls : '')
+        + (selected ? ' is-selected' : '');
+      chip.dataset.status = status;
+      chip.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      chip.title = status ? '只看「' + label + '」的分享' : '显示全部状态的分享';
       chip.textContent = label + ' ' + value;
+      chip.addEventListener('click', () => sharesAdminSetStatus(status));
       summary.append(chip);
     });
     // 访问量合计（所有分享，不受筛选影响，与其它计数的口径一致）。

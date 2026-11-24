@@ -2,7 +2,7 @@
 // - 产物行「分享」入口 + 创建弹窗（1/3/7/永久）/复制，不破坏 legacy 行；
 // - 设置页「分享管理」入口 → 独立页面（不是弹窗/抽屉），跨任务列表；
 // - 搜索/状态/任务项目/类型筛选、排序、计数、复制、撤销、续期（原 URL 保留）、
-//   空态、hash 路由。
+//   状态计数按钮（点击筛选 + 选中态 + 与下拉联动）、空态、hash 路由。
 //
 // 局限：jsdom 不做布局/剪贴板；copyText 用 stub 记录调用。
 const fs = require('fs');
@@ -159,6 +159,7 @@ ${grabFn('sharesAdminStatusCounts')}
 ${grabFn('sharesAdminPopulateScope')}
 ${grabFn('sharesAdminFiltered')}
 ${grabFn('sharesAdminVisitTotals')}
+${grabFn('sharesAdminSetStatus')}
 ${grabFn('sharesAdminRenderSummary')}
 ${grabFn('sharesAdminRow')}
 ${grabFn('sharesAdminRender')}
@@ -368,6 +369,43 @@ async function main() {
   rowCopy.click();
   check('列表复制链接', w.__copied[w.__copied.length - 1] === 'https://deck.example/s/T1');
 
+  // 5.5 状态统计标签是可点击的快捷筛选按钮：点一下就按该状态筛选，
+  // 选中态明确（is-selected + aria-pressed），且与工具栏状态下拉双向同步。
+  const chipFor = (status) => doc.querySelector('#shares-summary .shares-status-chip[data-status="' + status + '"]');
+  const statusChips = [...doc.querySelectorAll('#shares-summary .shares-status-chip')];
+  check('状态统计是 4 个按钮（PV/UV 仍是标签）',
+    statusChips.length === 4 && statusChips.every((el) => el.tagName === 'BUTTON')
+    && doc.querySelector('#shares-summary .shares-views-chip').tagName === 'SPAN');
+  check('默认「全部」选中',
+    chipFor('').getAttribute('aria-pressed') === 'true'
+    && chipFor('').classList.contains('is-selected')
+    && chipFor('active').getAttribute('aria-pressed') === 'false');
+  chipFor('expired').click();
+  check('点击「已过期」直接筛选列表',
+    rows().length === 1 && rows()[0].dataset.shareId === 'S-2');
+  check('点击后选中态切换',
+    chipFor('expired').classList.contains('is-selected')
+    && chipFor('expired').getAttribute('aria-pressed') === 'true'
+    && !chipFor('').classList.contains('is-selected'));
+  check('与状态下拉联动', doc.querySelector('#shares-status-filter').value === 'expired');
+  check('筛选不改全局计数',
+    doc.querySelector('#shares-summary .shares-count-chip').textContent === '全部 4');
+  chipFor('active').click();
+  check('切换「有效」按钮', rows().length === 2
+    && rows().map((r) => r.dataset.shareId).join(',') === 'S-4,S-1',
+    rows().map((r) => r.dataset.shareId).join(','));
+  const chipSearch = doc.querySelector('#shares-search');
+  chipSearch.value = '数据包';
+  chipSearch.dispatchEvent(new w.Event('input'));
+  check('状态按钮与搜索联动',
+    rows().length === 1 && rows()[0].dataset.shareId === 'S-4');
+  chipSearch.value = '';
+  chipSearch.dispatchEvent(new w.Event('input'));
+  chipFor('').click();
+  check('点「全部」清除状态筛选',
+    rows().length === 4 && doc.querySelector('#shares-status-filter').value === ''
+    && chipFor('').classList.contains('is-selected'));
+
   // 6. 搜索
   const search = doc.querySelector('#shares-search');
   search.value = '旧报告';
@@ -385,6 +423,8 @@ async function main() {
   statusFilter.value = 'expired';
   statusFilter.dispatchEvent(new w.Event('change'));
   check('状态筛选 expired', rows().length === 1 && rows()[0].dataset.shareId === 'S-2');
+  check('下拉筛选同步按钮选中态', chipFor('expired').classList.contains('is-selected')
+    && chipFor('expired').getAttribute('aria-pressed') === 'true');
   check('筛选不改变全局计数',
     doc.querySelector('#shares-summary .shares-count-chip').textContent === '全部 4');
   statusFilter.value = '';
@@ -520,6 +560,10 @@ async function main() {
   check('CSS: 续期控件内联排布',
     /\.shares-renew\s*\{[^}]*display:\s*inline-flex/s.test(css)
     && /\.shares-renew-days\s*\{/.test(css));
+  check('CSS: 状态按钮可点且有选中态',
+    /\.shares-status-chip\s*\{[^}]*cursor:\s*pointer/s.test(css)
+    && /\.shares-status-chip\.is-selected\s*\{/.test(css)
+    && /\.shares-status-chip\.active\.is-selected\s*\{/.test(css));
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);
