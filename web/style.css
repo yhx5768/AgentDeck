@@ -5291,9 +5291,44 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .sched-empty p { margin: 0; max-width: 460px; line-height: 1.6; }
 .sched-card { width: 520px; }
 /* 排期输入方式：自然语言 / cron */
-/* 定时任务弹窗：表单区统一 14px 垂直 rhythm。nl/cron 块内部是普通 div，
-   modal-card 的 gap 管不到，必须单独给它们 flex+gap，否则描述/解析/候选会贴在一起。 */
-#modal-schedule .modal-card { gap: 14px; }
+/* 定时任务弹窗：固定头/尾 + 中间独立滚动的 body。
+   modal-card 的 gap 管不到 nl/cron 这些普通 div 子节点，rhythm 放在 body 上。 */
+#modal-schedule .sched-dialog {
+  max-height: 90vh;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.sched-dialog-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: var(--sp-5) var(--sp-6) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.sched-dialog-head h3 { margin: 0; }
+.sched-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-4) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.sched-dialog-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: var(--sp-3) var(--sp-6) var(--sp-5);
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.sched-dialog-foot .modal-actions { margin-top: 0; }
 #sched-nl-block, #sched-cron-block { display: flex; flex-direction: column; gap: 14px; }
 .sched-mode { display: inline-flex; align-self: flex-start; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
 .sched-mode button { border: 0; background: none; color: var(--dim); font-size: 11px; padding: 3px 12px; border-radius: 6px; cursor: pointer; }
@@ -5311,9 +5346,9 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .sched-prompt-hint { margin-top: -4px; font-size: 10px; color: var(--muted); line-height: 1.5; }
 .sched-final-preview { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
 .sched-final-label { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; color: var(--dim); text-transform: uppercase; }
-.sched-final-text { font-size: var(--fs-xs); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow-y: auto; line-height: 1.55; }
+.sched-final-text { font-size: var(--fs-xs); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .sched-parse-note { font-size: 10px; color: var(--dim); line-height: 1.5; }
-.sched-candidates { display: flex; flex-direction: column; gap: 10px; max-height: 220px; overflow: auto; }
+.sched-candidates { display: flex; flex-direction: column; gap: 10px; }
 .sched-candidate { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--bg2); cursor: pointer; }
 .sched-candidate.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--bg2)); }
 .sched-candidate input { margin-top: 3px; accent-color: var(--accent); }
@@ -5372,7 +5407,10 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
   .sched-row-name { white-space: normal; overflow-wrap: anywhere; }
 }
 @media (max-width: 640px) {
-  #modal-schedule .modal-card { gap: 12px; }
+  #modal-schedule .sched-dialog { max-height: calc(100vh - 16px); }
+  .sched-dialog-head { padding: 12px 14px 10px; }
+  .sched-dialog-body { padding: 12px 14px; gap: 12px; }
+  .sched-dialog-foot { padding: 10px 14px 14px; }
   #sched-nl-block, #sched-cron-block { gap: 12px; }
   .sched-candidate { padding: 12px 10px; }
   .sched-row-meta { gap: 6px; }

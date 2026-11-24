@@ -734,57 +734,63 @@
 
 <!-- 新建 / 编辑定时任务（schedules.js） -->
 <div id="modal-schedule" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sched-modal-title">
-  <div class="modal-card sched-card">
-    <h3 id="sched-modal-title">新建定时任务</h3>
-    <div id="sched-mode" class="sched-mode" role="group" aria-label="排期输入方式">
-      <button type="button" data-sched-mode="nl" class="active">自然语言</button>
-      <button type="button" data-sched-mode="cron">cron</button>
-    </div>
-    <div id="sched-nl-block">
-      <label>描述
-        <textarea id="sched-nl-text" rows="3" spellcheck="false" placeholder="例：每天9点进行看板巡检，检查常驻 worker 和运行中卡片是否异常"></textarea>
-      </label>
-      <div id="sched-parser" class="sched-parser" role="group" aria-label="解析方式">
-        <button type="button" data-sched-parser="rules" class="active">规则解析</button>
-        <button type="button" data-sched-parser="ai">AI 解析</button>
+  <div class="modal-card sched-card sched-dialog">
+    <div class="sched-dialog-head">
+      <h3 id="sched-modal-title">新建定时任务</h3>
+      <div id="sched-mode" class="sched-mode" role="group" aria-label="排期输入方式">
+        <button type="button" data-sched-mode="nl" class="active">自然语言</button>
+        <button type="button" data-sched-mode="cron">cron</button>
       </div>
-      <div class="sched-nl-row">
-        <button class="ghost-btn" id="sched-parse" type="button">解析</button>
-        <span id="sched-parse-note" class="sched-parse-note">由内置规则解析（快、离线、不耗 token）</span>
+    </div>
+    <div class="sched-dialog-body">
+      <div id="sched-nl-block">
+        <label>描述
+          <textarea id="sched-nl-text" rows="3" spellcheck="false" placeholder="例：每天9点进行看板巡检，检查常驻 worker 和运行中卡片是否异常"></textarea>
+        </label>
+        <div id="sched-parser" class="sched-parser" role="group" aria-label="解析方式">
+          <button type="button" data-sched-parser="rules" class="active">规则解析</button>
+          <button type="button" data-sched-parser="ai">AI 解析</button>
+        </div>
+        <div class="sched-nl-row">
+          <button class="ghost-btn" id="sched-parse" type="button">解析</button>
+          <span id="sched-parse-note" class="sched-parse-note">由内置规则解析（快、离线、不耗 token）</span>
+        </div>
+        <div id="sched-ai-note" class="sched-ai-note hidden">AI 解析会在 mainAgent 工作区跑一次性只读任务，能读 memory / work/tracking；约 1–2 分钟（视 workspace 大小），会消耗 token。</div>
+        <div id="sched-parse-error" class="sched-modal-error hidden" role="alert"></div>
+        <div id="sched-ai-meta" class="sched-ai-meta hidden"></div>
+        <div id="sched-candidates" class="sched-candidates hidden"></div>
+        <div id="sched-ai-rationale" class="sched-ai-rationale hidden"></div>
+        <div id="sched-ai-questions" class="sched-ai-questions hidden"></div>
       </div>
-      <div id="sched-ai-note" class="sched-ai-note hidden">AI 解析会在 mainAgent 工作区跑一次性只读任务，能读 memory / work/tracking；约 1–2 分钟（视 workspace 大小），会消耗 token。</div>
-      <div id="sched-parse-error" class="sched-modal-error hidden" role="alert"></div>
-      <div id="sched-ai-meta" class="sched-ai-meta hidden"></div>
-      <div id="sched-candidates" class="sched-candidates hidden"></div>
-      <div id="sched-ai-rationale" class="sched-ai-rationale hidden"></div>
-      <div id="sched-ai-questions" class="sched-ai-questions hidden"></div>
-    </div>
-    <div id="sched-cron-block" class="hidden">
-      <label>cron（5 段：分 时 日 月 周）
-        <input id="sched-cron" spellcheck="false" autocomplete="off" placeholder="0 9 * * *">
+      <div id="sched-cron-block" class="hidden">
+        <label>cron（5 段：分 时 日 月 周）
+          <input id="sched-cron" spellcheck="false" autocomplete="off" placeholder="0 9 * * *">
+        </label>
+        <div id="sched-cron-examples" class="sched-examples"></div>
+      </div>
+      <label>名称
+        <input id="sched-name" maxlength="80" placeholder="留空则由描述自动生成">
       </label>
-      <div id="sched-cron-examples" class="sched-examples"></div>
+      <div id="sched-next-preview" class="sched-next-preview">输入合法 cron 后显示下次执行时间</div>
+      <label>prompt
+        <textarea id="sched-prompt" rows="6" spellcheck="false" placeholder="到点后发给目标会话的消息；留空则使用上面的描述"></textarea>
+      </label>
+      <div id="sched-prompt-hint" class="sched-prompt-hint hidden">留空时，到点会发送上面的描述。</div>
+      <div class="sched-final-preview">
+        <span class="sched-final-label">到点实际发送</span>
+        <div id="sched-final-text" class="sched-final-text"></div>
+      </div>
+      <label>目标会话
+        <select id="sched-target"></select>
+      </label>
+      <label class="modal-check"><span>启用</span><input type="checkbox" id="sched-enabled" checked></label>
     </div>
-    <label>名称
-      <input id="sched-name" maxlength="80" placeholder="留空则由描述自动生成">
-    </label>
-    <div id="sched-next-preview" class="sched-next-preview">输入合法 cron 后显示下次执行时间</div>
-    <label>prompt
-      <textarea id="sched-prompt" rows="6" spellcheck="false" placeholder="到点后发给目标会话的消息；留空则使用上面的描述"></textarea>
-    </label>
-    <div id="sched-prompt-hint" class="sched-prompt-hint hidden">留空时，到点会发送上面的描述。</div>
-    <div class="sched-final-preview">
-      <span class="sched-final-label">到点实际发送</span>
-      <div id="sched-final-text" class="sched-final-text"></div>
-    </div>
-    <label>目标会话
-      <select id="sched-target"></select>
-    </label>
-    <label class="modal-check"><span>启用</span><input type="checkbox" id="sched-enabled" checked></label>
-    <div id="sched-modal-error" class="sched-modal-error hidden" role="alert"></div>
-    <div class="modal-actions">
-      <button class="ghost-btn" data-close type="button">取消</button>
-      <button class="primary-btn" id="sched-save" type="button">保存</button>
+    <div class="sched-dialog-foot">
+      <div id="sched-modal-error" class="sched-modal-error hidden" role="alert"></div>
+      <div class="modal-actions">
+        <button class="ghost-btn" data-close type="button">取消</button>
+        <button class="primary-btn" id="sched-save" type="button">保存</button>
+      </div>
     </div>
   </div>
 </div>
