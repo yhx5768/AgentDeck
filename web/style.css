@@ -5229,6 +5229,12 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .shares-count-chip.expired { color: var(--warning-fg); border-color: var(--warning-border); }
 .shares-count-chip.revoked { color: var(--red); border-color: var(--red); }
 .shares-count-chip.shares-views-chip { color: var(--accent); border-color: var(--accent); }
+.shares-status-chip { cursor: pointer; font-family: inherit; }
+.shares-status-chip:hover { border-color: var(--fg); }
+.shares-status-chip.is-selected { background: var(--bg3); color: var(--fg); border-color: var(--fg); font-weight: 700; }
+.shares-status-chip.active.is-selected { background: color-mix(in srgb, var(--green) 14%, var(--bg2)); color: var(--green); border-color: var(--green); }
+.shares-status-chip.expired.is-selected { background: color-mix(in srgb, var(--warning-fg) 14%, var(--bg2)); color: var(--warning-fg); border-color: var(--warning-border); }
+.shares-status-chip.revoked.is-selected { background: color-mix(in srgb, var(--red) 14%, var(--bg2)); color: var(--red); border-color: var(--red); }
 .shares-error { font-size: 10.5px; color: var(--red); line-height: 1.5; margin-bottom: 8px; }
 .shares-list { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg2); overflow: hidden; }
 .shares-row { display: grid; grid-template-columns: minmax(190px, 1.35fr) minmax(160px, 1.1fr) minmax(240px, 1.7fr) 72px minmax(150px, auto); gap: 10px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--border); }
