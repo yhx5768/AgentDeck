@@ -35,7 +35,6 @@ const sched = {
   candidates: [],   // 自然语言解析候选
   selectedCron: '',
   parsing: false,
-  autoPrompt: '',   // 描述自动填入的 prompt（描述改了跟着更新；用户手改后不再跟）
   previewSeq: 0,
   pollTimer: 0,
   previewTimer: 0,
@@ -827,7 +826,6 @@ function schedRenderAIResponse(d, text) {
   const promptEl = $('#sched-prompt');
   if (promptEl && proposal.prompt) {
     promptEl.value = proposal.prompt;
-    sched.autoPrompt = '';
   }
   schedSelectCandidate(sched.candidates[0]);
   schedUpdatePromptUI();
@@ -934,7 +932,6 @@ function schedSelectCandidate(c) {
     const text = ($('#sched-nl-text').value || '').trim();
     if (text) {
       promptEl.value = text;
-      sched.autoPrompt = text;
     }
   }
   schedUpdatePromptUI();
@@ -980,7 +977,6 @@ async function schedParse() {
     const promptEl = $('#sched-prompt');
     if (promptEl && !promptEl.value.trim()) {
       promptEl.value = text;
-      sched.autoPrompt = text;
     }
     schedUpdatePromptUI();
   } catch (e) {
@@ -1003,7 +999,6 @@ function schedOpenModal(task) {
   $('#sched-cron').value = task ? (task.cron || '') : '0 9 * * *';
   $('#sched-prompt').value = task ? (task.prompt || '') : '';
   $('#sched-nl-text').value = '';
-  sched.autoPrompt = '';
   $('#sched-enabled').checked = task ? !!task.enabled : true;
   const parseNote = $('#sched-parse-note');
   if (parseNote) parseNote.textContent = '由内置规则解析（快、离线、不耗 token）';
@@ -1040,7 +1035,6 @@ function schedCloseModal() {
   sched.candidates = [];
   sched.selectedCron = '';
   sched.parsing = false;
-  sched.autoPrompt = '';
   clearTimeout(sched.previewTimer);
   sched.previewTimer = 0;
   schedModalError('');
@@ -1148,17 +1142,7 @@ function schedBind() {
   if (parse) parse.addEventListener('click', schedParse);
   const nlText = $('#sched-nl-text');
   if (nlText) nlText.addEventListener('input', () => {
-    const text = nlText.value;
-    const promptEl = $('#sched-prompt');
-    if (promptEl) {
-      // 描述自动填的 prompt 跟着描述走；用户手改过后就不再覆盖。
-      if (!promptEl.value.trim() || promptEl.value.trim() === sched.autoPrompt) {
-        promptEl.value = text;
-        sched.autoPrompt = text;
-      } else {
-        sched.autoPrompt = '';
-      }
-    }
+    // 只清解析结果，不在输入过程中自动回填 prompt/名称等字段。
     if (sched.candidates.length || sched.selectedCron) {
       schedClearCandidates();
       const note = $('#sched-parse-note');
@@ -1170,10 +1154,7 @@ function schedBind() {
     schedUpdatePromptUI();
   });
   const promptEl = $('#sched-prompt');
-  if (promptEl) promptEl.addEventListener('input', () => {
-    sched.autoPrompt = '';
-    schedUpdatePromptUI();
-  });
+  if (promptEl) promptEl.addEventListener('input', schedUpdatePromptUI);
 
   const cron = $('#sched-cron');
   if (cron) cron.addEventListener('input', () => {

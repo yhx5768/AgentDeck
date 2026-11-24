@@ -434,24 +434,38 @@ const candidateCards = () => [...doc.querySelectorAll('#sched-candidates .sched-
     doc.querySelector('#sched-parse-error').textContent.includes('频率'));
   doc.querySelector('#sched-cancel').click();
 
-  // 描述改了，自动填入的 prompt 跟着更新（手改过的 prompt 不覆盖）。
+  // 输入描述时不自动回填 prompt；只在解析成功后填一次。
   doc.querySelector('#sched-new').click();
   const autoNl = doc.querySelector('#sched-nl-text');
   autoNl.value = '每天9点巡检';
   autoNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('输入描述时不回填 prompt', doc.querySelector('#sched-prompt').value === '',
+    doc.querySelector('#sched-prompt').value);
+  check('输入时最终预览仍回退描述', doc.querySelector('#sched-final-text').textContent === '每天9点巡检');
   doc.querySelector('#sched-parse').click();
   await settle();
   check('解析后 prompt = 描述', doc.querySelector('#sched-prompt').value === '每天9点巡检');
+  const autoPrompt = doc.querySelector('#sched-prompt');
+  autoPrompt.value = '';
+  autoPrompt.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('清空 prompt 不被自动回填', autoPrompt.value === '', autoPrompt.value);
   autoNl.value = '每天9点巡检看板';
   autoNl.dispatchEvent(new w.Event('input', { bubbles: true }));
-  check('描述修改后自动 prompt 跟随', doc.querySelector('#sched-prompt').value === '每天9点巡检看板',
-    doc.querySelector('#sched-prompt').value);
-  const autoPrompt = doc.querySelector('#sched-prompt');
-  autoPrompt.value = '我自己的 prompt';
-  autoPrompt.dispatchEvent(new w.Event('input', { bubbles: true }));
-  autoNl.value = '每天9点巡检看板和 worker';
-  autoNl.dispatchEvent(new w.Event('input', { bubbles: true }));
-  check('手改 prompt 后不被描述覆盖', doc.querySelector('#sched-prompt').value === '我自己的 prompt');
+  check('改描述后 prompt 仍为空（不再自动跟随）', autoPrompt.value === '', autoPrompt.value);
+  check('改描述后清掉候选', candidateCards().length === 0);
+  doc.querySelector('#sched-cancel').click();
+
+  // 用户先手写 prompt 时，解析结果不覆盖它。
+  doc.querySelector('#sched-new').click();
+  const preNl = doc.querySelector('#sched-nl-text');
+  preNl.value = '每天9点巡检';
+  preNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  const prePrompt = doc.querySelector('#sched-prompt');
+  prePrompt.value = '我自己的 prompt';
+  prePrompt.dispatchEvent(new w.Event('input', { bubbles: true }));
+  doc.querySelector('#sched-parse').click();
+  await settle();
+  check('手写 prompt 解析后不被覆盖', prePrompt.value === '我自己的 prompt', prePrompt.value);
   doc.querySelector('#sched-cancel').click();
 
   // ---------- AI 解析 ----------
@@ -464,6 +478,7 @@ const candidateCards = () => [...doc.querySelectorAll('#sched-candidates .sched-
   const aiNl = doc.querySelector('#sched-nl-text');
   aiNl.value = '每天9点按上周周报口径做看板巡检';
   aiNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('AI 解析前输入不回填 prompt', doc.querySelector('#sched-prompt').value === '');
   doc.querySelector('#sched-parse').click();
   await settle();
   const aiCall = calls().find((c) => c.path === '/api/schedules/parse-ai');
