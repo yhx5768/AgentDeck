@@ -13,6 +13,45 @@ import (
 	"cc-webui/internal/schedule"
 )
 
+// scheduleCandidateView is one concrete interpretation returned by both the
+// rule parser and the AI fallback.
+type scheduleCandidateView struct {
+	Cron         string `json:"cron"`
+	Label        string `json:"label"`
+	Name         string `json:"name,omitempty"`
+	NextRunAt    string `json:"next_run_at"`
+	NextRunLocal string `json:"next_run_local"`
+}
+
+// scheduleRuleCandidates runs the deterministic parser and computes each
+// candidate's next occurrence. It is shared by /parse and the AI fallback.
+func scheduleRuleCandidates(text string) ([]scheduleCandidateView, error) {
+	cands, err := schedule.ParseNatural(text)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	out := make([]scheduleCandidateView, 0, len(cands))
+	for _, c := range cands {
+		cron, err := schedule.ParseCron(c.Cron)
+		if err != nil {
+			continue
+		}
+		next, ok := cron.Next(now)
+		if !ok {
+			continue
+		}
+		out = append(out, scheduleCandidateView{
+			Cron: c.Cron, Label: c.Label, Name: c.Name,
+			NextRunAt: next.Format(time.RFC3339), NextRunLocal: next.Format("2006-01-02 15:04"),
+		})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("解析结果没有可执行时间")
+	}
+	return out, nil
+}
+
 // handleParseSchedule turns a natural-language description into concrete cron
 // candidates. It is rule-based on purpose: cc-webui's server has no model
 // client (it spawns CLIs), and the exact cron string must be deterministic.
@@ -25,36 +64,9 @@ func (s *Server) handleParseSchedule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	cands, err := schedule.ParseNatural(body.Text)
+	out, err := scheduleRuleCandidates(body.Text)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	now := time.Now()
-	type candidateView struct {
-		Cron         string `json:"cron"`
-		Label        string `json:"label"`
-		Name         string `json:"name,omitempty"`
-		NextRunAt    string `json:"next_run_at"`
-		NextRunLocal string `json:"next_run_local"`
-	}
-	out := make([]candidateView, 0, len(cands))
-	for _, c := range cands {
-		cron, err := schedule.ParseCron(c.Cron)
-		if err != nil {
-			continue
-		}
-		next, ok := cron.Next(now)
-		if !ok {
-			continue
-		}
-		out = append(out, candidateView{
-			Cron: c.Cron, Label: c.Label, Name: c.Name,
-			NextRunAt: next.Format(time.RFC3339), NextRunLocal: next.Format("2006-01-02 15:04"),
-		})
-	}
-	if len(out) == 0 {
-		writeErr(w, http.StatusBadRequest, "解析结果没有可执行时间")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

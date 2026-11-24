@@ -208,6 +208,14 @@ type Server struct {
 	// uses deliverA2A (the same path as send_message). Tests set it so a
 	// scheduler test does not spawn an engine process per delivery.
 	schedDeliver func(from, to, message string) error
+	// schedAI serializes the optional AI natural-language parse (one one-shot
+	// agent turn at a time). schedAgentRun is the test seam for that turn.
+	schedAI struct {
+		mu   sync.Mutex
+		busy bool
+	}
+	schedAITimeout time.Duration
+	schedAgentRun  func(ctx context.Context, text string) (scheduleAIResult, error)
 }
 
 type ocCatalogEntry struct {
@@ -349,6 +357,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/schedules", s.auth(s.handleCreateSchedule))
 	s.mux.Handle("POST /api/schedules/preview", s.auth(s.handlePreviewSchedule))
 	s.mux.Handle("POST /api/schedules/parse", s.auth(s.handleParseSchedule))
+	s.mux.Handle("POST /api/schedules/parse-ai", s.auth(s.handleParseScheduleAI))
 	s.mux.Handle("GET /api/schedules/harness", s.auth(s.handleHarnessTasks))
 	s.mux.Handle("POST /api/schedules/import-harness", s.auth(s.handleImportHarnessTask))
 	s.mux.Handle("PUT /api/schedules/{id}", s.auth(s.handleUpdateSchedule))

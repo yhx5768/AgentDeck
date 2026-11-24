@@ -744,12 +744,20 @@
       <label>描述
         <textarea id="sched-nl-text" rows="3" spellcheck="false" placeholder="例：每天9点进行看板巡检，检查常驻 worker 和运行中卡片是否异常"></textarea>
       </label>
+      <div id="sched-parser" class="sched-parser" role="group" aria-label="解析方式">
+        <button type="button" data-sched-parser="rules" class="active">规则解析</button>
+        <button type="button" data-sched-parser="ai">AI 解析</button>
+      </div>
       <div class="sched-nl-row">
         <button class="ghost-btn" id="sched-parse" type="button">解析</button>
-        <span id="sched-parse-note" class="sched-parse-note">由内置规则解析（AgentDeck 服务端不直接调用模型）</span>
+        <span id="sched-parse-note" class="sched-parse-note">由内置规则解析（快、离线、不耗 token）</span>
       </div>
+      <div id="sched-ai-note" class="sched-ai-note hidden">AI 解析会在 mainAgent 工作区跑一次性只读任务，能读 memory / work/tracking；约 1–2 分钟（视 workspace 大小），会消耗 token。</div>
       <div id="sched-parse-error" class="sched-modal-error hidden" role="alert"></div>
+      <div id="sched-ai-meta" class="sched-ai-meta hidden"></div>
       <div id="sched-candidates" class="sched-candidates hidden"></div>
+      <div id="sched-ai-rationale" class="sched-ai-rationale hidden"></div>
+      <div id="sched-ai-questions" class="sched-ai-questions hidden"></div>
     </div>
     <div id="sched-cron-block" class="hidden">
       <label>cron（5 段：分 时 日 月 周）

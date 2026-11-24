@@ -30,6 +30,8 @@ const sched = {
   lastError: '',
   editing: '',      // 正在编辑的任务 id（空 = 新建）
   mode: 'nl',       // 弹窗排期方式：nl | cron
+  parser: 'rules',  // 自然语言解析方式：rules | ai
+  aiBusy: false,
   candidates: [],   // 自然语言解析候选
   selectedCron: '',
   parsing: false,
@@ -696,6 +698,166 @@ function schedUpdatePromptUI() {
   }
 }
 
+function schedResetAIOutput() {
+  const meta = $('#sched-ai-meta');
+  if (meta) {
+    meta.textContent = '';
+    meta.title = '';
+    meta.classList.add('hidden');
+    meta.classList.remove('warn');
+  }
+  const rationale = $('#sched-ai-rationale');
+  if (rationale) {
+    rationale.textContent = '';
+    rationale.classList.add('hidden');
+  }
+  const questions = $('#sched-ai-questions');
+  if (questions) {
+    questions.textContent = '';
+    questions.classList.add('hidden');
+  }
+}
+
+function schedSetParser(parser) {
+  const next = parser === 'ai' ? 'ai' : 'rules';
+  if (sched.parser !== next) {
+    sched.candidates = [];
+    sched.selectedCron = '';
+    schedRenderCandidates();
+    schedResetAIOutput();
+  }
+  sched.parser = next;
+  document.querySelectorAll('#sched-parser [data-sched-parser]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.schedParser === next);
+  });
+  const btn = $('#sched-parse');
+  if (btn && !sched.aiBusy) btn.textContent = next === 'ai' ? 'AI 解析' : '解析';
+  const note = $('#sched-parse-note');
+  if (note) {
+    note.textContent = next === 'ai'
+      ? '会读 mainAgent 的 memory / tracking，较慢（约 1–2 分钟）'
+      : '由内置规则解析（快、离线、不耗 token）';
+  }
+  const aiNote = $('#sched-ai-note');
+  if (aiNote) aiNote.classList.toggle('hidden', next !== 'ai');
+}
+
+function schedShowAIQuestions(qs) {
+  const el = $('#sched-ai-questions');
+  if (!el) return;
+  el.textContent = '';
+  if (!qs || !qs.length) {
+    el.classList.add('hidden');
+    return;
+  }
+  const title = document.createElement('b');
+  title.textContent = 'AI 需要你确认：';
+  const list = document.createElement('ul');
+  for (const q of qs) {
+    const li = document.createElement('li');
+    li.textContent = q;
+    list.append(li);
+  }
+  el.append(title, list);
+  el.classList.remove('hidden');
+}
+
+function schedRenderAIResponse(d, text) {
+  const meta = $('#sched-ai-meta');
+  const note = $('#sched-parse-note');
+  const reads = Array.isArray(d.context_reads) ? d.context_reads : [];
+  const bits = [];
+  if (typeof d.elapsed_ms === 'number') bits.push((d.elapsed_ms / 1000).toFixed(1) + 's');
+  if (d.usage) bits.push('tokens ' + ((d.usage.input_tokens || 0) + (d.usage.output_tokens || 0)));
+  if (reads.length) bits.push('读 ' + reads.length + ' 处上下文');
+  if (meta) {
+    if (d.fallback) {
+      meta.textContent = 'AI 解析失败，已用规则结果：' + (d.reason || '未知原因') +
+        (bits.length ? ' · ' + bits.join(' · ') : '');
+      meta.classList.add('warn');
+    } else {
+      meta.textContent = 'AI 解析完成' + (bits.length ? ' · ' + bits.join(' · ') : '');
+      meta.classList.remove('warn');
+    }
+    meta.title = reads.length ? '读取：\n' + reads.join('\n') : '';
+    meta.classList.toggle('hidden', !meta.textContent);
+  }
+  const proposal = d.proposal || {};
+  const rationale = $('#sched-ai-rationale');
+  if (rationale) {
+    const r = String(proposal.rationale || '').trim();
+    const readsLine = reads.length ? '读取：' + reads.join('、') : '';
+    const text = [r ? 'AI 理由：' + r : '', readsLine].filter(Boolean).join('\n');
+    rationale.textContent = text;
+    rationale.classList.toggle('hidden', !text);
+  }
+  schedShowAIQuestions(proposal.questions || []);
+
+  if (d.fallback) {
+    sched.candidates = (Array.isArray(d.candidates) ? d.candidates : []).map((c) => ({ ...c, ai: false }));
+    sched.selectedCron = '';
+    schedRenderCandidates();
+    if (sched.candidates.length === 1) schedSelectCandidate(sched.candidates[0]);
+    if (note) note.textContent = d.mode === 'none'
+      ? 'AI 解析失败，规则也无法解析；请补充时间/频率'
+      : 'AI 解析失败，已用规则结果；确认候选后保存';
+    if (d.mode === 'none') schedParseError(d.reason || 'AI 与规则都无法解析这段描述');
+    return;
+  }
+  if (d.needs_clarification) {
+    if (note) note.textContent = 'AI 需要你补充信息后再解析';
+    return;
+  }
+  if (!proposal.cron) {
+    if (note) note.textContent = 'AI 没有给出可用的 cron';
+    return;
+  }
+  sched.candidates = [{
+    cron: proposal.cron,
+    label: 'AI 建议',
+    name: proposal.name,
+    next_run_at: proposal.next_run_at,
+    next_run_local: proposal.next_run_local,
+    ai: true,
+  }];
+  sched.selectedCron = '';
+  schedRenderCandidates();
+  const name = $('#sched-name');
+  if (name && proposal.name) name.value = proposal.name;
+  const promptEl = $('#sched-prompt');
+  if (promptEl && proposal.prompt) {
+    promptEl.value = proposal.prompt;
+    sched.autoPrompt = '';
+  }
+  schedSelectCandidate(sched.candidates[0]);
+  schedUpdatePromptUI();
+  if (note) note.textContent = 'AI 建议已生成，确认候选后保存';
+}
+
+async function schedParseAI(text) {
+  if (sched.aiBusy) return;
+  const btn = $('#sched-parse');
+  const note = $('#sched-parse-note');
+  sched.aiBusy = true;
+  btn.disabled = true;
+  btn.textContent = 'AI 解析中…';
+  schedParseError('');
+  schedResetAIOutput();
+  schedClearCandidates();
+  if (note) note.textContent = '正在 mainAgent 工作区解析，可能 1–2 分钟…';
+  try {
+    const d = await api('/api/schedules/parse-ai', { method: 'POST', body: JSON.stringify({ text }) });
+    schedRenderAIResponse(d, text);
+  } catch (e) {
+    schedParseError('AI 解析失败：' + schedErrMsg(e));
+    if (note) note.textContent = 'AI 解析失败；可重试或切回规则解析';
+  } finally {
+    sched.aiBusy = false;
+    btn.disabled = false;
+    btn.textContent = sched.parser === 'ai' ? 'AI 解析' : '解析';
+  }
+}
+
 function schedSetMode(mode) {
   sched.mode = mode === 'cron' ? 'cron' : 'nl';
   document.querySelectorAll('#sched-mode [data-sched-mode]').forEach((b) => {
@@ -749,6 +911,7 @@ function schedRenderCandidates() {
     const code = document.createElement('code');
     code.textContent = c.cron;
     top.append(lab, code);
+    if (c.ai) top.append(schedBadge('AI', 'source', '由 AI 解析生成，已通过 cron 校验'));
     const next = document.createElement('span');
     next.className = 'sched-candidate-next';
     next.textContent = '下次执行：' + (c.next_run_local || c.next_run_at || '—');
@@ -785,10 +948,14 @@ function schedSelectCandidate(c) {
 }
 
 async function schedParse() {
-  if (sched.parsing) return;
+  if (sched.parsing || sched.aiBusy) return;
   const text = ($('#sched-nl-text').value || '').trim();
   if (!text) {
     schedParseError('描述不能为空');
+    return;
+  }
+  if (sched.parser === 'ai') {
+    await schedParseAI(text);
     return;
   }
   const btn = $('#sched-parse');
@@ -839,8 +1006,14 @@ function schedOpenModal(task) {
   sched.autoPrompt = '';
   $('#sched-enabled').checked = task ? !!task.enabled : true;
   const parseNote = $('#sched-parse-note');
-  if (parseNote) parseNote.textContent = '由内置规则解析（AgentDeck 服务端不直接调用模型）';
+  if (parseNote) parseNote.textContent = '由内置规则解析（快、离线、不耗 token）';
   schedParseError('');
+  schedResetAIOutput();
+  sched.parser = 'rules';
+  document.querySelectorAll('#sched-parser [data-sched-parser]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.schedParser === 'rules');
+  });
+  schedSetParser('rules');
   schedClearCandidates();
   schedFillTargets(task ? task.target_session : '');
   schedRenderExamples();
@@ -968,6 +1141,9 @@ function schedBind() {
   document.querySelectorAll('#sched-mode [data-sched-mode]').forEach((b) => {
     b.addEventListener('click', () => schedSetMode(b.dataset.schedMode));
   });
+  document.querySelectorAll('#sched-parser [data-sched-parser]').forEach((b) => {
+    b.addEventListener('click', () => schedSetParser(b.dataset.schedParser));
+  });
   const parse = $('#sched-parse');
   if (parse) parse.addEventListener('click', schedParse);
   const nlText = $('#sched-nl-text');
@@ -990,6 +1166,7 @@ function schedBind() {
       const preview = $('#sched-next-preview');
       if (preview) { preview.textContent = '描述已修改，请重新解析'; preview.classList.remove('bad'); }
     }
+    schedResetAIOutput();
     schedUpdatePromptUI();
   });
   const promptEl = $('#sched-prompt');

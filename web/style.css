@@ -5298,6 +5298,15 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .sched-mode { display: inline-flex; align-self: flex-start; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
 .sched-mode button { border: 0; background: none; color: var(--dim); font-size: 11px; padding: 3px 12px; border-radius: 6px; cursor: pointer; }
 .sched-mode button.active { background: var(--bg); color: var(--fg); box-shadow: 0 0 0 1px var(--border); }
+.sched-parser { display: inline-flex; align-self: flex-start; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg3); }
+.sched-parser button { border: 0; background: none; color: var(--dim); font-size: 10.5px; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+.sched-parser button.active { background: var(--bg); color: var(--accent); box-shadow: 0 0 0 1px var(--border); }
+.sched-ai-note { font-size: 10px; line-height: 1.55; color: var(--muted); background: var(--bg3); border: 1px dashed var(--border); border-radius: 6px; padding: 6px 9px; }
+.sched-ai-meta { font-size: 10.5px; line-height: 1.5; color: var(--accent); background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; overflow-wrap: anywhere; }
+.sched-ai-meta.warn { color: var(--warning-fg); border-color: var(--warning-border); background: var(--warning-bg); }
+.sched-ai-rationale { font-size: 10.5px; line-height: 1.55; color: var(--dim); border-left: 2px solid var(--accent); padding: 2px 0 2px 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sched-ai-questions { font-size: 10.5px; line-height: 1.55; color: var(--warning-fg); background: var(--warning-bg); border: 1px solid var(--warning-border); border-radius: 6px; padding: 6px 9px; }
+.sched-ai-questions ul { margin: 4px 0 0; padding-left: 18px; }
 .sched-nl-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 0; }
 .sched-prompt-hint { margin-top: -4px; font-size: 10px; color: var(--muted); line-height: 1.5; }
 .sched-final-preview { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }

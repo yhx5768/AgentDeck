@@ -55,10 +55,18 @@ const HTML = `<!doctype html><html><body>
       </div>
       <div id="sched-nl-block">
         <textarea id="sched-nl-text"></textarea>
+        <div id="sched-parser">
+          <button type="button" data-sched-parser="rules" class="active"></button>
+          <button type="button" data-sched-parser="ai"></button>
+        </div>
         <button id="sched-parse"></button>
         <span id="sched-parse-note"></span>
+        <div id="sched-ai-note" class="hidden"></div>
         <div id="sched-parse-error" class="hidden"></div>
+        <div id="sched-ai-meta" class="hidden"></div>
         <div id="sched-candidates" class="hidden"></div>
+        <div id="sched-ai-rationale" class="hidden"></div>
+        <div id="sched-ai-questions" class="hidden"></div>
       </div>
       <div id="sched-cron-block" class="hidden">
         <input id="sched-cron">
@@ -147,6 +155,34 @@ function api(path, opts = {}) {
     return Promise.resolve({ mode: 'rules', candidates: [
       { cron: '0 9 * * *', label: '每天 09:00', name: '看板巡检', next_run_local: '2026-11-24 09:00' },
     ], timezone: 'CST' });
+  }
+  if (path === '/api/schedules/parse-ai' && method === 'POST') {
+    const text = String((body && body.text) || '');
+    if (text.includes('busy')) {
+      return Promise.reject(new Error('已有一个 AI 解析任务在运行，请稍候再试'));
+    }
+    if (text.includes('fallback')) {
+      return Promise.resolve({ mode: 'rules', fallback: true, reason: 'AI 解析超时（60s）',
+        candidates: [{ cron: '0 9 * * *', label: '每天 09:00', name: '看板巡检', next_run_local: '2026-11-24 09:00' }],
+        elapsed_ms: 60000, timezone: 'CST' });
+    }
+    if (text.includes('ask')) {
+      return Promise.resolve({ mode: 'ai', needs_clarification: true,
+        proposal: { name: '周报巡检', questions: ['按哪一周的周报口径？'], rationale: '口径未定' },
+        elapsed_ms: 1200, timezone: 'CST' });
+    }
+    return Promise.resolve({
+      mode: 'ai',
+      proposal: {
+        name: '看板巡检', cron: '0 9 * * *',
+        prompt: '按 work/tracking 上周周报的口径巡检看板与常驻 worker。',
+        rationale: '描述是每天9点，口径来自 work/tracking。',
+        questions: [], next_run_local: '2026-11-24 09:00',
+      },
+      context_reads: ['Read /ws/work/tracking/README.md'],
+      usage: { input_tokens: 1200, output_tokens: 80 },
+      elapsed_ms: 2300, timezone: 'CST',
+    });
   }
   if (path === '/api/schedules/preview') {
     if (!body || String(body.cron || '').includes('bad') || String(body.cron || '').trim().split(/\\s+/).length !== 5) {
@@ -416,6 +452,80 @@ const candidateCards = () => [...doc.querySelectorAll('#sched-candidates .sched-
   autoNl.value = '每天9点巡检看板和 worker';
   autoNl.dispatchEvent(new w.Event('input', { bubbles: true }));
   check('手改 prompt 后不被描述覆盖', doc.querySelector('#sched-prompt').value === '我自己的 prompt');
+  doc.querySelector('#sched-cancel').click();
+
+  // ---------- AI 解析 ----------
+  const parserBtn = (p) => doc.querySelector('#sched-parser [data-sched-parser="' + p + '"]');
+  doc.querySelector('#sched-new').click();
+  parserBtn('ai').click();
+  check('AI 提示可见', !doc.querySelector('#sched-ai-note').classList.contains('hidden'));
+  check('AI 模式按钮文案', doc.querySelector('#sched-parse').textContent === 'AI 解析',
+    doc.querySelector('#sched-parse').textContent);
+  const aiNl = doc.querySelector('#sched-nl-text');
+  aiNl.value = '每天9点按上周周报口径做看板巡检';
+  aiNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  doc.querySelector('#sched-parse').click();
+  await settle();
+  const aiCall = calls().find((c) => c.path === '/api/schedules/parse-ai');
+  check('AI 解析发 POST parse-ai', !!aiCall && aiCall.body.text.includes('周报口径'));
+  check('AI 结果填名称/cron', doc.querySelector('#sched-name').value === '看板巡检' &&
+    doc.querySelector('#sched-cron').value === '0 9 * * *');
+  check('AI prompt 覆盖描述', doc.querySelector('#sched-prompt').value.includes('work/tracking'),
+    doc.querySelector('#sched-prompt').value);
+  check('AI 理由显示', !doc.querySelector('#sched-ai-rationale').classList.contains('hidden') &&
+    doc.querySelector('#sched-ai-rationale').textContent.includes('work/tracking'));
+  check('AI 元信息显示耗时/tokens', doc.querySelector('#sched-ai-meta').textContent.includes('AI 解析完成') &&
+    doc.querySelector('#sched-ai-meta').textContent.includes('tokens'),
+    doc.querySelector('#sched-ai-meta').textContent);
+  check('AI 候选带 AI 徽标', candidateCards()[0].textContent.includes('AI'));
+  doc.querySelector('#sched-save').click();
+  await settle();
+  const aiCreate = calls().filter((c) => c.path === '/api/schedules' && c.method === 'POST').pop();
+  check('AI 结果需用户确认后才保存', aiCreate && aiCreate.body.prompt.includes('work/tracking') &&
+    aiCreate.body.cron === '0 9 * * *', JSON.stringify(aiCreate && aiCreate.body));
+
+  // AI 失败 → 自动回退规则，并标注原因。
+  doc.querySelector('#sched-new').click();
+  parserBtn('ai').click();
+  const fbNl = doc.querySelector('#sched-nl-text');
+  fbNl.value = '每天9点巡检 fallback';
+  fbNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  doc.querySelector('#sched-parse').click();
+  await settle();
+  check('AI 失败提示回退', doc.querySelector('#sched-ai-meta').classList.contains('warn') &&
+    doc.querySelector('#sched-ai-meta').textContent.includes('已用规则结果') &&
+    doc.querySelector('#sched-ai-meta').textContent.includes('超时'),
+    doc.querySelector('#sched-ai-meta').textContent);
+  check('回退后仍有规则候选', candidateCards().length === 1 && doc.querySelector('#sched-cron').value === '0 9 * * *');
+  doc.querySelector('#sched-cancel').click();
+
+  // AI 需要补充信息：列出问题，且不能保存。
+  doc.querySelector('#sched-new').click();
+  parserBtn('ai').click();
+  const askNl = doc.querySelector('#sched-nl-text');
+  askNl.value = '每周按上周周报口径巡检 ask';
+  askNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  doc.querySelector('#sched-parse').click();
+  await settle();
+  check('AI 问题列表显示', !doc.querySelector('#sched-ai-questions').classList.contains('hidden') &&
+    doc.querySelector('#sched-ai-questions').textContent.includes('哪一周'));
+  check('待确认时没有候选', candidateCards().length === 0);
+  const beforeAskSave = calls().filter((c) => c.path === '/api/schedules' && c.method === 'POST').length;
+  doc.querySelector('#sched-save').click();
+  await settle();
+  check('待确认时保存被拦下', calls().filter((c) => c.path === '/api/schedules' && c.method === 'POST').length === beforeAskSave);
+  doc.querySelector('#sched-cancel').click();
+
+  // 并发上限错误展示。
+  doc.querySelector('#sched-new').click();
+  parserBtn('ai').click();
+  const busyNl = doc.querySelector('#sched-nl-text');
+  busyNl.value = '每天9点巡检 busy';
+  busyNl.dispatchEvent(new w.Event('input', { bubbles: true }));
+  doc.querySelector('#sched-parse').click();
+  await settle();
+  check('AI 并发错误提示', !doc.querySelector('#sched-parse-error').classList.contains('hidden') &&
+    doc.querySelector('#sched-parse-error').textContent.includes('已有一个 AI 解析任务'));
   doc.querySelector('#sched-cancel').click();
 
   // ---------- cron 模式 ----------
