@@ -11618,6 +11618,9 @@ function hideAllViews() {
   $('#group-view').classList.add('hidden');
   const shares = $('#shares-view');
   if (shares) shares.classList.add('hidden');
+  const schedules = $('#schedules-view');
+  if (schedules) schedules.classList.add('hidden');
+  if (typeof schedStopPoll === 'function') schedStopPoll();
   clearSharesHash();
   closeGroupMemberPanel();
   closeGroupMentionPopup();

@@ -37,7 +37,7 @@ async function main() {
   console.log('入口导航');
   ev('pa.view = "queue"; document.querySelector("#pa-nav").dataset.sig = ""; paRenderNav()');
   const items = [...doc.querySelectorAll('#pa-nav .pa-nav-item')];
-  check('三个入口：需要你 / 主 Agent 会话 / 看板任务', J(items.map((b) => b.querySelector('.pa-nav-label').textContent)) === J(['需要你', '主 Agent 会话', '看板任务']));
+  check('四个入口：需要你 / 主 Agent 会话 / 看板任务 / 定时任务', J(items.map((b) => b.querySelector('.pa-nav-label').textContent)) === J(['需要你', '主 Agent 会话', '看板任务', '定时任务']));
   check('当前视图高亮', items[0].classList.contains('on') && !items[1].classList.contains('on'));
   check('需要你：红点 + 计数；看板：待人工 + 待验收的卡数', !!items[0].querySelector('.pa-live') && items[0].querySelector('.pa-cnt').textContent === '5' && items[2].querySelector('.pa-cnt').textContent === '3');
   ev('pa.unseen = 4; document.querySelector("#pa-nav").dataset.sig = ""; paRenderNav()');
