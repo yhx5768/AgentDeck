@@ -25,6 +25,13 @@ function grabFn(name) {
   throw new Error(name + ' 括号不配对');
 }
 
+function grabLine(needle) {
+  const i = src.indexOf(needle);
+  if (i < 0) throw new Error('找不到: ' + needle);
+  const end = src.indexOf('\n', i);
+  return src.slice(i, end).trim();
+}
+
 const HTML = `<!doctype html><html><body>
   <div id="board-view">
     <span id="board-updated"></span>
@@ -34,13 +41,16 @@ const HTML = `<!doctype html><html><body>
   </div>
 </body></html>`;
 
-const dom = new JSDOM(HTML, { runScripts: 'outside-only' });
+const dom = new JSDOM(HTML, { runScripts: 'outside-only', url: 'http://localhost/' });
 const w = dom.window;
 const doc = w.document;
 
 w.eval(`
 const $ = (sel) => document.querySelector(sel);
-const state = { agentBoard: null, boardSelectedId: null, boardCollapsed: new Set() };
+${grabLine('const BOARD_COLLAPSED_KEY')}
+${grabFn('loadBoardCollapsed')}
+${grabFn('saveBoardCollapsed')}
+const state = { agentBoard: null, boardSelectedId: null, boardCollapsed: loadBoardCollapsed() };
 function boardCloseDrawer() { state.boardSelectedId = null; }
 function boardOpenDrawer() {}
 ${grabFn('boardTaskTags')}
@@ -58,6 +68,7 @@ ${grabFn('renderBoard')}
 window.__state = state;
 window.__renderBoard = renderBoard;
 window.__apply = boardApplyTaskUpdates;
+window.__loadBoardCollapsed = loadBoardCollapsed;
 `);
 
 const state = w.__state;
@@ -170,6 +181,38 @@ function main() {
   view.scrollTop = 120;
   renderBoard({ preserveScroll: true });
   check('全量重排保留滚动位置', view.scrollTop === 120);
+
+  // ---------- 状态列折叠持久化 ----------
+  console.log('状态列折叠持久化');
+  w.localStorage.clear();
+  state.boardCollapsed = w.__loadBoardCollapsed();
+  state.agentBoard = freshBoard();
+  renderBoard();
+  const doneColumn = () => [...doc.querySelectorAll('.board-column')]
+    .find((c) => c.querySelector('.board-column-title').textContent === '已完成');
+
+  doneColumn().querySelector('.board-column-toggle').click();
+  check('折叠后列带 collapsed', doneColumn().classList.contains('collapsed'));
+  check('折叠状态写入独立键',
+    (JSON.parse(w.localStorage.getItem('cc-webui-board-collapsed')) || []).includes('已完成'),
+    w.localStorage.getItem('cc-webui-board-collapsed'));
+  check('不写侧栏项目分组的键', w.localStorage.getItem('cc-webui-collapsed-groups') === null,
+    String(w.localStorage.getItem('cc-webui-collapsed-groups')));
+
+  // 模拟刷新：从 localStorage 重新装载后重画
+  state.boardCollapsed = w.__loadBoardCollapsed();
+  renderBoard();
+  check('刷新后仍保持折叠',
+    doneColumn().classList.contains('collapsed') &&
+    doneColumn().querySelector('.board-column-toggle').getAttribute('aria-expanded') === 'false');
+
+  doneColumn().querySelector('.board-column-toggle').click();
+  check('展开后从存储里移除',
+    !(JSON.parse(w.localStorage.getItem('cc-webui-board-collapsed')) || []).includes('已完成'));
+
+  w.localStorage.setItem('cc-webui-board-collapsed', '{bad');
+  check('坏 JSON 不影响启动', w.__loadBoardCollapsed().size === 0);
+  w.localStorage.clear();
 
   console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
   process.exit(failed ? 1 : 0);

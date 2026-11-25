@@ -545,6 +545,20 @@ function syncHtmlFrameThemes() {
 
 
 const $ = (sel) => document.querySelector(sel);
+
+// 看板状态列的折叠状态。单独一个键：侧栏项目分组是 cc-webui-collapsed-groups，
+// 两者折叠的是不同东西，混用会让用户刷新后看到另一组莫名其妙地收起/展开。
+const BOARD_COLLAPSED_KEY = 'cc-webui-board-collapsed';
+function loadBoardCollapsed() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(BOARD_COLLAPSED_KEY) || '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((x) => typeof x === 'string') : []);
+  } catch (_) { return new Set(); }
+}
+function saveBoardCollapsed() {
+  try { localStorage.setItem(BOARD_COLLAPSED_KEY, JSON.stringify([...state.boardCollapsed])); } catch (_) {}
+}
+
 const state = {
   clis: [],
   providers: [],
@@ -591,7 +605,7 @@ const state = {
   agentBoard: null,        // GET /api/agent-board snapshot (read-only)
   agentBoardLoading: false, // 全量快照请求进行中（只有初次加载会显示 loading）
   boardSelectedId: null,   // 抽屉里展示的任务 id
-  boardCollapsed: new Set(), // 已折叠的状态列
+  boardCollapsed: loadBoardCollapsed(), // 已折叠的状态列（localStorage 持久化）
   boardEs: null,           // /api/agent-board/events SSE
   // worker 会话右侧「绑定卡片」面板（见 wc* 段）：抽屉式 SSE 只在面板展开时连。
   workerCardsEs: null,     // /api/agent-board/events（worker 面板专用连接）
@@ -5734,6 +5748,7 @@ function boardColumnNode(status, list) {
     e.stopPropagation();
     if (collapsed) state.boardCollapsed.delete(status);
     else state.boardCollapsed.add(status);
+    saveBoardCollapsed();
     renderBoard();
   };
   const name = document.createElement('span');
