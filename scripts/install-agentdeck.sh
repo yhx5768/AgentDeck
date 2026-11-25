@@ -21,10 +21,10 @@ RELEASE_BASE="https://github.com/yhx5768/AgentDeck/releases/download"
 LATEST_URL="https://github.com/yhx5768/AgentDeck/releases/latest"
 # 仓库 raw 前缀：配置模板与本脚本都从这里取，随时与 master 同步。
 RAW_BASE="https://raw.githubusercontent.com/yhx5768/AgentDeck/master"
-CONFIG_URL="$RAW_BASE/du_int.config.example.yaml"
+CONFIG_URL="$RAW_BASE/config.example.yaml"
 
 echo "默认安装目录：~/AgentDeck"
-echo "脚本会自动把你 PATH 里的 ducc / ducx 写进配置；只装了一个也可以，找不到的可以直接回车跳过。"
+echo "脚本会自动探测 claude / codex / opencode 并写进配置；只装了一个也可以，找不到的可以直接回车跳过。"
 echo "全新安装默认取 GitHub 最新 release；重复执行同一命令即可升级。"
 
 command -v curl >/dev/null 2>&1 || { echo "需要 curl，请先安装"; exit 1; }
@@ -179,7 +179,7 @@ download_config() {
   fi
   rm -f config.yaml.tmp
   echo "错误：配置模板下载失败（$CONFIG_URL 不可用）。" >&2
-  echo "请手动下载 du_int.config.example.yaml 为 config.yaml 后重试。" >&2
+  echo "请手动下载 config.example.yaml 为 config.yaml 后重试。" >&2
   return 1
 }
 
@@ -323,146 +323,223 @@ else
   sed_inplace() { sed -i "$@"; }
 fi
 
-# 找 ducc / ducx（找不到可以跳过，之后手改 config.yaml）
-realpath_portable() {
-  local p="$1" dir base target i=0
-  [ -n "$p" ] || return 1
-  case "$p" in
-    /*) ;;
-    *) p="$(command -v "$p" 2>/dev/null || true)" ;;
-  esac
-  [ -n "$p" ] || return 1
-  while [ -L "$p" ] && [ "$i" -lt 40 ]; do
-    target="$(readlink "$p" 2>/dev/null || true)"
-    [ -n "$target" ] || break
-    case "$target" in
-      /*) p="$target" ;;
-      *) p="$(dirname "$p")/$target" ;;
-    esac
-    i=$((i + 1))
-  done
-  dir="$(dirname "$p")"
-  base="$(basename "$p")"
-  if [ -d "$dir" ]; then
-    ( cd "$dir" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base" )
-  else
-    printf '%s\n' "$p"
-  fi
-}
+# 探测原生 CLI：claude / codex / opencode。
+# 这份脚本面向自己装 CLI 的用户，不认 ducc / ducx 之类的二次封装。
+CLI_NAMES="claude codex opencode"
 
-is_comate_path() {
+# config.example.yaml 里 clis[] 的条目名，只有 claude 的条目叫 official-claude。
+cli_config_name() {
   case "$1" in
-    "$HOME/.comate"/*|"$HOME/.comate-server"/*|*/extensions/baidu.baidu-cc-*) return 0 ;;
-    *) return 1 ;;
+    claude) printf '%s\n' "official-claude" ;;
+    *) printf '%s\n' "$1" ;;
   esac
 }
 
-comate_hint() {
-  local name="$1" path="$2" official
-  case "$name" in
-    ducc) official="~/.baidu-cc/baidu-cc/bin/ducc" ;;
-    ducx) official="~/.baidu-cx/baidu-cx/bin/ducx" ;;
-    *) official="官方路径" ;;
+# CLI 常见安装位置：当前 shell 的 PATH 里没有时（非交互式 shell、刚装完还没重开终端）兜底。
+cli_candidates() {
+  case "$1" in
+    claude)
+      printf '%s\n' \
+        "$HOME/.claude/local/claude" \
+        "$HOME/.local/bin/claude" \
+        "/opt/homebrew/bin/claude" \
+        "/usr/local/bin/claude"
+      ;;
+    codex)
+      printf '%s\n' \
+        "$HOME/.local/bin/codex" \
+        "$HOME/.npm-global/bin/codex" \
+        "/opt/homebrew/bin/codex" \
+        "/usr/local/bin/codex"
+      ;;
+    opencode)
+      printf '%s\n' \
+        "$HOME/.opencode/bin/opencode" \
+        "$HOME/.local/bin/opencode" \
+        "/opt/homebrew/bin/opencode" \
+        "/usr/local/bin/opencode"
+      ;;
   esac
-  echo "提示：使用的是 Comate 扩展自带的 ${name}（${path}）。如果后续报 failed to get username，请先 ${name} login，或安装官方 ${name} 到 ${official}。" >&2
 }
 
+# 找到可执行文件则写进 FIND_PATH：先查 PATH，再查常见路径，最后交互式问一个绝对路径。
+# 故意不解析符号链接：Homebrew 的 Cellar 路径会随升级变化，保留 /opt/homebrew/bin/xxx
+# 这类稳定入口才能在升级后继续可用。
 find_cli() {
-  local name="$1" path preferred real
+  local name="$1" p
   FIND_PATH=""
-  case "$name" in
-    ducc) preferred="$HOME/.baidu-cc/baidu-cc/bin/ducc" ;;
-    ducx) preferred="$HOME/.baidu-cx/baidu-cx/bin/ducx" ;;
-    *) preferred="" ;;
+  p="$(command -v "$name" 2>/dev/null || true)"
+  case "$p" in
+    /*) if [ -x "$p" ]; then FIND_PATH="$p"; return 0; fi ;;
   esac
-  if [ -n "$preferred" ] && [ -x "$preferred" ]; then
-    path="$preferred"
-  else
-    path="$(command -v "$name" || true)"
-    if [ -n "$path" ]; then
-      real="$(realpath_portable "$path" || true)"
-      if is_comate_path "$real"; then
-        comate_hint "$name" "$real"
-      fi
-      path="$real"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ -x "$p" ]; then
+      FIND_PATH="$p"
+      return 0
     fi
-  fi
-  if [ -z "$path" ]; then
-    while true; do
-      if ! read_line_soft "未找到 ${name}，可回车跳过（之后在 config.yaml 的 clis 里补），或直接输入绝对路径: " path; then
-        echo "未找到 ${name}，已跳过（无交互输入）；之后可在 config.yaml 的 clis 里补" >&2
-        return 1
-      fi
-      if [ -z "$path" ]; then
-        return 1
-      fi
-      case "$path" in
-        "~") path="$HOME" ;;
-        "~/"*) path="$HOME/${path#~/}" ;;
-      esac
-      real="$(realpath_portable "$path" || true)"
-      if [ -n "$real" ] && [ -x "$real" ]; then
-        if is_comate_path "$real"; then
-          comate_hint "$name" "$real"
-        fi
-        path="$real"
-        break
-      fi
-      echo "$name 路径不存在或不可执行：${path}，请重试（直接回车跳过）" >&2
-      path=""
-    done
-  fi
-  FIND_PATH="$path"
-  return 0
+  done <<EOF
+$(cli_candidates "$name")
+EOF
+  while true; do
+    if ! read_line_soft "未找到 ${name}，可回车跳过（之后在 config.yaml 的 clis 里补），或直接输入绝对路径: " p; then
+      echo "未找到 ${name}，已跳过（无交互输入）；之后可在 config.yaml 的 clis 里补" >&2
+      return 1
+    fi
+    if [ -z "$p" ]; then
+      return 1
+    fi
+    case "$p" in
+      "~") p="$HOME" ;;
+      "~/"*) p="$HOME/${p#~/}" ;;
+    esac
+    if [ -x "$p" ]; then
+      FIND_PATH="$p"
+      return 0
+    fi
+    echo "$name 路径不存在或不可执行：${p}，请重试（直接回车跳过）" >&2
+  done
 }
 
-# 冒烟检查：模型列表能跑通，说明 CLI 登录态基本可用。
+# config.yaml 的 clis[] 里是否有某个条目（按 name 匹配）。
+config_has_cli() {
+  awk -v name="$1" '
+    /^clis:[[:space:]]*$/ { in_clis = 1; next }
+    in_clis && /^[^[:space:]#]/ { exit }
+    in_clis && /^  - name:[[:space:]]*"/ && $0 ~ ("^  - name:[[:space:]]*\"" name "\"") { found = 1; exit }
+    END { exit(found ? 0 : 1) }
+  ' config.yaml 2>/dev/null
+}
+
+# 读某个 cli 条目的 path（去掉引号与行尾注释）。
+config_cli_path() {
+  awk -v name="$1" '
+    /^clis:[[:space:]]*$/ { in_clis = 1; next }
+    in_clis && /^[^[:space:]#]/ { exit }
+    in_clis && /^  - name:[[:space:]]*"/ { hit = ($0 ~ ("^  - name:[[:space:]]*\"" name "\"")) }
+    in_clis && hit && /^    path:/ {
+      line = $0
+      sub(/^    path:[[:space:]]*/, "", line)
+      sub(/[[:space:]]*#.*$/, "", line)
+      gsub(/"/, "", line)
+      print line
+      exit
+    }
+  ' config.yaml 2>/dev/null
+}
+
+# 在 config.yaml 的 clis[] 里按条目名改 path / 删整条。
+# 只在 clis: 段落内生效，遇到行首非空格的顶层键就收工，不会误伤 providers。
+#   cli_yaml_filter patch <条目名> <path>
+#   cli_yaml_filter drop  <条目名>
+cli_yaml_filter() {
+  local action="$1" name="$2" path="${3:-}" tmp="config.yaml.tmp"
+  awk -v action="$action" -v name="$name" -v path="$path" '
+    /^clis:[[:space:]]*$/ { in_clis = 1; print; next }
+    in_clis && /^[^[:space:]#]/ { in_clis = 0; skip = 0 }
+    in_clis && /^  - name:[[:space:]]*"/ {
+      hit = ($0 ~ ("^  - name:[[:space:]]*\"" name "\""))
+      skip = hit
+      if (hit && action == "drop") next
+      print
+      next
+    }
+    in_clis && skip && action == "patch" && /^    path:/ {
+      printf "    path: \"%s\"\n", path
+      next
+    }
+    in_clis && skip && action == "drop" { next }
+    { print }
+  ' config.yaml > "$tmp" && mv -f "$tmp" config.yaml
+}
+
+# 把探测结果写进 config.yaml：找到 → 绝对路径；没找到 → 裸命令名，
+# 之后用 PATH 装上就能跑，不用再改配置。
+apply_cli_path() {
+  local name="$1" path="$2" entry
+  entry="$(cli_config_name "$name")"
+  [ -n "$path" ] || path="$name"
+  if config_has_cli "$entry"; then
+    cli_yaml_filter patch "$entry" "$path"
+  else
+    echo "提示：config 模板里没有 ${entry} 条目，跳过（可自己往 clis[] 里加一条）" >&2
+  fi
+}
+
+# 冒烟检查：版本号能打印出来，说明二进制至少能跑通。
+# 这里必须有硬超时：有些 launcher 型 CLI（内部 wrapper、还没登录的二进制）会一直等输入，
+# 没有超时就会把安装卡死在那儿。macOS 默认没有 timeout/gtimeout，所以兜底自己实现，
+# 而且**杀进程组**——wrapper 派生的子进程只杀父进程是清不掉的。
 run_with_timeout() {
   local secs="$1"; shift
   if command -v timeout >/dev/null 2>&1; then
     timeout "$secs" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$secs" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
-  else
-    "$@"
+    return $?
   fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+    return $?
+  fi
+  local pid rc i deadline
+  set -m 2>/dev/null || true
+  "$@" &
+  pid=$!
+  set +m 2>/dev/null || true
+  i=0
+  deadline=$((secs * 2))
+  while [ "$i" -lt "$deadline" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.5
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.5
+    kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null
+    return 124
+  fi
+  wait "$pid" 2>/dev/null
+  rc=$?
+  return "$rc"
 }
 
-smoke_check_ducc() {
-  local path="$1"
+smoke_check_cli() {
+  local name="$1" path="$2"
+  [ -n "$path" ] || return 0
+  case "$path" in
+    /*) ;;
+    *) path="$(command -v "$path" 2>/dev/null || true)" ;;
+  esac
   [ -n "$path" ] || return 0
   if [ ! -x "$path" ]; then
-    echo "警告：ducc 路径不存在或不可执行：$path" >&2
+    echo "警告：${name} 路径不存在或不可执行：$path" >&2
     return 0
   fi
-  echo "冒烟检查 ducc models: $path"
-  if run_with_timeout 20 "$path" models >/dev/null 2>&1; then
-    echo "  ducc 冒烟检查通过"
+  echo "冒烟检查 ${name} --version: $path"
+  if run_with_timeout 10 "$path" --version >/dev/null 2>&1; then
+    echo "  ${name} 冒烟检查通过"
   else
-    echo "警告：ducc 冒烟检查失败，可能未登录或凭据过期。" >&2
-    echo "      先执行 ducc login（ducc 的提示可能是 claude login）或对应 CLI 的登录命令，" >&2
-    echo "      再重启 AgentDeck；否则 mainAgent 可能报 failed to get username。" >&2
+    echo "警告：${name} 冒烟检查没跑通（超时 / 二进制或运行时有问题 / 未登录）。" >&2
+    echo "      确认能手动跑通 ${name} --version 后再重启 AgentDeck。" >&2
   fi
   return 0
 }
 
-config_ducc_path() {
-  sed -nE '/^  - name: "ducc"/,/^  - name: / s/^    path:[[:space:]]*"?([^"]*)"?.*/\1/p' config.yaml 2>/dev/null | head -n1
+smoke_check_clis_from_config() {
+  local name path
+  for name in $CLI_NAMES; do
+    path="$(config_cli_path "$(cli_config_name "$name")")"
+    [ -n "$path" ] || continue
+    smoke_check_cli "$name" "$path"
+  done
 }
 
-smoke_check_ducc_from_config() {
-  local path
-  path="$(config_ducc_path)"
-  case "$path" in
-    ""|"/home/you/"*) return 0 ;;
-  esac
-  smoke_check_ducc "$path"
-}
-
-# 配置向导：端口探测 + 监听地址 + token + ducc/ducx + sed 修改 config.yaml
+# 配置向导：端口探测 + 监听地址 + token + 原生 CLI 探测 + sed 修改 config.yaml
+# $1 = "fresh" 表示 config.yaml 是刚从公开模板下载的：可以顺手清掉模板里的
+#      ducc / ducx 占位条目。重新配置老用户的既有 config 时不要传，
+#      免得把人家正在用的条目删掉。
 run_config_wizard() {
+  local fresh_template="${1:-}"
   port=8321
   if port_is_busy "$port"; then
     newport="$(find_free_port 8322 8399 || true)"
@@ -535,29 +612,32 @@ run_config_wizard() {
     echo "token 不能为空，请重新输入。"
   done
 
-  FIND_PATH=""
-  if find_cli ducc; then ducc_path="$FIND_PATH"; else ducc_path=""; fi
-  FIND_PATH=""
-  if find_cli ducx; then ducx_path="$FIND_PATH"; else ducx_path=""; fi
+  # 原生 CLI 探测：claude / codex / opencode。
+  # 只写这三个的 path；ducc / ducx 这类二次封装不在这份脚本的范围内。
+  echo
+  echo "探测本机 CLI（claude / codex / opencode）："
+  claude_path=""
+  codex_path=""
+  opencode_path=""
+  found_any=0
+  for name in $CLI_NAMES; do
+    if find_cli "$name"; then
+      case "$name" in
+        claude) claude_path="$FIND_PATH" ;;
+        codex) codex_path="$FIND_PATH" ;;
+        opencode) opencode_path="$FIND_PATH" ;;
+      esac
+      found_any=1
+      echo "  已找到 $name: $FIND_PATH"
+    else
+      echo "  未找到 $name（config 里留占位，之后装上就能用）" >&2
+    fi
+  done
 
-  if [ -z "$ducc_path" ] && [ -z "$ducx_path" ]; then
-    echo "错误：ducc 和 ducx 都没有找到，无法继续。" >&2
-    echo "请先安装其中一个，或在 config.yaml 的 clis 里手动填 path 后自行启动。" >&2
+  if [ "$found_any" -eq 0 ]; then
+    echo "错误：claude / codex / opencode 都没找到，无法继续。" >&2
+    echo "AgentDeck 是这些 CLI 的控制层，请先装其中一个；或在 config.yaml 的 clis 里手动填 path 后自行启动。" >&2
     exit 1
-  fi
-
-  if [ -n "$ducc_path" ]; then
-    echo "已为你配置 ducc: $ducc_path"
-  else
-    echo "已跳过 ducc，config 里保留占位"
-    echo "警告：ducc 未配置，之后可在 config.yaml 的 clis 里补" >&2
-  fi
-
-  if [ -n "$ducx_path" ]; then
-    echo "已为你配置 ducx: $ducx_path"
-  else
-    echo "已跳过 ducx，config 里保留占位"
-    echo "警告：ducx 未配置，之后可在 config.yaml 的 clis 里补" >&2
   fi
 
   listen_esc="$(sed_escape "$listen_addr")"
@@ -565,24 +645,35 @@ run_config_wizard() {
   sed_inplace -e "s|^listen:.*|listen: \"${listen_esc}\"|" config.yaml
   sed_inplace -e "s|^gateway_token:.*|gateway_token: \"${token_esc}\"|" config.yaml
 
-  if [ -n "$ducc_path" ]; then
-    ducc_esc="$(sed_escape "$ducc_path")"
-    sed_inplace -e "/^  - name: \"ducc\"/,/^  - name: / s|^    path:.*|    path: \"${ducc_esc}\"|" config.yaml
+  # 公开模板里带着 ducc / ducx 两个二次封装条目（百度内部用），全新安装用不上，
+  # 直接删掉，免得 CLI 下拉里出现一堆指向 /home/you/... 的死路径。
+  # 重新配置老用户的 config 时不动它们（那时候 fresh_template 为空）。
+  if [ "$fresh_template" = "fresh" ]; then
+    cli_yaml_filter drop ducc
+    cli_yaml_filter drop ducx
   fi
-  if [ -n "$ducx_path" ]; then
-    ducx_esc="$(sed_escape "$ducx_path")"
-    sed_inplace -e "/^  - name: \"ducx\"/,/^  - name: / s|^    path:.*|    path: \"${ducx_esc}\"|" config.yaml
-  fi
+
+  apply_cli_path claude "$claude_path"
+  apply_cli_path codex "$codex_path"
+  apply_cli_path opencode "$opencode_path"
 
   echo
   echo "已更新配置（token 不打印）："
-  grep -nE '^listen:|^    path:' config.yaml
+  grep -nE '^listen:' config.yaml
+  awk '
+    /^clis:[[:space:]]*$/ { in_clis = 1; next }
+    in_clis && /^[^[:space:]#]/ { exit }
+    in_clis && /^  - name:/ { line = $0; sub(/^  - name:[[:space:]]*/, "", line); gsub(/"/, "", line); name = line }
+    in_clis && /^    path:/ { p = $0; sub(/^    path:[[:space:]]*/, "", p); printf "  cli %-16s %s\n", name, p }
+  ' config.yaml
 }
 
 reconfigure() {
+  local downloaded=""
   if [ ! -f config.yaml ]; then
     echo "未找到 config.yaml，重新下载模板 ..."
     download_config
+    downloaded="fresh"
   fi
   backup_config
   stop_agentdeck
@@ -595,12 +686,12 @@ reconfigure() {
     ln -sfn "agentdeck" "$LEGACY_BIN"
     echo "已将旧二进制迁移为 agentdeck（备份 cc-webui.bak-${cur}）"
   fi
-  run_config_wizard
+  run_config_wizard "$downloaded"
   if ! start_agentdeck "$access_url" "$port"; then
     echo "配置后启动失败，请检查 config.yaml 或日志。" >&2
     exit 1
   fi
-  smoke_check_ducc "$ducc_path"
+  smoke_check_clis_from_config
   exit 0
 }
 
@@ -647,7 +738,7 @@ if [ -x "$BIN" ] || [ -x "$LEGACY_BIN" ]; then
       start_agentdeck "" "" || true
       exit 1
     fi
-    smoke_check_ducc_from_config
+    smoke_check_clis_from_config
     exit 0
   fi
 
@@ -675,11 +766,11 @@ else
   chmod +x "$BIN"
   ln -sfn "agentdeck" "$LEGACY_BIN" 2>/dev/null || true
   download_config
-  run_config_wizard
+  run_config_wizard fresh
   if ! start_agentdeck "$access_url" "$port"; then
     exit 1
   fi
-  smoke_check_ducc "$ducc_path"
+  smoke_check_clis_from_config
   echo "已安装版本: $install_ver"
   exit 0
 fi

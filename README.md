@@ -200,7 +200,9 @@ Linux / macOS 用安装脚本，已装过的旧版本会迁移到 `agentdeck`（
 curl -fsSL https://raw.githubusercontent.com/yhx5768/AgentDeck/master/scripts/install-agentdeck.sh | bash
 ```
 
-脚本源码就在仓库里：[scripts/install-agentdeck.sh](scripts/install-agentdeck.sh)。上面的命令始终取 master 上的最新版；配置模板（`du_int.config.example.yaml`）也是从仓库 raw 下载，与二进制同源。
+脚本源码就在仓库里：[scripts/install-agentdeck.sh](scripts/install-agentdeck.sh)。上面的命令始终取 master 上的最新版；配置模板（[`config.example.yaml`](config.example.yaml)）也是从仓库 raw 下载，与二进制同源。
+
+安装时脚本会自动探测本机的 `claude` / `codex` / `opencode` 并写进 `config.yaml`；没装的那些保留命令名占位，之后装上就能直接用，不用改配置。引擎是 CLI 提供的，装几个用几个。
 
 也可以直接从 [Releases](https://github.com/yhx5768/AgentDeck/releases/latest) 下载对应平台的二进制，解压即用。旧名 `cc-webui` 仍可继续运行，Release 会同时提供 `agentdeck-*` 与兼容用的 `cc-webui-*` asset。
 
