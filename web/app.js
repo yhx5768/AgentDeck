@@ -4716,6 +4716,51 @@ function boardCloseDrawer() {
   });
 }
 
+// 抽屉头部的卡号 + 复制按钮：展示可以截断，但复制的一直是完整 task.id。
+function boardDrawerHeader(task) {
+  const fullId = String((task && task.id) || '');
+  const idEl = $('#board-drawer-id');
+  idEl.textContent = fullId || '本地任务';
+  idEl.title = fullId;
+  const copyBtn = $('#board-drawer-copy-id');
+  if (!copyBtn) return;
+  clearTimeout(copyBtn.__copyTimer);
+  copyBtn.dataset.taskId = fullId;
+  copyBtn.classList.toggle('hidden', !fullId);
+  copyBtn.classList.remove('copied', 'copy-failed');
+  copyBtn.textContent = '复制';
+  copyBtn.title = fullId ? `复制完整卡号：${fullId}` : '复制完整卡号';
+  copyBtn.setAttribute('aria-label', fullId ? `复制完整卡号 ${fullId}` : '复制完整卡号');
+}
+
+// 复制完整卡号。走 copyText（含 execCommand 兜底），非 HTTPS 的局域网访问也能复制；
+// 成功/失败都在按钮上就地反馈，不弹 toast。
+function boardCopyTaskId(button) {
+  if (!button) return;
+  const id = button.dataset.taskId || '';
+  if (!id) return;
+  const finish = (label, cls) => {
+    button.textContent = label;
+    button.classList.remove('copied', 'copy-failed');
+    if (cls) button.classList.add(cls);
+    clearTimeout(button.__copyTimer);
+    button.__copyTimer = setTimeout(() => {
+      button.textContent = '复制';
+      button.classList.remove('copied', 'copy-failed');
+    }, 1200);
+  };
+  copyText(id).then(() => finish('已复制', 'copied')).catch(() => finish('复制失败', 'copy-failed'));
+}
+
+function bindBoardDrawerCopy() {
+  const btn = $('#board-drawer-copy-id');
+  if (!btn) return;
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    boardCopyTaskId(btn);
+  };
+}
+
 function boardOpenDrawer(task, opts) {
   const keepScroll = !!(opts && opts.keepScroll);
   const timelineEl = $('#board-drawer-timeline');
@@ -4725,8 +4770,7 @@ function boardOpenDrawer(task, opts) {
   document.querySelectorAll('.board-card').forEach((el) => {
     el.classList.toggle('board-card-selected', el.dataset.taskId === task.id);
   });
-  const idEl = $('#board-drawer-id');
-  idEl.textContent = task.id || '本地任务';
+  boardDrawerHeader(task);
   const projectEl = $('#board-drawer-project');
   projectEl.textContent = task.project || '未分类';
   projectEl.title = task.project || '';
@@ -5602,6 +5646,7 @@ $('#board-refresh').onclick = () => { boardShow(true, { manual: true }); };
 $('#board-project-filter').onchange = () => renderBoard();
 $('#board-drawer-close').onclick = () => boardCloseDrawer();
 $('#board-drawer-mask').onclick = () => boardCloseDrawer();
+bindBoardDrawerCopy();
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#board-drawer').classList.contains('open')) {
     boardCloseDrawer();

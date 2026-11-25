@@ -4880,8 +4880,10 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
   gap: var(--sp-3);
   margin-bottom: var(--sp-3);
 }
-.board-drawer-kicker { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
-#board-drawer-id { color: var(--dim); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.board-drawer-kicker { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; min-width: 0; flex: 1; }
+.board-drawer-id-wrap { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; }
+#board-drawer-id { color: var(--dim); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-drawer-id-copy { flex: none; }
 .board-drawer-title { font-size: var(--fs-lg); line-height: 1.4; margin: 0 0 var(--sp-3); color: var(--fg); }
 .board-drawer-meta { display: grid; gap: 5px; color: var(--dim); font-size: var(--fs-sm); margin-bottom: var(--sp-5); }
 .board-drawer-meta b { color: var(--fg); font-weight: 500; }
@@ -5176,6 +5178,8 @@ body.board-drawer-resizing * { cursor: col-resize !important; }
 .board-pane-value.mono { font-family: var(--font-mono); font-size: 10.5px; }
 .board-copy-btn { border: 1px solid var(--border); background: var(--bg); color: var(--dim); font-size: 9.5px; border-radius: 5px; padding: 1px 5px; cursor: pointer; flex: none; }
 .board-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+.board-copy-btn.copied { color: var(--green); border-color: var(--green); }
+.board-copy-btn.copy-failed { color: var(--red); border-color: var(--red); }
 .board-artifact { display: flex; align-items: flex-start; gap: 9px; flex-wrap: wrap; padding: 8px 0; }
 .board-artifact + .board-artifact { border-top: 1px solid var(--border); }
 /* 按轮次分组的卡片列表：分组容器本身退成透明，每组一张卡片 */
