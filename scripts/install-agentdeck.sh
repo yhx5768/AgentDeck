@@ -324,7 +324,7 @@ else
 fi
 
 # 探测原生 CLI：claude / codex / opencode。
-# 这份脚本面向自己装 CLI 的用户，不认 ducc / ducx 之类的二次封装。
+# 这份脚本面向自己装 CLI 的用户，只探测官方命令；二次封装（wrapper）请自己写进 config.yaml。
 CLI_NAMES="claude codex opencode"
 
 # config.example.yaml 里 clis[] 的条目名，只有 claude 的条目叫 official-claude。
@@ -428,27 +428,23 @@ config_cli_path() {
   ' config.yaml 2>/dev/null
 }
 
-# 在 config.yaml 的 clis[] 里按条目名改 path / 删整条。
+# 在 config.yaml 的 clis[] 里按条目名改 path。
 # 只在 clis: 段落内生效，遇到行首非空格的顶层键就收工，不会误伤 providers。
-#   cli_yaml_filter patch <条目名> <path>
-#   cli_yaml_filter drop  <条目名>
-cli_yaml_filter() {
-  local action="$1" name="$2" path="${3:-}" tmp="config.yaml.tmp"
-  awk -v action="$action" -v name="$name" -v path="$path" '
+#   set_cli_path <条目名> <path>
+set_cli_path() {
+  local name="$1" path="$2" tmp="config.yaml.tmp"
+  awk -v name="$name" -v path="$path" '
     /^clis:[[:space:]]*$/ { in_clis = 1; print; next }
-    in_clis && /^[^[:space:]#]/ { in_clis = 0; skip = 0 }
+    in_clis && /^[^[:space:]#]/ { in_clis = 0; hit = 0 }
     in_clis && /^  - name:[[:space:]]*"/ {
       hit = ($0 ~ ("^  - name:[[:space:]]*\"" name "\""))
-      skip = hit
-      if (hit && action == "drop") next
       print
       next
     }
-    in_clis && skip && action == "patch" && /^    path:/ {
+    in_clis && hit && /^    path:/ {
       printf "    path: \"%s\"\n", path
       next
     }
-    in_clis && skip && action == "drop" { next }
     { print }
   ' config.yaml > "$tmp" && mv -f "$tmp" config.yaml
 }
@@ -460,7 +456,7 @@ apply_cli_path() {
   entry="$(cli_config_name "$name")"
   [ -n "$path" ] || path="$name"
   if config_has_cli "$entry"; then
-    cli_yaml_filter patch "$entry" "$path"
+    set_cli_path "$entry" "$path"
   else
     echo "提示：config 模板里没有 ${entry} 条目，跳过（可自己往 clis[] 里加一条）" >&2
   fi
@@ -535,11 +531,7 @@ smoke_check_clis_from_config() {
 }
 
 # 配置向导：端口探测 + 监听地址 + token + 原生 CLI 探测 + sed 修改 config.yaml
-# $1 = "fresh" 表示 config.yaml 是刚从公开模板下载的：可以顺手清掉模板里的
-#      ducc / ducx 占位条目。重新配置老用户的既有 config 时不要传，
-#      免得把人家正在用的条目删掉。
 run_config_wizard() {
-  local fresh_template="${1:-}"
   port=8321
   if port_is_busy "$port"; then
     newport="$(find_free_port 8322 8399 || true)"
@@ -613,7 +605,7 @@ run_config_wizard() {
   done
 
   # 原生 CLI 探测：claude / codex / opencode。
-  # 只写这三个的 path；ducc / ducx 这类二次封装不在这份脚本的范围内。
+  # 只写这三个的 path；二次封装（wrapper）不在这份脚本的范围内。
   echo
   echo "探测本机 CLI（claude / codex / opencode）："
   claude_path=""
@@ -645,14 +637,6 @@ run_config_wizard() {
   sed_inplace -e "s|^listen:.*|listen: \"${listen_esc}\"|" config.yaml
   sed_inplace -e "s|^gateway_token:.*|gateway_token: \"${token_esc}\"|" config.yaml
 
-  # 公开模板里带着 ducc / ducx 两个二次封装条目（百度内部用），全新安装用不上，
-  # 直接删掉，免得 CLI 下拉里出现一堆指向 /home/you/... 的死路径。
-  # 重新配置老用户的 config 时不动它们（那时候 fresh_template 为空）。
-  if [ "$fresh_template" = "fresh" ]; then
-    cli_yaml_filter drop ducc
-    cli_yaml_filter drop ducx
-  fi
-
   apply_cli_path claude "$claude_path"
   apply_cli_path codex "$codex_path"
   apply_cli_path opencode "$opencode_path"
@@ -669,11 +653,9 @@ run_config_wizard() {
 }
 
 reconfigure() {
-  local downloaded=""
   if [ ! -f config.yaml ]; then
     echo "未找到 config.yaml，重新下载模板 ..."
     download_config
-    downloaded="fresh"
   fi
   backup_config
   stop_agentdeck
@@ -686,7 +668,7 @@ reconfigure() {
     ln -sfn "agentdeck" "$LEGACY_BIN"
     echo "已将旧二进制迁移为 agentdeck（备份 cc-webui.bak-${cur}）"
   fi
-  run_config_wizard "$downloaded"
+  run_config_wizard
   if ! start_agentdeck "$access_url" "$port"; then
     echo "配置后启动失败，请检查 config.yaml 或日志。" >&2
     exit 1
@@ -766,7 +748,7 @@ else
   chmod +x "$BIN"
   ln -sfn "agentdeck" "$LEGACY_BIN" 2>/dev/null || true
   download_config
-  run_config_wizard fresh
+  run_config_wizard
   if ! start_agentdeck "$access_url" "$port"; then
     exit 1
   fi
