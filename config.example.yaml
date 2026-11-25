@@ -51,11 +51,11 @@ default_cwd: "~"
 # 注释掉 = 开（默认）。设 false 才关闭。
 # 覆盖范围：
 #   claude / qoder / mcode —— 走 --append-system-prompt 追加进每轮 system prompt。
-#   codex / ducx —— 没有 append 语义的入口，改走 -c instructions=<TOML 字符串>；
+#   codex —— 没有 append 语义的入口，改走 -c instructions=<TOML 字符串>；
 #     它是一条独立的 developer 消息，每次运行都从 config 重读，resume 也生效。
-#     注意任何 -c 都会让 ducx 不再注入自己的 provider，所以传 hint 时会一并补
-#     -c model_provider=<clis[].model_provider>。用户在 clis[].args 里自己写了
-#     同名 flag 时不重复注入（CLIs 取最后一个）。
+#     注意任何 -c 都可能让二次封装的 wrapper 不再注入它自己的 provider，所以传
+#     hint 时会一并补 -c model_provider=<clis[].model_provider>。用户在 clis[].args
+#     里自己写了同名 flag 时不重复注入（CLIs 取最后一个）。
 #   opencode —— 它没有 append 语义的入口（system 字段是覆盖 agent 自身 prompt
 #     的，填进去更糟），改写 ~/.config/cc-webui/opencode/ 下的 opencode.json，
 #     只放一个 instructions 键指向约定正文，并在 opencode serve 启动前把
@@ -71,7 +71,7 @@ default_cwd: "~"
 # board_create / board_update / board_comment / board_bind_worker），worker 拿不到。
 # 缺省（不写）= 开。各引擎的注入方式：
 #   claude / qoder —— 每轮生成 --mcp-config 文件；
-#   codex / ducx  —— -c mcp_servers.agentdeck.*，经 0700 wrapper 读 0600 env；
+#   codex         —— -c mcp_servers.agentdeck.*，经 0700 wrapper 读 0600 env；
 #   opencode      —— 仅对「主 Agent / 有地址名 / 常驻」的会话写 per-session
 #                    配置（避免共享 base 配置里的 mcp 段盖掉用户自己的 mcp）；
 #   mcode         —— 合并进 ~/.minimax/mcp.json 的 mcpServers.agentdeck。
@@ -118,8 +118,10 @@ main_agent:
 #                 claude，只是没有 --verbose、档位 flag 叫 --reasoning-effort、
 #                 permission_mode 用下划线拼写，transcript 在 ~/.qoder-cn）
 #                 kind: codex = Codex CLI 引擎（`codex exec --json` +
-#                 $CODEX_HOME/sessions rollout；Baidu 的 ducx 是同一协议，
-#                 用 home 指向 ~/.baidu-cx、model_provider 指向 oneapi）
+#                 $CODEX_HOME/sessions rollout；二次封装的 wrapper 用 home
+#                 指向它自己的目录、model_provider 钉住它注入的 provider）
+#                 models_command = ["models"]：launcher 型 CLI 自己列网关模型时，
+#                 用它打印的清单替代 provider.models 的静态列表
 #   providers[] - 一个模型后端（kind: claude 的共享 env 是 BASE_URL/TOKEN；
 #                 kind: opencode 的 provider 名必须等于 opencode CLI 的
 #                 providerID，凭据走 opencode 自己的 auth.json，env 不生效；
@@ -145,16 +147,6 @@ clis:
     # partial_messages: true 开启 --include-partial-messages，前端打字机式
     # 逐 token 流式渲染。仅新版 Claude Code 支持；兼容 CLI 请勿开启。
     partial_messages: true
-    args: []
-    env: {}
-
-  - name: "ducc"
-    path: "/home/you/.baidu-cc/baidu-cc/bin/ducc"
-    # 模型清单从 CLI 自己的命令读取（`ducc models` → "Available Models: A, B, C"）。
-    # 网关模型随账号/CLI 升级变化，config 里的 models 写死会过期；provider 的
-    # models 只留作输入模态提示。留空则退回静态 models。
-    models_command: ["models"]
-    permission_mode: "default"   # 默认走 Web 审批卡；选 bypassPermissions 才全放行
     args: []
     env: {}
 
@@ -200,16 +192,6 @@ clis:
     args: []
     env: {}
 
-  - name: "ducx"
-    kind: "codex"                 # 百度二次封装（ducx = baidu-codex 的软链）
-    path: "/home/you/.baidu-cx/baidu-cx/bin/ducx"
-    home: "~/.baidu-cx"           # ducx 忽略 CODEX_HOME，rollout 固定写这里
-    model_provider: "oneapi"      # 只要传 -c（例如档位），必须同时钉住 provider，
-                                   # 否则 ducx 会退回 api.openai.com
-    permission_mode: "bypassPermissions"
-    args: []
-    env: {}
-
 providers:
   - name: "anthropic"
     env: {}                  # 用官方端点时无需额外 env
@@ -244,7 +226,7 @@ providers:
   # 这类 provider 一般不用手写——`opencode auth login` 登录的集成交给服务端
   # 自动发现即可（见 AGENTS.md §8）。显式声明适合钉住下拉顺序或给静态模态提示，
   # 同名条目优先于自动发现。env 置空——凭据在 opencode 自己的 auth.json。
-  # 本组 provider 只能配 kind: opencode 的 cli，勿与 claude/ducc 混选
+  # 本组 provider 只能配 kind: opencode 的 cli，勿与 claude 混选
   # （env 为空会直连官方端点报模型未知）。
   #
   # models 留空：可用模型由 opencode 的注册表决定，服务端按 cli 版本跑
@@ -284,8 +266,8 @@ providers:
   # codex 引擎示例：provider 名只需在 cc-webui 内唯一；凭据由 codex 自己的
   # config.toml / 登录态决定，config 的 env 不参与。models 留空即可——可用
   # 模型与每个模型的推理档位由 CLI 侧目录提供（/api/codex-models）：原生
-  # codex 读 `debug models --bundled`；ducx 这类 wrapper 读它自己的
-  # <home>/model-catalogs/<model_provider>-models.json（即 `ducx models`
+  # codex 读 `debug models --bundled`；二次封装的 wrapper 读它自己的
+  # <home>/model-catalogs/<model_provider>-models.json（即 `<cli> models`
   # 打印的网关模型清单）。写死会随 CLI 升级/账号档位过期。
   - name: "codex"
     kind: "codex"
