@@ -596,6 +596,10 @@ const state = {
   // worker 会话右侧「绑定卡片」面板（见 wc* 段）：抽屉式 SSE 只在面板展开时连。
   workerCardsEs: null,     // /api/agent-board/events（worker 面板专用连接）
   workerCardsSid: null,    // 上面这条 SSE 属于哪个会话
+  // 绑定卡片详情页：打开某张卡后整面板切成详情视图，返回/收起时清空。
+  // 回复草稿与等待状态放在 state 里，SSE 重绘不会丢正在输入的内容。
+  wcDetail: { sid: '', taskId: '' },
+  wcReply: { taskId: '', draft: '', notice: null, wait: null, freshKey: '' },
   boardEsOpen: false,      // SSE 已收到 ready（断线后由 EventSource 自动重连）
   boardSyncTimer: 0,       // 事件合并后的延迟刷新定时器
   boardFallbackTimer: 0,   // SSE 断线/长时间静默时的低频兜底定时器
@@ -2938,14 +2942,13 @@ function syncMainAgentTabs(s) {
 
 // ---------- worker 会话右侧：绑定卡片面板 ----------
 // 只在 worker 会话（有 current、且不是 main_agent）显示；主 Agent 与看板页不受影响。
-// 收起时是右侧一条窄轨（展开图标 + 卡片数 + 竖排标题），展开后是 340px 宽的手风琴：
-// 默认只展开最近更新的一张，同一时间最多一张，点别的卡即切换。
+// 收起时是右侧一条窄轨（展开图标 + 卡片数 + 竖排标题），展开后是 340px 宽的卡片列表。
+// 点一张卡进入「完整卡片详情」页（状态/基础信息/标签/产物/任务流 + 回复主 Agent、
+// 验收通过），左上角返回按钮回到竖向卡片列表；详情是临时视图，收起面板即退出。
 // 卡片来自已有的 GET /api/agent-board 快照，按「看板卡的 session == 当前会话 id」或
-// 「看板卡的 worker == 当前会话 peer_name / name」匹配。展开状态与选中卡片按会话存
-// localStorage；展开时跟随 /api/agent-board/events 自动刷新。
+// 「看板卡的 worker == 当前会话 peer_name / name」匹配。展开状态按会话存 localStorage；
+// 展开时跟随 /api/agent-board/events 自动刷新。
 const WC_OPEN_PREFIX = 'cc-webui:wc-open:';
-const WC_CARD_PREFIX = 'cc-webui:wc-card:';
-const WC_CARD_NONE = '-'; // 手风琴显式全部收起（区别于「还没选过 → 默认第一张」）
 
 function wcStorageGet(prefix, sid, fallback) {
   try {
@@ -2981,19 +2984,33 @@ function wcBoundTasks(s) {
     .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
 }
 
-// 手风琴当前展开的卡片：存的值有效就用它；从没选过 → 最近更新的一张；
-// 显式收起（'-'）→ 一张都不展开。
-function wcSelectedTaskId(s, tasks) {
-  if (!s || !tasks || !tasks.length) return '';
-  const stored = wcStorageGet(WC_CARD_PREFIX, s.id, null);
-  if (stored === WC_CARD_NONE) return '';
-  if (stored && tasks.some((t) => String(t.id || '') === stored)) return stored;
-  return String(tasks[0].id || '');
+// 详情页状态：按会话隔离；切会话 / 返回列表 / 收起面板时清空。
+function wcDetailTaskId(s) {
+  if (!s || state.wcDetail.sid !== s.id) return '';
+  return state.wcDetail.taskId || '';
 }
 
-function wcSetSelectedTaskId(s, taskId) {
-  if (!s || !s.id) return;
-  wcStorageSet(WC_CARD_PREFIX, s.id, taskId || WC_CARD_NONE);
+function wcReplyReset() {
+  state.wcReply = { taskId: '', draft: '', notice: null, wait: null, freshKey: '' };
+}
+
+function wcOpenDetail(s, taskId) {
+  state.wcDetail = { sid: s && s.id ? s.id : '', taskId: String(taskId || '') };
+  wcReplyReset();
+  state.wcReply.taskId = String(taskId || '');
+}
+
+function wcCloseDetail() {
+  state.wcDetail = { sid: '', taskId: '' };
+  wcReplyReset();
+}
+
+// 回复/验收都发给主 Agent 会话：服务端要求 board_task_id 只出现在主 Agent 会话里，
+// 且只有主 Agent 的轮次结束才会自动把最终回复写回卡片时间线。
+function wcMainAgentSession() {
+  if (typeof mainAgentSessions !== 'function') return null;
+  const list = mainAgentSessions();
+  return (list && list[0]) || null;
 }
 
 function wcStatusClass(status) {
@@ -3041,14 +3058,8 @@ function wcRail(s, tasks) {
   return btn;
 }
 
-function wcHead(s, tasks) {
-  const head = document.createElement('div');
-  head.className = 'wc-head';
-  const title = document.createElement('div');
-  title.className = 'wc-head-title';
-  const text = document.createElement('span');
-  text.textContent = '绑定卡片';
-  title.append(text, wcCountPill(tasks.length, 'wc-count'));
+// 收起面板按钮（列表头与详情头共用）；收起时退出详情并断开 SSE。
+function wcCollapseButton(s) {
   const collapse = document.createElement('button');
   collapse.type = 'button';
   collapse.className = 'icon-btn wc-collapse';
@@ -3061,9 +3072,49 @@ function wcHead(s, tasks) {
   collapse.onclick = () => {
     wcSetOpen(s, false);
     wcDisconnect();
+    wcCloseDetail();
     wcRender(s);
   };
-  head.append(title, collapse);
+  return collapse;
+}
+
+function wcHead(s, tasks) {
+  const head = document.createElement('div');
+  head.className = 'wc-head';
+  const title = document.createElement('div');
+  title.className = 'wc-head-title';
+  const text = document.createElement('span');
+  text.textContent = '绑定卡片';
+  title.append(text, wcCountPill(tasks.length, 'wc-count'));
+  head.append(title, wcCollapseButton(s));
+  return head;
+}
+
+// 详情页头部：左上角返回按钮 + 「卡片详情」+ 状态胶囊 + 收起按钮。
+function wcDetailHead(s, task) {
+  const head = document.createElement('div');
+  head.className = 'wc-head wc-detail-head';
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.className = 'icon-btn wc-back';
+  back.title = '返回卡片列表';
+  back.setAttribute('aria-label', '返回卡片列表');
+  const icon = document.createElement('i');
+  icon.dataset.lucide = 'arrow-left';
+  back.append(icon);
+  back.onclick = () => {
+    wcCloseDetail();
+    wcRender(s);
+  };
+  const title = document.createElement('div');
+  title.className = 'wc-head-title';
+  const text = document.createElement('span');
+  text.textContent = '卡片详情';
+  const status = document.createElement('span');
+  status.className = 'wc-status wc-st-' + wcStatusClass(task.status);
+  status.textContent = task.status || '未知';
+  title.append(text, status);
+  head.append(back, title, wcCollapseButton(s));
   return head;
 }
 
@@ -3105,22 +3156,28 @@ function wcArtifactTime(value) {
   return m ? `${m[2]}-${m[3]} ${m[4]}` : raw;
 }
 
-// 详情里的一条产物：类型徽标 + 标题 + 类型/大小/时间，有 URL 的整条可点开。
+// 详情里的一条产物：类型徽标 + 标题 + 类型/大小/时间，左边的打开区可点开。
 // kind=url 用产物自己的分享链接；html/file 走 boardArtifactViewURL 换同源视图
 // 地址（跨 origin 的托管链接在新标签里没有登录 cookie，会被 401/CORS 拦掉）。
-// legacy report_file 没有 url，只展示路径信息。
+// legacy report_file 没有 url，只展示路径信息。右侧分享动作：
+//   - url 产物本身就是公开分享链接 → 直接复制；
+//   - 托管产物 → 打开看板同一套「创建公开链接」弹窗（可复制/查看期限）；
+//   - legacy 无可分享内容。
 function wcArtifactItem(artifact) {
   const a = artifact || {};
   const href = a.legacy ? '' : (a.kind === 'url' ? (a.url || '') : boardArtifactViewURL(a));
-  const item = document.createElement(href ? 'a' : 'span');
-  item.className = 'wc-artifact' + (href ? ' wc-artifact-link' : '');
+  const item = document.createElement('div');
+  item.className = 'wc-artifact';
   item.dataset.kind = a.kind || '';
+
+  const open = document.createElement(href ? 'a' : 'span');
+  open.className = 'wc-artifact-open';
   if (href) {
-    item.href = href;
-    item.target = '_blank';
-    item.rel = 'noopener';
-    item.title = href;
-    item.setAttribute('aria-label', `打开产物：${a.title || a.filename || '未命名产物'}`);
+    open.href = href;
+    open.target = '_blank';
+    open.rel = 'noopener';
+    open.title = href;
+    open.setAttribute('aria-label', `打开产物：${a.title || a.filename || '未命名产物'}`);
   }
   const kind = document.createElement('span');
   kind.className = 'wc-artifact-kind';
@@ -3141,84 +3198,357 @@ function wcArtifactItem(artifact) {
   meta.textContent = bits.join(' · ');
   meta.title = [a.filename, a.created_at].filter(Boolean).join(' · ');
   main.append(title, meta);
-  item.append(kind, main);
+  open.append(kind, main);
   if (href) {
     const go = document.createElement('span');
     go.className = 'wc-artifact-go';
     go.textContent = '↗';
     go.setAttribute('aria-hidden', 'true');
-    item.append(go);
+    open.append(go);
+  }
+  item.append(open);
+
+  if (href && !a.legacy) {
+    const share = document.createElement('button');
+    share.type = 'button';
+    share.className = 'wc-artifact-share';
+    if (a.kind === 'url') {
+      share.textContent = '复制链接';
+      share.title = '复制公开分享链接';
+      share.onclick = () => boardCopyShareURL(a.url, share);
+    } else if (a.id) {
+      share.textContent = '分享';
+      share.title = '创建公开分享链接（可设置有效期）';
+      share.onclick = () => boardOpenShareDialog(a);
+    }
+    if (share.textContent) item.append(share);
   }
   return item;
 }
 
-// 详情里的「产物」行：0 个显示「—」，每个产物一条可点开的链接（最多列出全部）。
-function wcArtifactsRow(task) {
-  const row = document.createElement('div');
-  row.className = 'wc-row wc-artifacts';
-  const key = document.createElement('span');
-  key.className = 'wc-row-key';
-  key.textContent = '产物';
-  const val = document.createElement('span');
-  val.className = 'wc-row-val';
+// 详情里的「产物」区块：0 个显示「—」，每个产物一条可打开/分享的条目。
+function wcArtifactsSection(task) {
   const artifacts = Array.isArray(task.artifacts) ? task.artifacts.filter(Boolean) : [];
+  const section = wcDetailSection('产物', artifacts.length);
+  section.classList.add('wc-artifacts');
+  const list = document.createElement('div');
+  list.className = 'wc-artifact-list';
   if (artifacts.length) {
-    artifacts.forEach((artifact) => val.append(wcArtifactItem(artifact)));
+    artifacts.forEach((artifact) => list.append(wcArtifactItem(artifact)));
   } else {
-    val.textContent = '—';
+    const none = document.createElement('div');
+    none.className = 'wc-detail-muted';
+    none.textContent = '—';
+    list.append(none);
   }
-  row.append(key, val);
+  section.append(list);
+  return section;
+}
+
+// 详情页的小节标题（可带数量胶囊）。
+function wcDetailSection(title, count) {
+  const section = document.createElement('section');
+  section.className = 'wc-detail-section';
+  const head = document.createElement('div');
+  head.className = 'wc-detail-section-head';
+  const label = document.createElement('span');
+  label.className = 'wc-detail-section-title';
+  label.textContent = title;
+  head.append(label);
+  if (typeof count === 'number') {
+    const pill = document.createElement('span');
+    pill.className = 'wc-detail-count';
+    pill.textContent = String(count);
+    head.append(pill);
+  }
+  section.append(head);
+  return section;
+}
+
+function wcTimelineEvent(event) {
+  const row = document.createElement('div');
+  row.className = 'wc-event'
+    + (event.kind === '用户消息' ? ' wc-event-user' : '')
+    + (event.kind === '主 Agent 回复' ? ' wc-event-reply' : '');
+  if (event.kind === '主 Agent 回复' && state.wcReply.freshKey
+    && boardReplyKey(event) === state.wcReply.freshKey) {
+    row.classList.add('wc-event-fresh');
+  }
+  const head = document.createElement('div');
+  head.className = 'wc-event-head';
+  const kind = document.createElement('span');
+  kind.className = 'wc-event-kind';
+  kind.textContent = event.kind || '事件';
+  const at = document.createElement('span');
+  at.className = 'wc-event-at';
+  at.textContent = event.at || '';
+  head.append(kind, at);
+  const text = document.createElement('div');
+  text.className = 'board-drawer-event-text md wc-event-text';
+  text.innerHTML = md(event.text || '', { artifacts: false });
+  row.append(head, text);
   return row;
 }
 
-// 展开态的内联详情：任务 ID、状态、progress、最近事件、标签、产物。
+// 任务流：看板任务的 timeline 已按最新在前返回，窄面板里逐条铺开、随面板滚动。
+function wcTimelineSection(task) {
+  const events = boardTaskEvents(task);
+  const section = wcDetailSection('任务流', events.length);
+  section.classList.add('wc-timeline');
+  if (!events.length) {
+    const none = document.createElement('div');
+    none.className = 'wc-detail-muted';
+    none.textContent = '—';
+    section.append(none);
+    return section;
+  }
+  events.forEach((event) => section.append(wcTimelineEvent(event)));
+  return section;
+}
+
+// 主 Agent 轮次结束、服务端把最终回复写回卡片后，提示「已回复」并高亮新回复。
+function wcReplySync(task) {
+  const wait = state.wcReply.wait;
+  state.wcReply.freshKey = '';
+  if (!wait || wait.taskId !== (task.id || '')) return;
+  const keys = boardReplyKeys(task);
+  const fresh = keys.find((key) => !wait.baseline.includes(key));
+  if (!fresh) return;
+  state.wcReply.wait = null;
+  state.wcReply.freshKey = fresh;
+  state.wcReply.notice = {
+    taskId: task.id || '',
+    text: '已回复 · 最新回复见下方任务流',
+    kind: 'ok',
+  };
+}
+
+function wcDetailSetNotice(text, kind) {
+  const el = $('#wc-detail-notice');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'wc-detail-notice' + (kind ? ' ' + kind : '') + (text ? '' : ' hidden');
+}
+
+// 完整卡片详情：状态提示 + 基础信息 + 标签 + 产物 + 任务流。
 function wcTaskDetail(task) {
+  wcReplySync(task);
   const body = document.createElement('div');
-  body.className = 'wc-card-body';
-  body.append(
+  body.className = 'wc-detail-body';
+
+  const title = document.createElement('div');
+  title.className = 'wc-detail-title';
+  title.textContent = task.full_title || task.title || '（无标题）';
+  title.title = title.textContent;
+
+  const info = boardStatusCallout(task);
+  const callout = document.createElement('div');
+  callout.className = 'board-callout wc-detail-callout ' + info.cls;
+  const calloutTitle = document.createElement('div');
+  calloutTitle.className = 'board-callout-title';
+  calloutTitle.textContent = info.title;
+  const calloutText = document.createElement('div');
+  calloutText.className = 'board-callout-text';
+  calloutText.textContent = info.text || '—';
+  callout.append(calloutTitle, calloutText);
+
+  const meta = wcDetailSection('基础信息');
+  meta.append(
     wcRow('任务 ID', task.id, true),
     wcRow('状态', task.status),
     wcRow('进度', task.progress),
     wcRow('最近事件', task.last_event),
     wcRow('更新时间', task.updated_at),
   );
-  const tagRow = document.createElement('div');
-  tagRow.className = 'wc-row wc-tags';
-  const key = document.createElement('span');
-  key.className = 'wc-row-key';
-  key.textContent = '标签';
-  const val = document.createElement('span');
-  val.className = 'wc-row-val';
+  if (task.project) meta.append(wcRow('项目', task.project));
+  if (task.worker) meta.append(wcRow('执行主体', task.worker));
+  if (task.session) meta.append(wcRow('会话', task.session, true));
+
+  const tagsSection = wcDetailSection('标签');
   const tags = Array.isArray(task.tags) ? task.tags.filter(Boolean) : [];
   if (tags.length) {
+    const tagRow = document.createElement('div');
+    tagRow.className = 'wc-tag-row';
     tags.forEach((tag) => {
       const chip = document.createElement('span');
       chip.className = 'board-tag';
       chip.textContent = tag;
-      val.append(chip);
+      tagRow.append(chip);
     });
+    tagsSection.append(tagRow);
   } else {
-    val.textContent = '—';
+    const none = document.createElement('div');
+    none.className = 'wc-detail-muted';
+    none.textContent = '—';
+    tagsSection.append(none);
   }
-  tagRow.append(key, val);
-  body.append(tagRow, wcArtifactsRow(task));
+
+  body.append(title, callout, meta, tagsSection,
+    wcArtifactsSection(task), wcTimelineSection(task));
   return body;
 }
 
-function wcTaskItem(s, task, selectedId) {
+// 发送到主 Agent 会话：带 board_task_id（服务端只允许主 Agent 会话携带），
+// 同时把用户消息记进卡片时间线；最终回复由服务端在轮次结束后自动回写。
+async function wcSendToMain(task, text, opts) {
+  const o = opts || {};
+  const main = wcMainAgentSession();
+  if (!main) {
+    state.wcReply.notice = {
+      taskId: task.id || '',
+      text: '未找到主 Agent 会话，未发送。请先打开/创建一个主 Agent 会话。',
+      kind: 'error',
+    };
+    wcDetailSetNotice(state.wcReply.notice.text, 'error');
+    return false;
+  }
+  if (o.btn) o.btn.disabled = true;
+  try {
+    const baseline = boardReplyKeys(task);
+    const message = boardTaskContext(task, '来自 worker 卡片详情') + '\n' + text;
+    await api(`/api/sessions/${encodeURIComponent(main.id)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ text: message, board_task_id: task.id || undefined }),
+    });
+    await boardAppendUserEvent(task.id, o.eventText || text);
+    state.wcReply.wait = { taskId: task.id || '', baseline };
+    state.wcReply.notice = {
+      taskId: task.id || '',
+      text: o.notice || '已发送 · 等待主 Agent 回复…',
+      kind: 'queued',
+    };
+    wcDetailSetNotice(state.wcReply.notice.text, 'queued');
+    return true;
+  } catch (e) {
+    state.wcReply.notice = {
+      taskId: task.id || '',
+      text: '发送失败：' + (e && e.message ? e.message : e),
+      kind: 'error',
+    };
+    wcDetailSetNotice(state.wcReply.notice.text, 'error');
+    return false;
+  } finally {
+    if (o.btn) o.btn.disabled = false;
+  }
+}
+
+async function wcReplySend(s, task, btn) {
+  const input = $('#wc-reply-input');
+  const text = input ? input.value.trim() : (state.wcReply.draft || '').trim();
+  if (!text) {
+    wcDetailSetNotice('请输入回复内容', 'error');
+    return;
+  }
+  const ok = await wcSendToMain(task, text, { eventText: text });
+  if (!ok) return;
+  state.wcReply.draft = '';
+  if (input) {
+    input.value = '';
+    input.style.height = 'auto';
+  }
+  wcRender(s);
+}
+
+// 「验收通过」= 把决定交给主 Agent：主 Agent 核对产物后自行把卡置为已完成，
+// 前端不直接 PATCH 卡片状态（不绕过主 Agent 写卡片）。
+async function wcAcceptTask(s, task, btn) {
+  const instruction = `用户从 worker 卡片详情点击了「验收通过」。
+请核对该卡产物与最近回报：确认无误后把状态置为「已完成」，并在任务流记一条验收记录；
+如果还有问题，请说明原因并保持/调整状态。`;
+  const ok = await wcSendToMain(task, instruction, {
+    eventText: '验收通过',
+    notice: '已提交验收 · 等待主 Agent 处理…',
+    btn,
+  });
+  if (ok) wcRender(s);
+}
+
+// 详情页底部：回复主 Agent 输入框 + 验收通过。回复目标固定为主 Agent 会话，
+// 即使当前停在 worker 会话也不直接写卡片或发给 worker。
+function wcDetailFooter(s, task) {
+  const footer = document.createElement('div');
+  footer.className = 'wc-detail-footer';
+  const main = wcMainAgentSession();
+  const canReply = !!main;
+  const taskId = task.id || '';
+
+  const notice = document.createElement('div');
+  notice.id = 'wc-detail-notice';
+  notice.className = 'wc-detail-notice';
+  const current = state.wcReply.notice && state.wcReply.notice.taskId === taskId
+    ? state.wcReply.notice : null;
+  if (current) {
+    notice.textContent = current.text;
+    notice.classList.add(current.kind);
+  } else if (!canReply) {
+    notice.textContent = '未找到主 Agent 会话，暂不能回复或验收。';
+    notice.classList.add('error');
+  } else {
+    notice.classList.add('hidden');
+  }
+
+  const input = document.createElement('textarea');
+  input.id = 'wc-reply-input';
+  input.className = 'wc-reply-input';
+  input.rows = 1;
+  input.disabled = !canReply;
+  input.placeholder = canReply
+    ? `回复主 Agent（${main.peer_name || main.name || 'mainAgent'}）…`
+    : '未找到主 Agent 会话';
+  input.setAttribute('aria-label', '回复主 Agent');
+  if (state.wcReply.taskId === taskId) input.value = state.wcReply.draft || '';
+  input.addEventListener('input', () => {
+    state.wcReply.taskId = taskId;
+    state.wcReply.draft = input.value;
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      wcReplySend(s, task, null);
+    }
+  });
+
+  const actions = document.createElement('div');
+  actions.className = 'wc-detail-footer-row';
+  if (task.status === '待验收') {
+    const accept = document.createElement('button');
+    accept.type = 'button';
+    accept.className = 'wc-accept-btn';
+    accept.textContent = '验收通过';
+    accept.title = '把验收决定发给主 Agent（由主 Agent 更新卡片状态）';
+    accept.disabled = !canReply;
+    accept.onclick = () => wcAcceptTask(s, task, accept);
+    actions.append(accept);
+  }
+  const send = document.createElement('button');
+  send.type = 'button';
+  send.className = 'wc-reply-send';
+  send.textContent = '发送';
+  send.title = '发送到主 Agent';
+  send.disabled = !canReply;
+  send.onclick = () => wcReplySend(s, task, send);
+  actions.append(send);
+
+  footer.append(notice, input, actions);
+  return footer;
+}
+
+// 卡片列表项：整张卡点开进详情页（不再是内联手风琴）。
+function wcTaskItem(s, task) {
   const taskId = String(task.id || '');
-  const open = !!taskId && selectedId === taskId;
   const item = document.createElement('article');
-  item.className = 'wc-card' + (open ? ' wc-open' : '');
+  item.className = 'wc-card';
   item.dataset.taskId = taskId;
 
   const head = document.createElement('button');
   head.type = 'button';
   head.className = 'wc-card-head';
-  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  head.setAttribute('aria-label', `打开卡片详情：${task.title || taskId || ''}`);
   const caret = document.createElement('i');
   caret.className = 'wc-caret';
-  caret.dataset.lucide = open ? 'chevron-down' : 'chevron-right';
+  caret.dataset.lucide = 'chevron-right';
 
   const main = document.createElement('span');
   main.className = 'wc-card-main';
@@ -3239,15 +3569,15 @@ function wcTaskItem(s, task, selectedId) {
   main.append(line, last);
   head.append(caret, main);
   head.onclick = () => {
-    wcSetSelectedTaskId(s, open ? '' : taskId);
+    wcOpenDetail(s, taskId);
     wcRender(s);
   };
   item.append(head);
-  if (open) item.append(wcTaskDetail(task));
   return item;
 }
 
 // 渲染当前会话的面板（幂等，可反复调用）。不负责 SSE 连接，连接见 wcOnSession。
+// SSE 刷新会重建 DOM：在这里保存/恢复回复输入框的焦点和光标，避免打断输入。
 function wcRender(s) {
   const panel = $('#worker-cards');
   const mask = $('#worker-cards-mask');
@@ -3258,6 +3588,7 @@ function wcRender(s) {
     panel.innerHTML = '';
     panel.classList.remove('wc-collapsed');
     panel.dataset.sid = '';
+    wcCloseDetail();
     if (mask) mask.classList.add('hidden');
     return;
   }
@@ -3265,25 +3596,47 @@ function wcRender(s) {
   const tasks = wcBoundTasks(s);
   const open = wcIsOpen(s);
   panel.classList.toggle('wc-collapsed', !open);
+  const active = document.activeElement;
+  const replyFocus = open && active && active.id === 'wc-reply-input' ? active : null;
+  const selStart = replyFocus ? replyFocus.selectionStart : null;
+  const selEnd = replyFocus ? replyFocus.selectionEnd : null;
   panel.innerHTML = '';
   if (!open) {
+    wcCloseDetail();
     panel.append(wcRail(s, tasks));
     if (mask) mask.classList.add('hidden');
   } else {
-    panel.append(wcHead(s, tasks));
-    const body = document.createElement('div');
-    body.className = 'wc-body';
-    if (!tasks.length) {
-      body.append(wcEmpty(s, !state.agentBoard));
+    const detailId = wcDetailTaskId(s);
+    const detailTask = detailId
+      ? tasks.find((task) => String(task.id || '') === detailId) : null;
+    if (detailTask) {
+      const body = document.createElement('div');
+      body.className = 'wc-body wc-detail-scroll';
+      body.append(wcTaskDetail(detailTask));
+      panel.append(wcDetailHead(s, detailTask), body, wcDetailFooter(s, detailTask));
     } else {
-      const selected = wcSelectedTaskId(s, tasks);
-      tasks.forEach((task) => body.append(wcTaskItem(s, task, selected)));
+      if (detailId) wcCloseDetail();
+      panel.append(wcHead(s, tasks));
+      const body = document.createElement('div');
+      body.className = 'wc-body';
+      if (!tasks.length) {
+        body.append(wcEmpty(s, !state.agentBoard));
+      } else {
+        tasks.forEach((task) => body.append(wcTaskItem(s, task)));
+      }
+      panel.append(body);
     }
-    panel.append(body);
     // 遮罩只在窄屏生效（CSS 媒体查询控制 display），宽屏留着也无害。
     if (mask) mask.classList.remove('hidden');
   }
   renderIcons(panel);
+  if (replyFocus) {
+    const input = $('#wc-reply-input');
+    if (input) {
+      input.focus();
+      try { input.setSelectionRange(selStart, selEnd); } catch (_) {}
+    }
+  }
 }
 
 function wcDisconnect() {
@@ -3334,6 +3687,7 @@ function wcOnSession(s) {
     wcRender(null);
     return;
   }
+  if (state.wcDetail.sid && state.wcDetail.sid !== s.id) wcCloseDetail();
   wcRender(s);
   if (wcIsOpen(s)) wcConnect(s);
   else wcDisconnect();
@@ -3341,12 +3695,13 @@ function wcOnSession(s) {
   if (!fresh) wcRefresh(s.id);
 }
 
-// 窄屏遮罩点击 / Esc：收起面板（宽屏没有遮罩，Esc 也照常生效）。
+// 窄屏遮罩点击：收起面板；Esc 在详情页先返回列表，再按一次才收起（宽屏同理）。
 function wcCollapse() {
   const s = state.current;
   if (!s || !wcIsOpen(s)) return;
   wcSetOpen(s, false);
   wcDisconnect();
+  wcCloseDetail();
   wcRender(s);
 }
 
@@ -3354,7 +3709,16 @@ function wcCollapse() {
   const mask = $('#worker-cards-mask');
   if (mask) mask.onclick = wcCollapse;
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && state.current && wcIsOpen(state.current)) wcCollapse();
+    if (e.key !== 'Escape' || !state.current || !wcIsOpen(state.current)) return;
+    // 分享弹窗自己处理 Esc，别顺手把详情也退了。
+    const share = $('#board-share-modal');
+    if (share && !share.classList.contains('hidden')) return;
+    if (wcDetailTaskId(state.current)) {
+      wcCloseDetail();
+      wcRender(state.current);
+      return;
+    }
+    wcCollapse();
   });
 })();
 
@@ -4814,9 +5178,9 @@ let boardDrawerTask = null;
 // 下发送前已有回复的 key 集合，看板刷新后出现新 key = 已回复。
 let boardReplyWaits = {};
 
-function boardTaskContext(task) {
+function boardTaskContext(task, label) {
   const lines = [
-    '【来自看板任务抽屉】',
+    `【${label || '来自看板任务抽屉'}】`,
     `task_id: ${task.id || '—'}`,
     `标题: ${task.full_title || task.title || '—'}`,
     `状态: ${task.status || '—'} · 项目: ${task.project || '—'}`,
