@@ -145,7 +145,7 @@ $ grep -nE "^    path:" video/demo-config.yaml
     path: "/nonexistent/agentdeck-demo/opencode"
     path: "/nonexistent/agentdeck-demo/mcode"
     path: "/nonexistent/agentdeck-demo/qoder"
-    path: "/nonexistent/agentdeck-demo/ducx"
+    path: "/nonexistent/agentdeck-demo/codex"
 
 $ tail -3 /tmp/opencode/demo-server.log
 restore resident demo-docs-0006: start claude: fork/exec /nonexistent/agentdeck-demo/claude: no such file or directory

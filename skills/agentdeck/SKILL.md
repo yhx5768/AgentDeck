@@ -110,7 +110,7 @@ $AD new --name "评审员" --cli claude --cwd ~/Projects/app \
 ```
 
 - **引擎差异**：claude / qoder / mcode 走 `--append-system-prompt`，与界面自带的
-  HTML 渲染提示合并成**一个**参数；codex / ducx 走 `-c instructions=`，同样合并。
+  HTML 渲染提示合并成**一个**参数；codex 走 `-c instructions=`，同样合并。
   **opencode 暂不支持**（没有 append 语义，v1 prompt 的 `system` 是覆盖而非追加）：
   值会存下来，但不会注入。
 - **生效时机**：新建会话立即生效；非常驻会话下一轮生效；**运行中的常驻会话改完

@@ -52,9 +52,9 @@ clis:
     args: []
     env: {}
 
-  - name: "ducx"
+  - name: "codex-cli"
     kind: "codex"
-    path: "/nonexistent/agentdeck-demo/ducx"
+    path: "/nonexistent/agentdeck-demo/codex"
     model_provider: "oneapi"
     args: []
     env: {}
@@ -81,6 +81,6 @@ providers:
     kind: "qoder"
     models: []
 
-  - name: "codex-ducx"
+  - name: "codex"
     kind: "codex"
     models: []

@@ -7,11 +7,11 @@ AgentDeck 的版本变更。发布说明以 annotated tag 的说明为准；完�
 ### 变更
 
 - 主 Agent 出站 A2A 发送（含单条）默认折叠为「N 条 A2A 发送」，组头保留收件人、`send_id`、预览与失败标记。
-- codex/ducx 的 agentdeck MCP 注入不再依赖 browser 开关；默认配置下会话工具与 A2A 工具可用。
+- codex 的 agentdeck MCP 注入不再依赖 browser 开关；默认配置下会话工具与 A2A 工具可用。
 
 ### 修复与测试
 
-- 补充 A2A 发送折叠的前端 jsdom 回归，以及 codex/ducx MCP 注入组合的 runner 测试。
+- 补充 A2A 发送折叠的前端 jsdom 回归，以及 codex MCP 注入组合的 runner 测试。
 - 前端全量测试与 `go vet ./...` 通过；`go test ./...` 仅保留既有 `TestServeKeyIsCompact` 基线失败。
 
 ## v0.5.0 — 2026-11-13

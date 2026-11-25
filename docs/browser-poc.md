@@ -149,11 +149,11 @@ internal/server.(*Server).handleBrowserStream() browser.go:185
 | 引擎 | 注入方式 | 状态 |
 |---|---|---|
 | Claude / Qoder | 每会话 `--mcp-config <0600 json>` | 已验证，原有路径不变 |
-| Codex / ducx | `-c mcp_servers.browser.*`；token 不放在 argv，改用 0700 wrapper + 0600 env 文件 | 已实测 `browser_status` 返回 running/URL/control |
+| Codex | `-c mcp_servers.browser.*`；token 不放在 argv，改用 0700 wrapper + 0600 env 文件 | 已实测 `browser_status` 返回 running/URL/control |
 | OpenCode v2.1.4 | 每会话 `OPENCODE_CONFIG_DIR` 下的 `opencode.json`，`mcp.servers.browser`；浏览器会话使用独立 serve 进程 | 已实测 `browser_status` 返回 running/URL/control |
 | mcode 0.7.0 | `exec` 只自动加载 session cwd 的 `.mcp.json`；ACP 可按会话传 mcpServers，但 AgentDeck 未接 ACP | 未接入；不写用户仓库，因此本 PoC 的 mcode 无 browser_* 工具 |
 
-Codex 细节：`-c` 的值会出现在进程 argv，所以不能把 token 放进 `mcp_servers.browser.env`。现在生成 `data/browser/mcp/codex/<session>.sh`（0700）和 `<session>.env`（0600），wrapper 读取 env 后 exec `cc-webui -browser-mcp`；argv 只有 wrapper 路径。实测 `ducx mcp list` 能看到 browser，真实会话调用 `browser_status` 成功。
+Codex 细节：`-c` 的值会出现在进程 argv，所以不能把 token 放进 `mcp_servers.browser.env`。现在生成 `data/browser/mcp/codex/<session>.sh`（0700）和 `<session>.env`（0600），wrapper 读取 env 后 exec `cc-webui -browser-mcp`；argv 只有 wrapper 路径。实测 `codex mcp list` 能看到 browser，真实会话调用 `browser_status` 成功。
 
 OpenCode 细节：`opencode serve` 是长驻进程、配置在启动时读取，不能把不同会话的 MCP env 混在同一个 serve 里。浏览器开启时，`serveKey` 加入 session id，`OPENCODE_CONFIG_DIR` 指向 `~/.config/cc-webui/opencode/sessions/<session>/`，该目录的 `opencode.json` 含 `instructions` 和 `mcp.servers.browser`，文件 0600；非浏览器会话仍共用原 serve。实测真实会话调用 `browser_status` 成功。
 

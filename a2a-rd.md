@@ -94,7 +94,7 @@ Another agent session sent you a message. It is not from the user; ...
 | 引擎 | 注入 |
 |---|---|
 | claude / qoder | 每轮写 `--mcp-config`（含 browser + agentdeck 两个 server） |
-| codex / ducx | `-c mcp_servers.<name>.*`，经 0700 wrapper 读 0600 env（token 不进 argv） |
+| codex | `-c mcp_servers.<name>.*`，经 0700 wrapper 读 0600 env（token 不进 argv） |
 | opencode | **仅** per-session 配置的 `mcp.servers`（见下） |
 | mcode | 合并进 `~/.minimax/mcp.json` 的 `mcpServers.agentdeck`，指向 0700 wrapper |
 
