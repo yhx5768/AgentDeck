@@ -377,18 +377,18 @@ SESSIONS = [
     {
         "id": "demo-codex-0005",
         "name": "Codex rollout：模型目录",
-        "cli": "ducx",
-        "provider": "codex-ducx",
+        "cli": "codex-cli",
+        "provider": "codex",
         "model_override": "GLM-5.3",
         "events": [
-            user("ducx 的 debug models --bundled 里怎么没有网关模型？"),
+            user("codex 的 debug models --bundled 里怎么没有网关模型？"),
             status("turn_start"),
             asst(
                 text(
-                    "因为它是 launcher wrapper。`ducx debug models --bundled` 只有上游 gpt 模型，"
+                    "因为它是 launcher wrapper。`codex debug models --bundled` 只有上游 gpt 模型，"
                     "网关实际可用的 GLM-5.3 / DeepSeek-V4 全都不在里面。\n\n"
                     "wrapper 把真实清单落在 `<home>/model-catalogs/<model_provider>-models.json`"
-                    "（`ducx models` 打印的就是它），并与 bundled 同形——slug / display_name /"
+                    "（`codex models` 打印的就是它），并与 bundled 同形——slug / display_name /"
                     "supported_reasoning_levels / input_modalities / context_window 都在。"
                 ),
                 msg_id="msg_cx_01",

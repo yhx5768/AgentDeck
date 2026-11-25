@@ -25,9 +25,11 @@
 ```bash
 AD=~/.claude/skills/agentdeck/scripts/agentdeck.py
 $AD new --name "主Agent" --peer-name mainAgent --resident \
-  --cli ducc --provider ducc-models --model <模型> --effort <档位> \
+  --cli claude --provider claude-models --model <模型> --effort <档位> \
   --cwd <记录所在的工作区>
 ```
+
+（命令里的 `claude` / `claude-models` 是通用写法，换成你 `config.yaml` 里实际的 cli / provider 名即可。）
 
 一件事的完整流程：
 
@@ -56,19 +58,19 @@ sequenceDiagram
 
 ### 3.1 默认配置
 
-> 主 Agent 建 worker 的默认档由**设置页「worker 默认档」**（服务端持久化，优先）或 **`config.yaml` 的 `main_agent.worker`** 配（cli/provider/model/effort/resident），会被拼进预载的角色提示里；设置页留空 = 继承 config。下表是 ducc 环境的一个样例，本机以 config 的 `clis`/`providers` 为准。
+> 主 Agent 建 worker 的默认档由**设置页「worker 默认档」**（服务端持久化，优先）或 **`config.yaml` 的 `main_agent.worker`** 配（cli/provider/model/effort/resident），会被拼进预载的角色提示里；设置页留空 = 继承 config。下表是 claude 环境的一个样例，本机以 config 的 `clis`/`providers` 为准。
 
 | 项 | 默认值 | 说明 |
 |---|---|---|
-| 引擎 | `--cli ducc --provider ducc-models` | **常驻进程**只有 claude 内核（ducc、claude）支持，其他引擎带 `--resident` 会被服务端 400；但**跨会话消息（A2A）已引擎中立**——worker 与主 Agent 不一定是 claude，投递走 `/api/a2a/send`（见 `a2a-rd.md`） |
-| 模型 | `--model DeepSeek-V4.1-Flash` | 写模型目录里的原样 ID，大小写敏感。服务端 `modelKnown` 只认 config.yaml 里登记的名字或 `ducc models` 输出的 ID，都是精确匹配；写成 `deepseek-v4.1-flash` 两边都没有，返回 400 `unknown model` |
+| 引擎 | `--cli claude --provider claude-models` | **常驻进程**只有 claude 内核（Claude Code 及同协议的厂商封装）支持，其他引擎带 `--resident` 会被服务端 400；但**跨会话消息（A2A）已引擎中立**——worker 与主 Agent 不一定是 claude，投递走 `/api/a2a/send`（见 `a2a-rd.md`） |
+| 模型 | `--model DeepSeek-V4.1-Flash` | 写模型目录里的原样 ID，大小写敏感。服务端 `modelKnown` 只认 config.yaml 里登记的名字或 CLI 自己列出的模型 ID（配了 `models_command` 的 CLI 由它自己的命令给出），都是精确匹配；写成 `deepseek-v4.1-flash` 两边都没有，返回 400 `unknown model` |
 | 档位 | `--effort max` | claude 内核的固定档位之一（low / medium / high / xhigh / max） |
 | 常驻 | `--resident` | 必开。不开常驻的会话只在跑某一轮时临时注册，用的还是派生名，按地址名发 `SendMessage` 发不到它 |
 | 名字 | `--name` 和 `--peer-name` 都写 `项目-任务` | 见 3.2 |
 | 工作目录 | `--cwd <任务所在的仓库或工作区>` | 决定 worker 读哪份 CLAUDE.md、触发哪些 hooks。侧栏按目录分组，worker 显示在对应目录下 |
 | 权限模式 | 不传，继承 cli 配置 | 和主 Agent 保持一致，见 3.4 |
 
-模型目录会变。换模型前先跑 `$AD models --cli ducc --provider ducc-models` 查当前 ID，再用 `$AD efforts --cli ducc --provider ducc-models --model <ID>` 查可用档位。
+模型目录会变。换模型前先跑 `$AD models --cli claude --provider claude-models` 查当前 ID，再用 `$AD efforts --cli claude --provider claude-models --model <ID>` 查可用档位。
 
 ### 3.2 命名：项目-任务
 
@@ -83,7 +85,7 @@ sequenceDiagram
 
 ```bash
 SID=$($AD new --name "cc-webui-修SSE断线" --peer-name "cc-webui-修SSE断线" --resident \
-  --cli ducc --provider ducc-models --model DeepSeek-V4.1-Flash --effort max \
+  --cli claude --provider claude-models --model DeepSeek-V4.1-Flash --effort max \
   --cwd ~/Projects/cc-webui)
 $AD get "$SID" | grep -E '^(resident|status) '
 ```
@@ -100,9 +102,9 @@ $AD get "$SID" | grep -E '^(resident|status) '
 
 ### 3.4 权限模式保持一致
 
-worker 不单独传 `--permission-mode`，继承 cli 配置（例如 config.yaml 里 `ducc` 配成 `bypassPermissions`），和主 Agent 相同。原因：
+worker 不单独传 `--permission-mode`，继承 cli 配置（例如 config.yaml 里 `claude` 配成 `bypassPermissions`），和主 Agent 相同。原因：
 
-- cc-webui 只在物化 `--settings` 文件时写入 `crossSessionInbound: "accept"`。provider 没有 env、也不需要审批 hook 时不生成这个文件（`spawnResident` 里的 `needsSettings`），入站消息按 CLI 默认策略处理。`ducc-models` 就属于这种情况：实测当前三个 ducc-models 常驻进程的启动参数里都没有 `--settings`（`data/settings/` 里那几个 `ducc__ducc-models__*` 文件是 09-29 旧版本留下的）。
+- cc-webui 只在物化 `--settings` 文件时写入 `crossSessionInbound: "accept"`。provider 没有 env、也不需要审批 hook 时不生成这个文件（`spawnResident` 里的 `needsSettings`），入站消息按 CLI 默认策略处理。`claude-models` 就属于这种情况：实测当前三个常驻进程的启动参数里都没有 `--settings`（`data/settings/` 里那几个是 09-29 旧版本留下的文件）。
 - CLI 2.1.258 的 `SendMessage` 返回值写着："It is delivered to you if that session runs in the same permission class as this one (or is one this session spawned); otherwise it is only logged here (this session holds other inbound peer traffic)"。按这段说明，权限类不同的会话之间，空闲通知只记日志，其他入站消息也可能被扣住。
 - 实测主 Agent 和 worker 都用 `bypassPermissions` 时，派工、回报、空闲通知都能送达。
 
@@ -234,13 +236,13 @@ for s in json.load(sys.stdin):
 
 ## 11. 资源与成本
 
-- 内存：实测每个常驻进程（ducc 2.1.258 的 claude.exe）RSS 约 220–300 MiB，十几个 worker 合计 3–5 GiB。
+- 内存：实测每个常驻进程（Claude Code 2.1.258 的 claude.exe）RSS 约 220–300 MiB，十几个 worker 合计 3–5 GiB。
 - 模型调用：主 Agent 空闲时，每条回报都会让它带着全部上下文跑一轮，空闲通知、巡检消息也一样；它正忙时，回报并入当前轮。主 Agent 的模型和档位按这个频率选。同时跑的 worker 越多，回报越密，主 Agent 越常处在忙碌中，后到的回报要排队。
 - worker 的上下文从零开始，派工单写全背景，比让它自己翻历史省。
 
 ## 12. 已知限制
 
-- **常驻进程**只有 claude 内核（ducc、claude）支持（其他引擎带 `--resident` 会被服务端 400）；但**跨会话消息（A2A）已引擎中立**，opencode/codex/mcode/qoder 的 worker 也能用 agentdeck MCP 的 `send_message` 主动回报主 Agent（投递走 `/api/a2a/send` 排一轮，不需要常驻，见 `a2a-rd.md`）。所以 worker 引擎可以不是 claude，只是没有常驻进程时空闲期不在线、回报要等它下一轮。`reply`/`run` 会让主 Agent 阻塞到对方跑完，不适合派工。
+- **常驻进程**只有 claude 内核（Claude Code 及同协议的厂商封装）支持（其他引擎带 `--resident` 会被服务端 400）；但**跨会话消息（A2A）已引擎中立**，opencode/codex/mcode/qoder 的 worker 也能用 agentdeck MCP 的 `send_message` 主动回报主 Agent（投递走 `/api/a2a/send` 排一轮，不需要常驻，见 `a2a-rd.md`）。所以 worker 引擎可以不是 claude，只是没有常驻进程时空闲期不在线、回报要等它下一轮。`reply`/`run` 会让主 Agent 阻塞到对方跑完，不适合派工。
 - peer 消息只投递给在线会话，不会替离线会话存着。
 - 空闲通知只带最后一条回复的第一行，而且要等主 Agent 当前轮结束才送达。
 - 回报要等主 Agent 下一次工具调用才进上下文，主 Agent 跑长命令时回报会晚到。
@@ -256,8 +258,8 @@ for s in json.load(sys.stdin):
 
 | 要做的事 | 命令 |
 |---|---|
-| 查模型 ID 和档位 | `$AD models --cli ducc --provider ducc-models`，`$AD efforts --cli ducc --provider ducc-models --model <ID>` |
-| 建 worker | `$AD new --name <项目-任务> --peer-name <项目-任务> --resident --cli ducc --provider ducc-models --model DeepSeek-V4.1-Flash --effort max --cwd <目录>` |
+| 查模型 ID 和档位 | `$AD models --cli claude --provider claude-models`，`$AD efforts --cli claude --provider claude-models --model <ID>` |
+| 建 worker | `$AD new --name <项目-任务> --peer-name <项目-任务> --resident --cli claude --provider claude-models --model DeepSeek-V4.1-Flash --effort max --cwd <目录>` |
 | 看是否在线、实际地址名 | `$AD get <id>`（`status : resident:<名字>`） |
 | 派工、追问、转达确认 | 主 Agent 的 `SendMessage`，`to` 写地址名 |
 | 读最后一条回复 | `$AD tail <id> --timeout 5 \| tail -n 30` |
