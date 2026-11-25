@@ -197,8 +197,10 @@ claude / qoder 还能把当前 transcript 复制成新会话，从同一上下�
 Linux / macOS 用安装脚本，已装过的旧版本会迁移到 `agentdeck`（原文件保留为 `cc-webui.bak-<版本>`）：
 
 ```bash
-curl -fsSL http://script.soarx.cc/install-agentdeck.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yhx5768/AgentDeck/master/scripts/install-agentdeck.sh | bash
 ```
+
+脚本源码就在仓库里：[scripts/install-agentdeck.sh](scripts/install-agentdeck.sh)。上面的命令始终取 master 上的最新版；配置模板（`du_int.config.example.yaml`）也是从仓库 raw 下载，与二进制同源。
 
 也可以直接从 [Releases](https://github.com/yhx5768/AgentDeck/releases/latest) 下载对应平台的二进制，解压即用。旧名 `cc-webui` 仍可继续运行，Release 会同时提供 `agentdeck-*` 与兼容用的 `cc-webui-*` asset。
 
@@ -607,6 +609,7 @@ internal/browser/        # 浏览器 PoC：本地 Chrome 生命周期、CDP 动�
 internal/statsagg/       # 五引擎共用的统计聚合核心
 internal/a2a/            # 引擎无关注跨会话消息：信封、agentdeck MCP 工具面、A2A 投递
 internal/boarddb/        # SQLite 看板：任务、时间线、产物、worker 绑定、公开分享
+scripts/                 # 一键安装脚本（README 的 curl | bash 指向 install-agentdeck.sh）、前端 jsdom 测试
 docs/needs-you-rd.md     # Personal Agent「需要你」队列设计
 web/                     # 免构建前端（vanilla JS + vendor 的 marked/DOMPurify/highlight.js/mermaid）
 web/agent*.js            # Personal Agent：队列、右栏、折叠、作答路径
